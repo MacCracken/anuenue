@@ -92,7 +92,8 @@ fn fuzz_emit_extreme_phases(line_buf, line_buf_size) {
     # Boundary values that walked across the M8 audit's
     # "what about negative phase?" question. Each must produce a
     # valid table index after the modulo-normalize step.
-    var phases[16];
+    var phases[80];   # 10 i64 slots × 8 bytes = 80 BYTES (var[N] is N bytes, not N entries) — [16] was a
+                      # 64-byte stack overflow that clobbered the return address (SIGSEGV under cyrius 6.4.62)
     store64(&phases + 0 * 8, 0);
     store64(&phases + 1 * 8, 1);
     store64(&phases + 2 * 8, 1529);            # MOD - 1
