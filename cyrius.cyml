@@ -5,12 +5,22 @@ description = "anuenue — ānuenue (Hawaiian: rainbow). Stdin → stdout rainbo
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/anuenue"
 language = "cyrius"
-cyrius = "6.2.44"
+cyrius = "6.4.62"
 
 [build]
 entry = "src/main.cyr"
 test = "src/test.cyr"
 output = "build/anuenue"
+
+# --- library surface (1.2.0) ---------------------------------------------------
+# anuenue is primarily a pipe-filter binary, but its HSV phase model is a reusable
+# domain: `cyrius distlib` concatenates these modules (in order) into dist/anuenue.cyr
+# so a consumer can `include "lib/anuenue.cyr"` and tint text in-process (e.g. thoth's
+# `/theme rainbow` TUI render mode) rather than shelling out to the binary. ONLY the
+# pure HSV geometry is exported — hsv.cyr is standalone (one constant + hsv_rainbow,
+# zero darshana/sakshi refs). The filter/animate/color/CLI machinery stays app-only.
+[lib]
+modules = ["src/hsv.cyr"]
 
 [deps]
 # "args" — AGNOS-canonical argv. The stdlib "flags" parser was DROPPED when CLI
@@ -38,17 +48,17 @@ modules = ["dist/cmdit.cyr"]
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
 path = "../darshana"
-tag = "0.7.1"
+tag = "0.9.0"
 modules = ["dist/darshana.cyr"]
 
 [deps.sakshi]
 git = "https://github.com/MacCracken/sakshi.git"
 path = "../sakshi"
-tag = "2.4.0"
+tag = "2.4.6"
 modules = ["dist/sakshi.cyr"]
 
 [deps.agnostik]
 git = "https://github.com/MacCracken/agnostik.git"
 path = "../agnostik"
-tag = "1.3.1"
+tag = "1.3.4"
 modules = ["dist/agnostik.cyr"]

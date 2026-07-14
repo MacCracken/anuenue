@@ -4,6 +4,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-07-14
+
+### Added
+- **Library surface — `dist/anuenue.cyr` distlib (`[lib]` profile).** anuenue is now consumable as a library, not
+  only as a pipe-filter binary: `cyrius distlib` bundles the pure HSV phase model (`src/hsv.cyr` —
+  `ANUENUE_PHASE_MOD` + `hsv_rainbow(phase, out_rgb)`, integer 6-sector HSV→RGB, zero darshana/sakshi refs) so a
+  consumer can `include "lib/anuenue.cyr"` and tint text **in-process** instead of shelling out. First consumer:
+  thoth's `/theme rainbow` TUI render mode. The filter / animate / colour-mode / CLI machinery stays app-only.
+
+
 ## [1.1.5] — 2026-06-26
 
 ### Fixed
