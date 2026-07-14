@@ -13,5 +13,5 @@
 # Same pattern cyrius + cyim + chakshu + every AGNOS first-party
 # tool with a `--version` flag uses.
 
-var _VERSION_STR_ANUENUE = "anuenue 1.1.5\n";
+var _VERSION_STR_ANUENUE = "anuenue 1.2.0\n";
 var _VERSION_LEN_ANUENUE = 14;
