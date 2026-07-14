@@ -656,15 +656,15 @@ fn main(): i64 {
     test_group("M4 animate — _input_ends_with_lf");
     # Re-use AGNOS\n (ends with LF) and a no-LF variant.
     assert_eq(_input_ends_with_lf(&ab, &ac, n_ac), 1, "AGNOS\\n ends with LF");
-    var nb[4];
-    store8(&nb + 0, 65);  # A
-    store8(&nb + 1, 66);  # B
+    var nbuf[4];
+    store8(&nbuf + 0, 65);  # A
+    store8(&nbuf + 1, 66);  # B
     var nc[32];
-    var n_nc = _pretag_clusters(&nb, 2, &nc, 3);
-    assert_eq(_input_ends_with_lf(&nb, &nc, n_nc), 0, "AB → no trailing LF");
+    var n_nc = _pretag_clusters(&nbuf, 2, &nc, 3);
+    assert_eq(_input_ends_with_lf(&nbuf, &nc, n_nc), 0, "AB → no trailing LF");
     # Empty cluster table → false (animate driver short-circuits, but
     # the helper must not crash on the zero case).
-    assert_eq(_input_ends_with_lf(&nb, &nc, 0), 0, "0 clusters → false");
+    assert_eq(_input_ends_with_lf(&nbuf, &nc, 0), 0, "0 clusters → false");
 
     test_group("M4 flags — -a / -d / -S parse");
     var fs_a = cmdit_new("anuenue");
