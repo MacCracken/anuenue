@@ -135,6 +135,56 @@ fn _rgb_to_16(r, g, b): i64 {
     return 97;                        # white fallback (shouldn't hit)
 }
 
+# ---- colour-decision reasons --------------------------------------
+#
+# `anuenue_detect_color_mode` has eight distinct exits and, before
+# v1.2.1, reported only the mode it landed on — never why. That cost
+# a real bug: v1.1.5's "rainbow collapsed to 16 colours on AGNOS" was
+# the env-heuristic tail being reached at all on a platform that sets
+# no env, and the only way to see it was to read the source. The
+# branch that fired is now recorded here and surfaced under `-v`.
+#
+# Lives in color.cyr rather than observe.cyr because it needs
+# ANUENUE_COLOR_*; observe.cyr deliberately depends on nothing from
+# anuenue so every module can call anuenue_fail.
+enum AnuenueColorReason {
+    ANUENUE_CR_UNSET        = 0;   # initial value — detect has not run
+    ANUENUE_CR_FLAG_COLOR   = 1;   # --color=<mode> explicit override
+    ANUENUE_CR_FLAG_NOCOLOR = 2;   # --no-color
+    ANUENUE_CR_ENV_NO_COLOR = 3;   # NO_COLOR present in env
+    ANUENUE_CR_NOT_A_TTY    = 4;   # stdout is not a TTY, no --force-color
+    ANUENUE_CR_AGNOS_FB     = 5;   # agnos framebuffer console default
+    ANUENUE_CR_COLORTERM    = 6;   # COLORTERM=truecolor|24bit
+    ANUENUE_CR_TERM_DIRECT  = 7;   # TERM contains -direct
+    ANUENUE_CR_TERM_256     = 8;   # TERM contains 256color
+    ANUENUE_CR_FALLBACK_16  = 9;   # nothing matched — safe visible default
+}
+
+# Which branch of anuenue_detect_color_mode fired. Written by the
+# detect function, read by main.cyr's verbose logging.
+var ANUENUE_COLOR_REASON = ANUENUE_CR_UNSET;
+
+fn anuenue_color_reason_name(r): i64 {
+    if (r == ANUENUE_CR_FLAG_COLOR)   { return "--color override"; }
+    if (r == ANUENUE_CR_FLAG_NOCOLOR) { return "--no-color flag"; }
+    if (r == ANUENUE_CR_ENV_NO_COLOR) { return "NO_COLOR env present"; }
+    if (r == ANUENUE_CR_NOT_A_TTY)    { return "stdout is not a TTY"; }
+    if (r == ANUENUE_CR_AGNOS_FB)     { return "agnos framebuffer console"; }
+    if (r == ANUENUE_CR_COLORTERM)    { return "COLORTERM truecolor"; }
+    if (r == ANUENUE_CR_TERM_DIRECT)  { return "TERM -direct suffix"; }
+    if (r == ANUENUE_CR_TERM_256)     { return "TERM 256color"; }
+    if (r == ANUENUE_CR_FALLBACK_16)  { return "no signal — 16-colour fallback"; }
+    return "unset";
+}
+
+fn anuenue_color_mode_name(m): i64 {
+    if (m == ANUENUE_COLOR_MONO) { return "none"; }
+    if (m == ANUENUE_COLOR_16)   { return "16"; }
+    if (m == ANUENUE_COLOR_256)  { return "256"; }
+    if (m == ANUENUE_COLOR_TRUE) { return "24bit"; }
+    return "unknown";
+}
+
 # ---- Detect the active color mode ---------------------------------
 #
 # Inputs are the parsed flag values from main.cyr; outputs an
@@ -148,18 +198,28 @@ fn _rgb_to_16(r, g, b): i64 {
 fn anuenue_detect_color_mode(no_color_flag, force_color, override): i64 {
     # 1. Explicit --color override beats everything.
     if (override != ANUENUE_COLOR_OVERRIDE_AUTO) {
+        ANUENUE_COLOR_REASON = ANUENUE_CR_FLAG_COLOR;
         return _color_mode_from_override(override);
     }
     # 2. --no-color flag
-    if (no_color_flag == 1) { return ANUENUE_COLOR_MONO; }
+    if (no_color_flag == 1) {
+        ANUENUE_COLOR_REASON = ANUENUE_CR_FLAG_NOCOLOR;
+        return ANUENUE_COLOR_MONO;
+    }
     # 3. NO_COLOR env (any value, including empty, per
     #    https://no-color.org — "presence" is the signal).
-    if (getenv("NO_COLOR") != 0) { return ANUENUE_COLOR_MONO; }
+    if (getenv("NO_COLOR") != 0) {
+        ANUENUE_COLOR_REASON = ANUENUE_CR_ENV_NO_COLOR;
+        return ANUENUE_COLOR_MONO;
+    }
     # 4. stdout not a TTY (and not --force-color) → MONO so
     #    `anuenue > file` produces clean text.
     if (force_color == 0) {
         #ifndef CYRIUS_TARGET_AGNOS
-        if (tty_isatty(STDOUT) == 0) { return ANUENUE_COLOR_MONO; }
+        if (tty_isatty(STDOUT) == 0) {
+            ANUENUE_COLOR_REASON = ANUENUE_CR_NOT_A_TTY;
+            return ANUENUE_COLOR_MONO;
+        }
         #endif
         # agnos: no isatty/ioctl (tty_isatty is darshana Linux-only), and output
         # is the FB console (color always wanted, no shell `> file` redirection
@@ -174,13 +234,20 @@ fn anuenue_detect_color_mode(no_color_flag, force_color, override): i64 {
     # to 6 ANSI colors — the "color mixing isn't happening like Linux" bug.
     # --color / --no-color / NO_COLOR still override above; `--color=16` / `=256`
     # still force those modes (override != AUTO returns early at the top).
+    ANUENUE_COLOR_REASON = ANUENUE_CR_AGNOS_FB;
     return ANUENUE_COLOR_TRUE;
     #endif
     # 5. COLORTERM signals truecolor support explicitly.
     var ct = getenv("COLORTERM");
     if (ct != 0) {
-        if (streq(ct, "truecolor")) { return ANUENUE_COLOR_TRUE; }
-        if (streq(ct, "24bit"))     { return ANUENUE_COLOR_TRUE; }
+        if (streq(ct, "truecolor")) {
+            ANUENUE_COLOR_REASON = ANUENUE_CR_COLORTERM;
+            return ANUENUE_COLOR_TRUE;
+        }
+        if (streq(ct, "24bit")) {
+            ANUENUE_COLOR_REASON = ANUENUE_CR_COLORTERM;
+            return ANUENUE_COLOR_TRUE;
+        }
     }
     # 6. TERM heuristics. `-direct` is the well-known suffix for
     #    truecolor-capable terminfo entries; `256color` is the
@@ -188,9 +255,16 @@ fn anuenue_detect_color_mode(no_color_flag, force_color, override): i64 {
     #    16-color as the safest visible default.
     var tm = getenv("TERM");
     if (tm != 0) {
-        if (strstr(tm, "-direct")  >= 0) { return ANUENUE_COLOR_TRUE; }
-        if (strstr(tm, "256color") >= 0) { return ANUENUE_COLOR_256; }
+        if (strstr(tm, "-direct")  >= 0) {
+            ANUENUE_COLOR_REASON = ANUENUE_CR_TERM_DIRECT;
+            return ANUENUE_COLOR_TRUE;
+        }
+        if (strstr(tm, "256color") >= 0) {
+            ANUENUE_COLOR_REASON = ANUENUE_CR_TERM_256;
+            return ANUENUE_COLOR_256;
+        }
     }
+    ANUENUE_COLOR_REASON = ANUENUE_CR_FALLBACK_16;
     return ANUENUE_COLOR_16;
 }
 
@@ -204,12 +278,17 @@ fn anuenue_detect_color_mode(no_color_flag, force_color, override): i64 {
 # minimal-pipe shape exactly — the user observably gets `cat`.
 fn anuenue_passthrough(): i64 {
     var buf = alloc(ANUENUE_READ_CHUNK);
-    if (buf == 0) { return 1; }
+    if (buf == 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "passthrough read buffer allocation failed");
+    }
     var go = 1;
     while (go == 1) {
         var n = file_read(STDIN, buf, ANUENUE_READ_CHUNK);
-        if (n < 0) { return 1; }
+        if (n < 0) {
+            return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
+        }
         if (n == 0) { go = 0; continue; }
+        ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n;
         file_write(STDOUT, buf, n);
     }
     return 0;

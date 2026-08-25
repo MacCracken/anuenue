@@ -5,40 +5,65 @@
 
 ## Version
 
-**1.2.1** — cut 2026-08-25. **Toolchain + dep refresh.** cyrius pin
-`6.4.62` → `6.5.35` (`./lib/` re-synced via `cyrius lib sync --full`,
-108 stdlib files; four new modules: `async_macos`, `async_win`,
-`thread_macos`, `yantra`) plus the first-party-dep sandhi refresh —
-darshana `0.9.0` → **`1.0.0`** (the API freeze), cmdit `1.1.0` →
-**`1.2.4`** (the P-1 audit cut), sakshi `2.4.6` → **`2.4.11`**,
-agnostik `1.3.4` → **`1.5.1`**. The manifest tags had drifted from the
-vendored bytes (committed bundles were already at cmdit 1.2.2 / sakshi
-2.4.11 / agnostik 1.3.5); tags and bytes now agree.
+**1.2.1** — cut 2026-08-25. **Toolchain + deps + observability + CI repair.**
 
-No behavioural change, verified rather than assumed: the v1.2.0 and
-v1.2.1 binaries are **byte-identical across 160 output comparisons**
-(16 input corpora × 10 flag combinations — invalid UTF-8, truncated
-sequences, 200 KB raw binary, a 5 000-combiner cluster, all four colour
-modes) plus 16 exit-code comparisons, and the whole CLI surface
-(`--help`, every error path, every exit code) is unchanged apart from
-the version literal. Six goldens byte-identical, three MONO checks hold,
-animate-smoke green across truecolor / 256 / 16 / long-cluster,
-**242/242** unit assertions, **1 354 581** fuzz assertions, `cyrius
-lint` clean on all seven `src/*.cyr`.
+*Toolchain/deps:* cyrius pin `6.4.62` → `6.5.35` (`./lib/` re-synced via
+`cyrius lib sync --full`, 108 stdlib files; four new modules —
+`async_macos`, `async_win`, `thread_macos`, `yantra`), darshana `0.9.0`
+→ **`1.0.0`** (the API freeze), cmdit `1.1.0` → **`1.2.4`** (the P-1
+audit cut), sakshi `2.4.6` → **`2.4.11`**, agnostik `1.3.4` →
+**`1.5.1`**. Manifest tags had drifted from the vendored bytes; tags and
+bytes now agree.
 
-Perf unchanged within noise, measured head-to-head on one idle host
-(`RUNS=11`, v1.2.0 binary vs v1.2.1 binary): ASCII no-LF 47.88 →
-**47.20 ns/byte**, ASCII w/ LFs 52.01 → **51.77**, UTF-8 mixed 42.45 →
-**42.14** — all under the 60 ns/byte M5 cap.
+*Observability (`src/observe.cyr`, new):* sakshi and agnostik had been
+declared deps since the M0 scaffold with **zero call sites in any
+anuenue source file** — linked into every binary and never called. Now
+wired: `-v` / `--verbose` and `--log-level=<off|fatal|error|warn|info|
+debug|trace>` emit structured sakshi records, and the three real failure
+paths (stdin read error, buffer allocation, escape-table allocation)
+carry agnostik kinds and codes. Highest-value line is the colour-mode
+**reason** — v1.1.5's AGNOS colour collapse was a wrong branch in
+`anuenue_detect_color_mode` that no output could distinguish from a
+right one; `-v` now names the branch.
 
-One latent item surfaced by the stricter 6.5.35 lint and fixed in-cut:
-`src/filter.cyr`'s grapheme-cluster comment carried an untracked "for
-now" deferral plus a stale "ADR 0003 (M7) *will* record this" — ADR 0003
-shipped at v0.8.0 and does record it. Now cross-referenced.
+*Pipe-purity:* every diagnostic byte goes to fd 2. `sakshi_set_output_fd(2)`
+pins the sink (file/UDP targets never selected, so the capability bound
+holds and the syscall surface stays read/write/brk/exit), and logging is
+off by default (sakshi's own default is `SK_INFO`, which would have put
+lines on the stderr of every MOTD). Enforced by
+`scripts/observe-check.sh`: stdout byte-identical across 144 corpus ×
+colour-mode × verbosity combinations, stderr empty in every
+default-verbosity run.
 
-**Binary breaches the 512 KB cap** — 389 648 → **803 960 B** (+414 312,
-+106%). See [Binary](#binary) for the decomposition and the
-agnostik/sakshi attribution.
+*CI repair:* both workflows hand-rolled the toolchain install into the
+**pre-6.5** `$HOME/.cyrius/{bin,lib}` layout. From 6.5.x `cyrius deps`
+resolves the stdlib snapshot from `versions/<v>/lib` and hard-fails
+without it — so the pin bump would have broken CI on the first push.
+Replaced with the upstream installer (darshana's pattern) plus a
+layout-verification step. `CYRIUS_DCE=1` — a CLAUDE.md hard rule never
+actually set — is now set in both. Lint, observability and distlib-drift
+gates added.
+
+*Verification:* v1.2.0 vs v1.2.1 stdout byte-identical across 192
+comparisons (16 corpora × 12 flag combinations), exit codes matching on
+all 192. Six goldens byte-identical, three MONO checks hold,
+animate-smoke green across truecolor / 256 / 16 / long-cluster.
+**308/308** unit assertions (was 242, +66), **1 354 581** fuzz
+assertions, `cyrius lint` clean on all eight `src/*.cyr`. Perf unchanged
+head-to-head on one idle host (`RUNS=11`): ASCII no-LF 47.20 →
+**46.63 ns/byte**, w/ LFs 50.98 → **50.99**, UTF-8 42.45 → **41.77** —
+all under the 60 ns/byte M5 cap. Diagnostics are O(1) in input size
+(exactly 10 records whether the stream is 1 KB or 5 MB).
+
+*Fixed in-cut:* a failing filter previously returned bare `1` with no
+message on any fd — it now names the error (exit codes unchanged). A
+`Str` coercion trap on cyrius 6.5.35 (literals are **not** coerced in
+return-expression position) would have shipped every error message
+empty; `anuenue_fail` converts explicitly with `str_new`. One untracked
+deferral in `src/filter.cyr` surfaced by the stricter 6.5.35 lint.
+
+**Binary breaches the 512 KB cap** — 389 648 → **809 520 B** (+419 872,
++108%). See [Binary](#binary).
 
 **1.2.0** — cut 2026-07-14. **Library surface.** `dist/anuenue.cyr`
 distlib (`[lib] modules = ["src/hsv.cyr"]`) — the pure HSV phase model
@@ -352,10 +377,11 @@ in for a minor-cycle soak window. Tagged on user signal per
 | File | Lines | Surface |
 |------|-------|---------|
 | `src/hsv.cyr` | ~95 | **NEW at v0.9.0** (the M0-anticipated split). Holds `ANUENUE_PHASE_MOD = 1530` + `hsv_rainbow(phase, out_rgb)` — the integer 6-sector S=V=1 HSV→RGB. Move was triggered by `fuzz/emit-phase-esc.fcyr` wanting a clean target boundary; ADR 0002 (HSV inline) documents the broader "don't pull abaco" decision. `main.cyr` / `filter.cyr` / `animate.cyr` / `tests/anuenue.tcyr` / `tests/anuenue.bcyr` all include this before `filter.cyr` since filter references `ANUENUE_PHASE_MOD`. |
-| `src/color.cyr` | ~200 | **NEW at M6 (v0.7.0)**. Color mode enum (`ANUENUE_COLOR_MONO`/`_16`/`_256`/`_TRUE`); override-string parser + enum mapping (`_color_override_from_str` / `_color_mode_from_override`); RGB quantization (`_channel_to_6`, `_rgb_to_256` xterm cube; `_rgb_to_16` bright-palette); `anuenue_detect_color_mode(no_color, force_color, override)` reading getenv + darshana 0.5.3's `tty_isatty`; `anuenue_passthrough()` MONO bypass (read/write loop, no escapes). Sandhi closeout at v0.7.1 removed the three `_*_compat` stand-ins. |
+| `src/color.cyr` | ~200 | **NEW at M6 (v0.7.0)**. Color mode enum (`ANUENUE_COLOR_MONO`/`_16`/`_256`/`_TRUE`); override-string parser + enum mapping (`_color_override_from_str` / `_color_mode_from_override`); RGB quantization (`_channel_to_6`, `_rgb_to_256` xterm cube; `_rgb_to_16` bright-palette); `anuenue_detect_color_mode(no_color, force_color, override)` reading getenv + darshana 0.5.3's `tty_isatty`; `anuenue_passthrough()` MONO bypass (read/write loop, no escapes). Sandhi closeout at v0.7.1 removed the three `_*_compat` stand-ins. **v1.2.1** adds the `AnuenueColorReason` enum + `ANUENUE_COLOR_REASON` + `anuenue_color_reason_name` / `anuenue_color_mode_name`: all ten exits of `anuenue_detect_color_mode` now record which branch fired, so `-v` can answer *why* a mode was chosen. `anuenue_passthrough`'s failure paths route through `anuenue_fail`. |
 | `src/filter.cyr` | ~480 | `ANUENUE_*` constants + **`ANUENUE_ESC_TABLE_ENTRY_SIZE`** (M5). `hsv_rainbow` + `ANUENUE_PHASE_MOD` extracted at v0.9.0 — now live in `src/hsv.cyr`. M3: `utf8_seq_len` / `utf8_decode` / `cp_is_extending` (M5: binary-searched LUT) / `cp_is_regional_indicator`. M5: `_phase_esc_init()` / `_emit_phase_esc()` / `_PHASE_ESC_TABLE` (1 530 × 32 B heap; idempotent). **M6 (v0.7.0)**: `_phase_esc_init` branches on `ANUENUE_COLOR_MODE` to populate per-mode escapes (TRUECOLOR via `tty_fg_rgb_buf`, 256 via `tty_fg_256_buf`, 16 via `tty_sgr_buf`). `anuenue_filter()` keeps the M5 hot path; ASCII short-circuit unchanged. **Unaffected by the M8 audit fix** — writes one codepoint per iteration with the reserve check between, so the long-cluster overrun doesn't reach the filter path. |
 | `src/animate.cyr` | ~290 | M4 surface (animation: slurp + pretag + frame loop + signalfd). M5: ASCII short-circuit in `_pretag_clusters`; `_render_frame` routes through `_emit_phase_esc`; `_phase_esc_init` shared with filter. M6: animation benefits from per-mode escapes via the same path; MONO never reaches animation (main.cyr dispatches to passthrough first). **M8 (v0.8.0) fix**: `_render_frame`'s cluster-bytes copy loop got an inline mid-cluster flush guard — when the reserve threshold trips before all cluster bytes are written, flush + re-emit the same `phase` escape so the next bytes render under the same colour. Closes the long-cluster heap overflow surfaced by the audit. |
 | `src/main.cyr` | ~135 | Entrypoint + flag dispatch. args_init / alloc_init / flags context (M6 added `-n` / `-C` / `-c` to the M2/M4 sets) / argv pack / flags_parse / **M6 colour-mode detect step writes `ANUENUE_COLOR_MODE`**; dispatch to print_version / print_usage / **anuenue_passthrough (MONO) or anuenue_animate (-a) or anuenue_filter**. |
+| `src/observe.cyr` | ~250 | **NEW at v1.2.1.** The sakshi/agnostik wiring. Holds the `AnuenueExit` exit-code enum + `_eprint` (both moved from `main.cyr`), the `AnuenueLogParse` level scale and `anuenue_log_parse` / `_name`, `anuenue_observe_init` (pins sakshi to fd 2, sets the level, sets `ANUENUE_VERBOSE`), gated span wrappers, `anuenue_log_kv_str` / `_int` / `anuenue_log_version`, and `anuenue_fail` (agnostik kind → stderr line + sakshi record → exit code). **Depends on nothing from anuenue** — only sakshi, agnostik and the stdlib — which is why it is included *first* and every other module can call `anuenue_fail` without a cycle. The colour-reason codes live in `color.cyr` for the mirror-image reason. |
 | `src/version_str.cyr` | ~18 | **AUTO-GENERATED** by `scripts/version-bump.sh`. Holds `_VERSION_STR_ANUENUE` + `_VERSION_LEN_ANUENUE`. Never hand-edit; CI's Version consistency step asserts the literal matches `VERSION`. |
 | `src/test.cyr` | 12 | top-level test entry stub (referenced by `cyrius.cyml [build].test`). Actual tests live in `tests/anuenue.tcyr`. |
 
@@ -368,10 +394,10 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.2.1)**: **803 960 bytes** (~785 KB). **Over the 512 KB
-  cap by ~273 KB.** Delta vs the v1.2.0 binary (389 648 B):
-  **+414 312 B (+106%)**. No anuenue source change drove it — the
-  source delta this cut is one comment block.
+- **Size (1.2.1)**: **809 520 bytes** (~790 KB). **Over the 512 KB cap
+  by ~278 KB.** Delta vs the v1.2.0 binary (389 648 B): **+419 872 B
+  (+108%)**. The filter is untouched; the growth is toolchain and dep
+  surface, plus 5 560 B of new observability code.
 - **Decomposition** (each measured with an invalidated lock in an
   isolated worktree, so the tag actually resolves):
 
@@ -379,31 +405,26 @@ registry, post-v1.x).
   |------|-------:|--:|
   | v1.2.0 — cycc 6.4.62 + old dep tags | 389 648 B | — |
   | + dep bump only (cycc 6.4.62) | 524 888 B | +135 240 |
-  | + toolchain bump (cycc 6.5.35) | **803 960 B** | +279 072 |
+  | + toolchain bump (cycc 6.5.35) | 803 960 B | +279 072 |
+  | + observability wiring (`src/observe.cyr`) | **809 520 B** | +5 560 |
 
 - **Attribution by dep** (at the 6.5.35 pin, remove-one-and-rebuild):
-
-  | Removed | Binary | Contribution |
-  |---------|-------:|-------------:|
-  | — (as shipped) | 803 960 B | — |
-  | `agnostik` | 257 536 B | **546 424 B (68%)** |
-  | `sakshi` | 714 072 B | 89 888 B (11%) |
-  | both | **167 600 B** | 636 360 B (79%) |
-
-  **anuenue calls zero symbols from either** — `grep` over `src/*.cyr`
-  finds no `sakshi_*` and no agnostik call. They are declared because
-  first-party-standards makes sakshi the canonical error/tracing crate
-  and agnostik the shared Result/Error shapes it surfaces. Dropping both
-  puts the binary at 167 600 B, comfortably inside the cap. **Left in
-  place** — dropping a canonical dep is a standards decision, not a
-  maintenance one. Recorded so the breach is a choice, not a surprise.
-- **DCE**: 2 328 unreachable fns, 561 787 bytes NOPed — *not* removed
-  (see [Toolchain](#toolchain)), so this no longer shrinks the file.
+  agnostik ~546 KB, sakshi ~90 KB. Both are **called code as of
+  v1.2.1** — this release is what gave them call sites (see
+  `src/observe.cyr`). They are the canonical first-party error/tracing
+  and Result/Error crates per first-party-standards; dropping them is
+  not on the table.
+- **DCE**: 6.5.35 NOPs unreachable functions in place rather than
+  eliminating them (see [Toolchain](#toolchain)), so `CYRIUS_DCE=1` no
+  longer shrinks the file and "DCE size" now measures the whole binary.
+  Part of why the step change reads so large.
 - **Cap discipline (v1.0.0+)**: **512 KB** — **breached at v1.2.1**.
   The cap did its job: it fired on a real, unintended 2× step change.
-  Open decision for the next cut — drop the two unused canonical deps,
-  raise the cap with a rationale, or accept the breach and record it
-  each release.
+  **Open decision for the next cut**, deliberately not resolved here:
+  raise the cap with a written rationale (the likely answer — the floor
+  is now set by the first-party dep surface plus a DCE pass that no
+  longer strips), or find real reduction inside the toolchain/dep
+  surface. Record the size every release either way.
 - **Prior floors**: 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B.
 - **Output path**: `build/anuenue`
 
@@ -411,14 +432,15 @@ registry, post-v1.x).
 
 | File | Status |
 |------|--------|
-| `tests/anuenue.tcyr` | **242 assertions across 35 groups** (re-counted at v1.2.1). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
+| `tests/anuenue.tcyr` | **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
 | `tests/anuenue.bcyr` | 2 micro-benchmarks. At v1.2.1: `hsv_rainbow` **8 ns/call**, `tty_fg_rgb_buf` **52 ns/call** — **not comparable to pre-v1.2.1 figures**: 6.5.35's `bench` harness measures and subtracts a timer floor (1.347 µs per clock read on the reference host) that the 6.4.62 harness did not. Pre-M5 the filter loop called both per cluster; M5+ uses `_emit_phase_esc` (~10 ns/call) instead. The micros still measure the table-build path. |
 | `fuzz/*.fcyr` (v0.9.0+) | **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
 | `tests/golden/*.out` | **Six fixtures**. M2/M3: `agnos-rainbow-s100` (238 B), `cjk-mixed-s0` (125 B), `combining-s0` (155 B), `zwj-flag-s0` (135 B). **M6: `agnos-rainbow-256-s100.out` (160 B), `agnos-rainbow-16-s100.out` (82 B)**. All six byte-identical across the M5/M6/M8 cuts — proves the mode-aware phase cache matches runtime exactly and that the M8 fix is local to the long-cluster path. Plus three MONO equivalence checks in golden-check.sh (`NO_COLOR=1 anuenue` / `--no-color` / `--color=none` all byte-identical to input). |
 | `scripts/animate-smoke.sh` | M4 (v0.5.0). Animation structural guard. M6: invokes with `--color=24bit` so the TTY-detection in M6 doesn't drop the test into MONO. **M8 (v0.8.0) extension**: long-cluster section runs the historical attack (base + 16 000 combining acutes), asserts clean exit and full byte preservation (~976 000 combiner bytes over 61 frames) through the mid-cluster flushes. **v0.9.0 extensions**: `--color=256` + `--color=16` per-mode sections — each asserts clean exit, non-empty output, full cursor lifecycle, and the per-mode SGR shape (CSI 38;5;Nm for 256, CSI 9[1-7]m for 16; explicit no-leak check that truecolor 38;2;… doesn't appear under `--color=256`). |
-| `scripts/perf-bench.sh` | M5 (v0.6.0). End-to-end ASCII + UTF-8 per-byte overhead. M6: invokes with `--color=24bit` for the same reason. The M5 ratchet. Latest run at v1.2.1 (`RUNS=11`, idle host): ASCII no-LF **47.20 ns/byte**, ASCII w/ LFs **51.77**, UTF-8 mixed **42.14** — all under the 60 ns/byte cap. |
+| `scripts/observe-check.sh` | **NEW at v1.2.1.** The observability gate, and the enforcement point for pipe-purity under diagnostics. Four gates: (1) stdout byte-identical across 144 corpus × colour-mode × verbosity combinations — the property a unit test cannot express, and the one that matters because a byte leaked onto fd 1 corrupts every pipeline `-v` is enabled in; (2) stderr empty in every default-verbosity run, including for wholly invalid UTF-8; (3) `-v` carries the fields a bug report needs (version, phase step, colour mode, colour **reason**, route, byte count) and never reports `reason=unset`; (4) the forced read failure (stdin closed → EBADF) prints the agnostik kind, logs `code=1010`, and still exits 1. Runs in CI. |
+| `scripts/perf-bench.sh` | M5 (v0.6.0). End-to-end ASCII + UTF-8 per-byte overhead. M6: invokes with `--color=24bit` for the same reason. The M5 ratchet. Latest run at v1.2.1 (`RUNS=11`, idle host, final binary): ASCII no-LF **46.63 ns/byte**, ASCII w/ LFs **50.99**, UTF-8 mixed **41.77** — all under the 60 ns/byte cap. Measured head-to-head against a rebuilt v1.2.0 binary rather than against a historical figure. |
 
-Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 242 (unchanged).
+Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring).
 
 ## Dependencies
 
@@ -427,8 +449,8 @@ Direct (declared in `cyrius.cyml`):
 | Dep | Tag | Role | Status |
 |-----|-----|------|--------|
 | `darshana` | **1.0.0** | ANSI color escape generation. Pin history: 0.5.1 (M1 truecolor `tty_fg_rgb_buf` / `tty_sgr_reset_buf`); 0.5.2 (M4 `tty_cursor_up(n)` / `tty_cursor_down(n)`); 0.5.3 (M6 sandhi closeout — `tty_isatty(fd)` / `tty_sgr_buf` / `tty_fg_256_buf`); 0.7.1 (v1.1.3 refresh); 0.9.0 (v1.1.x); **1.0.0 (v1.2.1 — the API freeze)**. | Live. **Nine symbols called**, all inside the frozen 29-fn surface: filter path `tty_fg_rgb_buf` / `tty_fg_256_buf` / `tty_sgr_buf` / `tty_sgr_reset_buf`, colour detect `tty_isatty`, animation `tty_cursor_up` / `_hide` / `_show` / `tty_sgr_reset`. Both 0.9.3 breaks are non-events: `AGNOS_*` → `_AGNOS_*` touches symbols anuenue never named, and `tty_sgr_reset_buf`'s new `-1`-on-negative-`pos` is unreachable — every `pos` at all 15 call sites (11 filter, 4 animate) is a non-negative accumulator. `tty_open_signalfd`'s `-errno` → `-1` is moot: `src/animate.cyr` rolls its own *non-blocking* signalfd. |
-| `sakshi` | **2.4.11** | Errors / tracing / structured logging | Standard wiring per first-party-standards. **Zero symbols referenced by anuenue source.** Contributes **89 888 B (11%)** of the binary — see [Binary](#binary). |
-| `agnostik` | **1.5.1** | Shared Result / Error shapes | Standard wiring. **Zero symbols referenced by anuenue source.** Contributes **546 424 B (68%)** of the binary — the single largest driver of the v1.2.1 cap breach. See [Binary](#binary). |
+| `sakshi` | **2.4.11** | Errors / tracing / structured logging | **Wired at v1.2.1** (`src/observe.cyr`) — was a declared dep with zero call sites from M0 through v1.2.0. Uses `sakshi_set_output_fd` (pinned to fd 2), `sakshi_set_level` / `_get_level`, `sakshi_log_kv`, `sakshi_span_enter` / `_exit`, and the `SK_*` level enum. **Never** `sakshi_output_file` / `_udp` — those would breach the capability bound. Note `span_enter`/`_exit` are NOT level-gated inside sakshi, so anuenue routes them through gated wrappers. |
+| `agnostik` | **1.5.1** | Shared Result / Error shapes | **Wired at v1.2.1** (`src/observe.cyr`) — same story. Uses `agnostik_err_new` / `_code` / `_print` and the `STIK_ERR_*` kind enum for the three real failure paths (stdin read, buffer alloc, escape-table alloc). Kind → exit code: `STIK_ERR_INVALID_ARGUMENT` → 2, everything else → 1. **Trap:** `agnostik_err_new(kind, message: Str)` needs a real `Str`; cyrius 6.5.35 does not coerce a literal in return-expression position, so `anuenue_fail` converts explicitly with `str_new`. |
 | `cmdit` | **1.2.4** | CLI / argument parsing (getopt-long; the stdlib `flags` parser productized + extended). Local sibling `../cmdit`. | **Adopted at v1.1.4** (the `flags` → cmdit migration; anuenue is cmdit's 2nd worked example after kii). `print_usage` uses `cmdit_help_flags` (the table-only renderer) to keep anuenue's custom help framing. **1.2.4 is the P-1 audit cut** — anuenue is exposed to none of its four findings (literal prog name to `cmdit_new`; never calls `cmdit_completions`), confirmed by a byte-identical CLI-surface diff. |
 | Cyrius stdlib | n/a | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, **chrono (M4)** | Auto-resolved via `cyrius deps`. `args` added at M2; `flags` (added M2) **DROPPED at v1.1.4** when CLI parsing moved to `[deps.cmdit]`; `chrono` added at M4 for frame timing (`sleep_ms`) and deadline math (`clock_now_ns`). |
 

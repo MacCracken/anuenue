@@ -21,6 +21,7 @@
 # This harness mirrors the live anuenue flag set (the auto h/V + p/s/F/a/d/S/n/C/c)
 # so each random argv has a realistic shape but mostly nonsense values.
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"

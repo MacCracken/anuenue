@@ -17,6 +17,7 @@
 #
 # Layered LCG seed for deterministic re-runs (the sankoch pattern).
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"

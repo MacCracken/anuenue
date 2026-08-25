@@ -1,0 +1,292 @@
+# src/observe.cyr — observability wiring: sakshi tracing + agnostik
+# error shapes. Added at v1.2.1.
+#
+# WHY THIS FILE EXISTS
+#
+# sakshi and agnostik have been declared deps since the M0 scaffold
+# but no anuenue source file referenced a single symbol from either.
+# They were linked in and never called — which is not "a dep we don't
+# need", it is "a dep we never wired up". first-party-standards makes
+# sakshi the canonical error/tracing crate and agnostik the shared
+# Result/Error shapes; anuenue is an AGNOS first-party tool and uses
+# them like one. This module is that wiring.
+#
+# PIPE-PURITY IS NOT NEGOTIABLE (ADR 0001)
+#
+# Every byte this module can ever emit goes to **fd 2 (stderr)**.
+# stdout carries the rainbow and nothing else, in every mode, at
+# every verbosity. Two mechanisms enforce it:
+#
+#   1. `anuenue_observe_init` pins sakshi's output target to
+#      `sakshi_set_output_fd(2)`. The file (SK_OUT_FILE) and UDP
+#      (SK_OUT_UDP) targets are never selected — that would breach
+#      the capability bound in CLAUDE.md ("no file I/O, no network").
+#      anuenue's syscall surface stays read/write/brk/exit.
+#   2. Logging is OFF by default. sakshi's own default is SK_INFO,
+#      which would put info lines on the stderr of every `iam |
+#      anuenue` in an MOTD. `anuenue_observe_init` drops the level
+#      to ANUENUE-off (below SK_FATAL) unless the user asked for
+#      output. A pipe filter is silent until told otherwise.
+#
+# WHAT LIVES HERE VS IN color.cyr
+#
+# This module depends on nothing from anuenue — only on sakshi,
+# agnostik and the stdlib — so it can be included first and every
+# other module can call `anuenue_fail`. The colour-decision reason
+# codes (`ANUENUE_CR_*`, `ANUENUE_COLOR_REASON`,
+# `anuenue_color_reason_name`) live in src/color.cyr instead: they
+# need `ANUENUE_COLOR_*`, and putting them here would make the two
+# files mutually dependent.
+#
+# HOT-PATH DISCIPLINE
+#
+# Nothing here is called per byte or per cluster. The call sites are
+# startup, dispatch, teardown and the error paths — O(1) per process,
+# not O(n) per input byte. The v1.2.1 benchmark confirms the filter
+# loop is unchanged (see docs/benchmarks.md).
+
+# ---- exit codes ---------------------------------------------------
+#
+# Moved here from src/main.cyr at v1.2.1 and converted from three
+# initialized globals to an enum, per the CLAUDE.md convention
+# ("Enum values for constants — don't consume gvar_toks slots").
+# Values are unchanged; these are the v1.x public contract.
+#
+# 0 = normal exit (incl. --help / --version paths)
+# 1 = filter runtime error (alloc fail, read error)
+# 2 = usage error (unknown flag, missing required value, bad int)
+enum AnuenueExit {
+    ANUENUE_EXIT_OK    = 0;
+    ANUENUE_EXIT_RUN   = 1;
+    ANUENUE_EXIT_USAGE = 2;
+}
+
+# ---- log-level parse ----------------------------------------------
+#
+# anuenue's own level scale, one above sakshi's so that "off" has a
+# non-negative name (cyrius has no negative literals). The sakshi
+# level is always `parse_value - 1`, which lands OFF on (0 - 1) —
+# below SK_FATAL (0), so `_sk_log`'s `level > _sk_log_level` test
+# suppresses every level including fatal.
+enum AnuenueLogParse {
+    ANUENUE_LOG_P_OFF   = 0;
+    ANUENUE_LOG_P_FATAL = 1;
+    ANUENUE_LOG_P_ERROR = 2;
+    ANUENUE_LOG_P_WARN  = 3;
+    ANUENUE_LOG_P_INFO  = 4;
+    ANUENUE_LOG_P_DEBUG = 5;
+    ANUENUE_LOG_P_TRACE = 6;
+    ANUENUE_LOG_P_BAD   = 7;
+}
+
+# ---- module state -------------------------------------------------
+
+# 1 when any log level is active. Gates the span calls, which sakshi
+# does NOT level-gate — `sakshi_span_enter` emits unconditionally, so
+# calling it while "off" would print ENTER/EXIT lines to the stderr of
+# every silent run.
+var ANUENUE_VERBOSE = 0;
+
+# Total bytes read from stdin. Accumulated once per read(2), not per
+# byte — a few dozen additions across a multi-megabyte stream.
+var ANUENUE_BYTES_IN = 0;
+
+# ---- _eprint ------------------------------------------------------
+#
+# Write a null-terminated string to fd 2 using runtime strlen —
+# avoids hardcoded byte counts for UTF-8-bearing strings (the brand
+# intro carries em-dash + right-arrow + macron-a, each 2–3 bytes).
+# Moved here from src/main.cyr at v1.2.1 so the error helpers below
+# can reach it; main.cyr's help/usage output still calls it.
+fn _eprint(s): i64 {
+    var len = strlen(s);
+    syscall(1, 2, s, len);
+    return 0;
+}
+
+# ---- anuenue_log_parse --------------------------------------------
+#
+# Map a --log-level string to an AnuenueLogParse value. Exact match,
+# lowercase only — an unrecognised name returns ANUENUE_LOG_P_BAD
+# rather than silently defaulting, because the failure mode of a
+# silent default here is a user who asked for debug output, got
+# none, and concludes the tool is broken.
+fn anuenue_log_parse(s): i64 {
+    if (s == 0)                { return ANUENUE_LOG_P_BAD; }
+    if (streq(s, "off"))       { return ANUENUE_LOG_P_OFF; }
+    if (streq(s, "fatal"))     { return ANUENUE_LOG_P_FATAL; }
+    if (streq(s, "error"))     { return ANUENUE_LOG_P_ERROR; }
+    if (streq(s, "warn"))      { return ANUENUE_LOG_P_WARN; }
+    if (streq(s, "info"))      { return ANUENUE_LOG_P_INFO; }
+    if (streq(s, "debug"))     { return ANUENUE_LOG_P_DEBUG; }
+    if (streq(s, "trace"))     { return ANUENUE_LOG_P_TRACE; }
+    return ANUENUE_LOG_P_BAD;
+}
+
+# Human name for an AnuenueLogParse value — used in help text and in
+# the bad-value error message.
+fn anuenue_log_parse_name(p): i64 {
+    if (p == ANUENUE_LOG_P_OFF)   { return "off"; }
+    if (p == ANUENUE_LOG_P_FATAL) { return "fatal"; }
+    if (p == ANUENUE_LOG_P_ERROR) { return "error"; }
+    if (p == ANUENUE_LOG_P_WARN)  { return "warn"; }
+    if (p == ANUENUE_LOG_P_INFO)  { return "info"; }
+    if (p == ANUENUE_LOG_P_DEBUG) { return "debug"; }
+    if (p == ANUENUE_LOG_P_TRACE) { return "trace"; }
+    return "invalid";
+}
+
+# ---- anuenue_observe_init -----------------------------------------
+#
+# Resolve the effective verbosity and configure sakshi. Called once
+# from main() before any dispatch.
+#
+#   verbose_flag: 1 if -v / --verbose was passed (shorthand for debug)
+#   level_parse:  anuenue_log_parse(--log-level), or ANUENUE_LOG_P_OFF
+#                 when the flag was not given
+#
+# --log-level wins over -v when both are present, so a script can
+# say `-v --log-level=trace` and get trace. Returns the resolved
+# AnuenueLogParse value.
+fn anuenue_observe_init(verbose_flag, level_parse): i64 {
+    var p = level_parse;
+    if (p == ANUENUE_LOG_P_OFF) {
+        if (verbose_flag == 1) { p = ANUENUE_LOG_P_DEBUG; }
+    }
+
+    # Pin the sink to stderr before setting any level, so no line can
+    # reach a different target even transiently. This is the whole of
+    # anuenue's sakshi output configuration — SK_OUT_FILE / SK_OUT_UDP
+    # would breach the capability bound and are never selected.
+    sakshi_set_output_fd(2);
+    sakshi_set_level(p - 1);
+
+    ANUENUE_VERBOSE = 0;
+    if (p > ANUENUE_LOG_P_OFF) { ANUENUE_VERBOSE = 1; }
+    return p;
+}
+
+# ---- gated span helpers -------------------------------------------
+#
+# sakshi_span_enter / _exit are NOT level-gated inside sakshi — they
+# emit whenever they are called. Two consequences anuenue has to
+# handle, and both are gates, not one:
+#
+#   1. A silent run must stay byte-silent, so calling them at all
+#      requires logging to be on.
+#   2. A span is a *debugging* aid, not a record at every level. A
+#      user who asks for `--log-level=error` wants errors; emitting
+#      ENTER/EXIT around them is noise that no level would suppress,
+#      because sakshi never consults the level for spans.
+#
+# So spans are gated at debug-or-finer. `--log-level=warn` yields
+# exactly the warn-and-above records and nothing else; `-v` (debug)
+# and `--log-level=trace` get the span with its elapsed time.
+fn anuenue_span_enter(name): i64 {
+    if (ANUENUE_VERBOSE == 0) { return 0; }
+    if (sakshi_get_level() < SK_DEBUG) { return 0; }
+    sakshi_span_enter(name, strlen(name));
+    return 0;
+}
+
+fn anuenue_span_exit(): i64 {
+    if (ANUENUE_VERBOSE == 0) { return 0; }
+    if (sakshi_get_level() < SK_DEBUG) { return 0; }
+    sakshi_span_exit();
+    return 0;
+}
+
+# ---- keyed logging ------------------------------------------------
+#
+# Thin wrappers over sakshi_log_kv that take null-terminated strings
+# (anuenue's string shape) instead of explicit byte counts, and an
+# i64 value variant that formats through fmt_int_buf. Both return
+# early when logging is off so the strlen calls don't run either.
+
+fn anuenue_log_kv_str(level, msg, key, val): i64 {
+    if (ANUENUE_VERBOSE == 0) { return 0; }
+    sakshi_log_kv(level, msg, strlen(msg), key, strlen(key), val, strlen(val));
+    return 0;
+}
+
+fn anuenue_log_kv_int(level, msg, key, n): i64 {
+    if (ANUENUE_VERBOSE == 0) { return 0; }
+    var nbuf[24];                            # fmt_int_buf needs 24 bytes: 19 digits + sign + NUL
+    var nlen = fmt_int_buf(n, &nbuf);
+    sakshi_log_kv(level, msg, strlen(msg), key, strlen(key), &nbuf, nlen);
+    return 0;
+}
+
+# ---- anuenue_log_version ------------------------------------------
+#
+# The autogenerated `_VERSION_STR_ANUENUE` carries a trailing LF (it
+# is the literal `--version` writes to stdout verbatim). Trim it here
+# so the record stays on one line rather than splitting the log.
+fn anuenue_log_version(vstr, vlen): i64 {
+    if (ANUENUE_VERBOSE == 0) { return 0; }
+    sakshi_log_kv(SK_DEBUG, "anuenue", 7, "version", 7, vstr, vlen - 1);
+    return 0;
+}
+
+# ---- anuenue_fail -------------------------------------------------
+#
+# The single failure path. Builds an agnostik error for the shared
+# kind/code taxonomy, logs it through sakshi (silent unless the user
+# asked for output), prints the human-facing line to stderr (always —
+# a failing filter must say so even at default verbosity), and
+# returns the anuenue exit code that kind maps to.
+#
+# Exit-code mapping is the v1.x contract, unchanged by this wiring:
+#   STIK_ERR_INVALID_ARGUMENT -> 2 (usage)
+#   everything else           -> 1 (runtime)
+#
+# `msg` is an ordinary null-terminated cstr — anuenue's string shape
+# everywhere else — and is converted to a `Str` HERE, explicitly.
+#
+# Why not just declare the parameter `msg: Str` and let the compiler
+# coerce the literal at the call site? Because that coercion is not
+# reliable in every call position. Measured on cyrius 6.5.35:
+#
+#     anuenue_fail(KIND, "literal");           # statement  -> coerced, prints
+#     return anuenue_fail(KIND, "literal");    # return expr -> NOT coerced
+#
+# Same function, same literal, same signature — only the position
+# differs. Uncoerced, the cstr reaches `agnostik_err_print`, which
+# reads it back with `str_data` / `str_len`; `str_data` loads the
+# first eight characters AS a pointer and every error prints its
+# kind with an empty message:
+#
+#     anuenue: invalid argument:
+#
+# Every anuenue call site is a `return anuenue_fail(...)`, so all of
+# them were in the broken position. `str_new` costs one 16-byte
+# header allocation on a path that is about to exit anyway.
+fn anuenue_fail(kind, msg): i64 {
+    var mlen = strlen(msg);
+    var m    = str_new(msg, mlen);
+    if (m == 0) {
+        # str_new OOM. Nothing left to allocate with — report bare and
+        # bail rather than dereferencing a null Str in err_print.
+        _eprint("anuenue: ");
+        _eprint(msg);
+        _eprint("\n");
+        if (kind == STIK_ERR_INVALID_ARGUMENT) { return ANUENUE_EXIT_USAGE; }
+        return ANUENUE_EXIT_RUN;
+    }
+    var e = agnostik_err_new(kind, m);
+
+    # Structured record first — carries the numeric agnostik code, which
+    # is the stable machine-readable identity (CODE_IO = 1010 etc.).
+    if (ANUENUE_VERBOSE == 1) {
+        var nbuf[24];                        # fmt_int_buf needs 24 bytes
+        var nlen = fmt_int_buf(agnostik_err_code(e), &nbuf);
+        sakshi_log_kv(SK_ERROR, msg, mlen, "code", 4, &nbuf, nlen);
+    }
+
+    _eprint("anuenue: ");
+    agnostik_err_print(e);
+    _eprint("\n");
+
+    if (kind == STIK_ERR_INVALID_ARGUMENT) { return ANUENUE_EXIT_USAGE; }
+    return ANUENUE_EXIT_RUN;
+}

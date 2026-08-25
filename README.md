@@ -68,16 +68,46 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 ### Quality bar at v1.2.1
 
-- **242** unit assertions (`cyrius test`)
+- **308** unit assertions (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
+- **22** observability + pipe-purity checks (`scripts/observe-check.sh`), including
+  stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
 - **1,354,581** fuzz assertions per run across 5 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open ([`docs/audit/2026-05-22-audit.md`](docs/audit/2026-05-22-audit.md))
-- **Binary 803,960 B** (~785 KB) — **over the 512 KB cap**; 68% of it is
-  `agnostik`, which anuenue references zero symbols from. See
-  [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 47.20 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
+- **Binary 809,520 B** (~790 KB) — **over the 512 KB cap**; the cap decision is
+  open, see [`state.md` § Binary](docs/development/state.md#binary)
+- **Perf**: 46.63 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
 - **0** `cyrius lint` warnings, 0 untracked deferrals
+
+### Diagnostics
+
+`-v` / `--verbose` and `--log-level=<off|fatal|error|warn|info|debug|trace>`
+emit structured [sakshi](https://github.com/MacCracken/sakshi) records — resolved
+config, the colour mode **and the branch that chose it**, the dispatch route,
+byte counts, and an enclosing span with elapsed time. Failures carry
+[agnostik](https://github.com/MacCracken/agnostik) error kinds and codes.
+
+Everything goes to **stderr**. stdout carries the rainbow and nothing else at
+every verbosity, so this holds byte-for-byte:
+
+```sh
+diff <(iam | anuenue) <(iam | anuenue -v 2>/dev/null)   # always empty
+```
+
+Logging is off by default — a pipe filter is silent until asked.
+
+```
+$ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
+[...] [ENTER] anuenue
+[...] [DEBUG] anuenue version=anuenue 1.2.1
+[...] [DEBUG] config phase-step=7
+[...] [DEBUG] colour mode resolved mode=24bit
+[...] [DEBUG] colour mode resolved reason=--color override
+[...] [DEBUG] dispatch route=filter
+[...] [INFO]  complete bytes-in=6
+[...] [EXIT]  anuenue (270557ns)
+```
 
 ### Dependencies (pinned for v1.x)
 
@@ -94,7 +124,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 - [`CLAUDE.md`](CLAUDE.md) — durable rules for working in this repo (Claude Code or human)
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones M0 → v1.0; post-v1.0 plan
 - [`docs/development/state.md`](docs/development/state.md) — current state (volatile)
-- [`docs/adr/`](docs/adr/) — architecture decision records (`0001` pipe-purity, `0002` HSV-inline, `0003` grapheme-cluster cycling)
+- [`docs/adr/`](docs/adr/) — architecture decision records (`0001` pipe-purity, `0002` HSV-inline, `0003` grapheme-cluster cycling, `0004` stderr-only observability)
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build / run / develop
 - [`docs/guides/integrating-anuenue.md`](docs/guides/integrating-anuenue.md) — downstream-consumer integration manual
 - [`docs/examples/`](docs/examples/) — eight runnable shell examples covering the full flag surface

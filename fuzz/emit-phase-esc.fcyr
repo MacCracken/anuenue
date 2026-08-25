@@ -17,6 +17,7 @@
 #     varies per mode; the M5 perf-pass invariant says elen is bounded by 24
 #     regardless
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"

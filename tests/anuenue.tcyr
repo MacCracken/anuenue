@@ -9,6 +9,7 @@
 #
 # Stdlib + darshana auto-included via cyrius.cyml.
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"
@@ -760,6 +761,119 @@ fn main(): i64 {
     # Length matches strlen — guards against version-bump.sh writing
     # a mismatched LEN constant.
     assert_eq(strlen(_VERSION_STR_ANUENUE), _VERSION_LEN_ANUENUE, "strlen matches _VERSION_LEN_ANUENUE");
+
+    # ---- v1.2.1 — observability wiring ----------------------------
+    #
+    # sakshi + agnostik were declared deps with zero call sites until
+    # v1.2.1. These groups cover the pure, testable parts of the
+    # wiring; the emitting parts (sakshi records themselves) are
+    # covered end-to-end by scripts/observe-check.sh.
+
+    test_group("v1.2.1 observe — log-level parse");
+    assert_eq(anuenue_log_parse("off"),   ANUENUE_LOG_P_OFF,   "\"off\" parses");
+    assert_eq(anuenue_log_parse("fatal"), ANUENUE_LOG_P_FATAL, "\"fatal\" parses");
+    assert_eq(anuenue_log_parse("error"), ANUENUE_LOG_P_ERROR, "\"error\" parses");
+    assert_eq(anuenue_log_parse("warn"),  ANUENUE_LOG_P_WARN,  "\"warn\" parses");
+    assert_eq(anuenue_log_parse("info"),  ANUENUE_LOG_P_INFO,  "\"info\" parses");
+    assert_eq(anuenue_log_parse("debug"), ANUENUE_LOG_P_DEBUG, "\"debug\" parses");
+    assert_eq(anuenue_log_parse("trace"), ANUENUE_LOG_P_TRACE, "\"trace\" parses");
+    # Unknown names must NOT silently default — a user who asks for
+    # debug output and gets none concludes the tool is broken.
+    assert_eq(anuenue_log_parse("loud"),  ANUENUE_LOG_P_BAD,   "unknown name → BAD, not a default");
+    assert_eq(anuenue_log_parse(""),      ANUENUE_LOG_P_BAD,   "empty string → BAD");
+    assert_eq(anuenue_log_parse("DEBUG"), ANUENUE_LOG_P_BAD,   "parse is case-sensitive (lowercase only)");
+    assert_eq(anuenue_log_parse(0),       ANUENUE_LOG_P_BAD,   "null pointer → BAD, no deref");
+
+    test_group("v1.2.1 observe — parse value maps onto the sakshi scale");
+    # The whole scheme rests on sakshi_level == parse_value - 1, so
+    # OFF lands below SK_FATAL and _sk_log suppresses every level.
+    assert_eq(ANUENUE_LOG_P_FATAL - 1, SK_FATAL, "FATAL-1 == SK_FATAL");
+    assert_eq(ANUENUE_LOG_P_ERROR - 1, SK_ERROR, "ERROR-1 == SK_ERROR");
+    assert_eq(ANUENUE_LOG_P_WARN  - 1, SK_WARN,  "WARN-1  == SK_WARN");
+    assert_eq(ANUENUE_LOG_P_INFO  - 1, SK_INFO,  "INFO-1  == SK_INFO");
+    assert_eq(ANUENUE_LOG_P_DEBUG - 1, SK_DEBUG, "DEBUG-1 == SK_DEBUG");
+    assert_eq(ANUENUE_LOG_P_TRACE - 1, SK_TRACE, "TRACE-1 == SK_TRACE");
+    # OFF must be strictly below FATAL or a fatal record would escape
+    # a silent run.
+    assert_eq(ANUENUE_LOG_P_OFF - 1 < SK_FATAL, 1, "OFF-1 is below SK_FATAL (total silence)");
+
+    test_group("v1.2.1 observe — init resolves verbosity");
+    # -v alone means debug.
+    assert_eq(anuenue_observe_init(1, ANUENUE_LOG_P_OFF), ANUENUE_LOG_P_DEBUG, "-v alone → debug");
+    assert_eq(ANUENUE_VERBOSE, 1, "-v sets ANUENUE_VERBOSE");
+    assert_eq(sakshi_get_level(), SK_DEBUG, "-v sets the sakshi level to SK_DEBUG");
+    # An explicit --log-level beats -v, in both directions.
+    assert_eq(anuenue_observe_init(1, ANUENUE_LOG_P_TRACE), ANUENUE_LOG_P_TRACE, "--log-level=trace beats -v");
+    assert_eq(sakshi_get_level(), SK_TRACE, "sakshi level follows to SK_TRACE");
+    assert_eq(anuenue_observe_init(0, ANUENUE_LOG_P_ERROR), ANUENUE_LOG_P_ERROR, "--log-level=error without -v");
+    assert_eq(sakshi_get_level(), SK_ERROR, "sakshi level follows to SK_ERROR");
+    # Default: no flags at all → silent, and VERBOSE clears so the
+    # span helpers stay quiet.
+    assert_eq(anuenue_observe_init(0, ANUENUE_LOG_P_OFF), ANUENUE_LOG_P_OFF, "no flags → off");
+    assert_eq(ANUENUE_VERBOSE, 0, "no flags → ANUENUE_VERBOSE cleared");
+    assert_eq(sakshi_get_level() < SK_FATAL, 1, "no flags → sakshi level below SK_FATAL");
+
+    test_group("v1.2.1 observe — colour-decision reason is recorded");
+    # Every branch of anuenue_detect_color_mode must set a reason, so
+    # `-v` can always answer "why this mode?". The v1.1.5 AGNOS bug
+    # was a wrong branch here that no output could distinguish.
+    # --color override (highest priority).
+    var obs_m_ovr = anuenue_detect_color_mode(0, 0, ANUENUE_COLOR_OVERRIDE_256);
+    assert_eq(obs_m_ovr, ANUENUE_COLOR_256, "--color=256 override → 256 mode");
+    assert_eq(ANUENUE_COLOR_REASON, ANUENUE_CR_FLAG_COLOR, "override records CR_FLAG_COLOR");
+    # --no-color beats the env/TTY chain below it.
+    var obs_m_nc = anuenue_detect_color_mode(1, 0, ANUENUE_COLOR_OVERRIDE_AUTO);
+    assert_eq(obs_m_nc, ANUENUE_COLOR_MONO, "--no-color → MONO");
+    assert_eq(ANUENUE_COLOR_REASON, ANUENUE_CR_FLAG_NOCOLOR, "--no-color records CR_FLAG_NOCOLOR");
+    # The reason must never be left UNSET after a detect call — that
+    # is the invariant that keeps `-v` honest.
+    assert_eq(ANUENUE_COLOR_REASON == ANUENUE_CR_UNSET, 0, "reason is never UNSET after detect");
+
+    test_group("v1.2.1 observe — reason and mode names are total");
+    # A name function that returns 0 for some enum value would crash
+    # strlen inside the logger. Assert every value has a name.
+    var obs_ri = 0;
+    while (obs_ri <= ANUENUE_CR_FALLBACK_16) {
+        assert_eq(strlen(anuenue_color_reason_name(obs_ri)) > 0, 1, "every colour reason has a name");
+        obs_ri = obs_ri + 1;
+    }
+    assert_eq(strlen(anuenue_color_reason_name(9999)) > 0, 1, "out-of-range reason still names something");
+    assert_eq(strlen(anuenue_color_mode_name(ANUENUE_COLOR_MONO)) > 0, 1, "MONO has a name");
+    assert_eq(strlen(anuenue_color_mode_name(ANUENUE_COLOR_16)) > 0, 1, "16 has a name");
+    assert_eq(strlen(anuenue_color_mode_name(ANUENUE_COLOR_256)) > 0, 1, "256 has a name");
+    assert_eq(strlen(anuenue_color_mode_name(ANUENUE_COLOR_TRUE)) > 0, 1, "24bit has a name");
+    assert_eq(strlen(anuenue_color_mode_name(9999)) > 0, 1, "out-of-range mode still names something");
+    var obs_pi = 0;
+    while (obs_pi <= ANUENUE_LOG_P_BAD) {
+        assert_eq(strlen(anuenue_log_parse_name(obs_pi)) > 0, 1, "every log-parse value has a name");
+        obs_pi = obs_pi + 1;
+    }
+
+    test_group("v1.2.1 observe — agnostik error kind → exit code");
+    # The v1.x exit-code contract, now expressed through the agnostik
+    # taxonomy: only INVALID_ARGUMENT is a usage error (2); every
+    # other kind is a runtime error (1). anuenue_fail writes to
+    # stderr, which the test runner tolerates; the return value is
+    # what is asserted.
+    assert_eq(anuenue_fail(STIK_ERR_INVALID_ARGUMENT, "test: invalid argument"),
+              ANUENUE_EXIT_USAGE, "INVALID_ARGUMENT → exit 2");
+    assert_eq(anuenue_fail(STIK_ERR_IO, "test: io"),
+              ANUENUE_EXIT_RUN, "IO → exit 1");
+    assert_eq(anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "test: exhausted"),
+              ANUENUE_EXIT_RUN, "RESOURCE_EXHAUSTED → exit 1");
+    assert_eq(anuenue_fail(STIK_ERR_INTERNAL, "test: internal"),
+              ANUENUE_EXIT_RUN, "INTERNAL → exit 1");
+    # And the agnostik codes those kinds carry are the stable
+    # machine-readable identity a consumer would key on.
+    var obs_e_io = agnostik_err_new(STIK_ERR_IO, str_new("x", 1));
+    assert_eq(agnostik_err_code(obs_e_io), CODE_IO, "IO error carries CODE_IO");
+    var obs_e_ia = agnostik_err_new(STIK_ERR_INVALID_ARGUMENT, str_new("x", 1));
+    assert_eq(agnostik_err_code(obs_e_ia), CODE_INVALID_ARGUMENT, "usage error carries CODE_INVALID_ARGUMENT");
+
+    test_group("v1.2.1 observe — exit codes unchanged from v1.x contract");
+    assert_eq(ANUENUE_EXIT_OK,    0, "exit OK    == 0");
+    assert_eq(ANUENUE_EXIT_RUN,   1, "exit RUN   == 1");
+    assert_eq(ANUENUE_EXIT_USAGE, 2, "exit USAGE == 2");
 
     return assert_summary();
 }

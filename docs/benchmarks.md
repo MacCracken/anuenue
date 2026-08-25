@@ -238,27 +238,47 @@ through unchanged.
 ## v1.2.1 — Toolchain + dep refresh
 
 cyrius `6.4.62` → `6.5.35`; darshana `0.9.0` → `1.0.0`, cmdit `1.1.0` →
-`1.2.4`, sakshi `2.4.6` → `2.4.11`, agnostik `1.3.4` → `1.5.1`. One
-comment-only source change. Measured **head-to-head on one idle host**
+`1.2.4`, sakshi `2.4.6` → `2.4.11`, agnostik `1.3.4` → `1.5.1`, plus the
+sakshi/agnostik observability wiring (`src/observe.cyr`). The filter hot
+path is untouched. Measured **head-to-head on one idle host**
 (same fixture, `RUNS=11`, v1.2.0 binary vs v1.2.1 binary) rather than
 against a historical figure — the two binaries are also byte-identical
 across 160 output comparisons.
 
 | Corpus           | v1.2.0 | v1.2.1 | Δ |
 |------------------|-------:|-------:|--:|
-| ascii (no LF)    | 47.88  | **47.20** | −1.4% |
-| ascii (w/ LFs)   | 52.01  | **51.77** | −0.5% |
-| utf8 mixed       | 42.45  | **42.14** | −0.7% |
+| ascii (no LF)    | 47.20  | **46.63** | −1.2% |
+| ascii (w/ LFs)   | 50.98  | **50.99** | +0.0% |
+| utf8 mixed       | 41.85  | **41.77** | −0.2% |
 
 All three under the 60 ns/byte M5 acceptance. Differences are within
-run-to-run noise; nothing on the filter hot path changed.
+run-to-run noise; nothing on the filter hot path changed. The one
+addition inside the read loop is a single accumulate of `n_read`,
+executed once per `read(2)` — a few dozen additions across a
+multi-megabyte stream, not per byte.
 
-- **1.2.1 binary**: **803 960 bytes** (~785 KB) — **over the 512 KB
-  cap by ~273 KB**, up from 389 648 B at v1.2.0 (+414 312, +106%).
-  Decomposed: dep bump +135 240, toolchain bump +279 072. `agnostik`
-  alone accounts for 546 424 B (68%) and `sakshi` for 89 888 B (11%) —
-  neither is referenced by any anuenue source file. Full attribution and
-  the open decision: [`state.md` § Binary](development/state.md#binary).
+**Diagnostics cost.** `-v` output is O(1) in input size — exactly 10
+records however long the stream:
+
+| Input | stderr under `-v` | records |
+|------:|------------------:|--------:|
+| 1 KB    | 489 B | 10 |
+| 100 KB  | 492 B | 10 |
+| 1.4 MB  | 494 B | 10 |
+| 5 MB    | 494 B | 10 |
+
+Enabling `-v` costs ~11 ms of fixed startup/teardown on the reference
+host (clock reads plus unbuffered stderr writes) and nothing per byte.
+At default verbosity the cost is zero — the level check short-circuits
+before any formatting.
+
+- **1.2.1 binary**: **809 520 bytes** (~790 KB) — **over the 512 KB
+  cap by ~278 KB**, up from 389 648 B at v1.2.0 (+419 872, +108%).
+  Decomposed: dep bump +135 240, toolchain bump +279 072, observability
+  wiring +5 560. `agnostik` accounts for ~546 KB and `sakshi` for ~90 KB
+  — both are *called* code as of v1.2.1, which is what this release
+  changed. Full attribution and the open cap decision:
+  [`state.md` § Binary](development/state.md#binary).
 - **`CYRIUS_DCE=1` no longer shrinks the file.** 6.5.35 NOPs unreachable
   functions in place instead of eliminating them, so the DCE and non-DCE
   binaries are the same size. Rows below labelled "DCE size" for
@@ -286,7 +306,7 @@ run-to-run noise; nothing on the filter hot path changed.
 | **v1.0.0** | **45.71**        | 8                | 45                  | 351 200      | **GA** |
 | v1.1.3  | 46.59               | —                | —                   | 394 440      | Toolchain + dep refresh (figures from `state.md`; micros not recorded) |
 | v1.2.0  | 47.88‡              | —                | —                   | 389 648      | Library surface (`dist/anuenue.cyr`). Both figures re-measured at v1.2.1 from a rebuilt v1.2.0 binary; micros not recorded at the time |
-| **v1.2.1** | **47.20**‡       | 8§               | 52§                 | **803 960**  | **Toolchain 6.5.35 + dep refresh; over the 512 KB cap** |
+| **v1.2.1** | **46.63**‡       | 8§               | 52§                 | **809 520**  | **Toolchain 6.5.35 + dep refresh + observability; over the 512 KB cap** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.

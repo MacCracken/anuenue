@@ -390,13 +390,17 @@ fn anuenue_filter(): i64 {
     if (line_buf == 0 || read_buf == 0) {
         # alloc returns 0 on OOM. Surface a non-zero exit so callers
         # can detect the failure — silently truncating output would
-        # be worse than a clean error code.
-        return 1;
+        # be worse than a clean error code. v1.2.1 routes it through
+        # anuenue_fail for the agnostik kind/code taxonomy + a sakshi
+        # record; the returned exit code is still 1.
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "filter line/read buffer allocation failed");
     }
     # Initialize the phase-cached escape table once before entering
     # the hot loop. ~80 μs (1530 × hsv_rainbow + tty_fg_rgb_buf);
     # amortised over millions of bytes in a real filter run.
-    if (_phase_esc_init() != 0) { return 1; }
+    if (_phase_esc_init() != 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "phase escape table allocation failed");
+    }
 
     var pos = 0;                            # current write offset into line_buf
     var phase = ANUENUE_PHASE_START;        # current hue phase (= phase of current cluster)
@@ -441,8 +445,11 @@ fn anuenue_filter(): i64 {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 file_write(STDOUT, line_buf, pos);
             }
-            return 1;
+            return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
         }
+        # Byte accounting for -v. One addition per read(2) — a few dozen
+        # across a multi-megabyte stream, never per byte or per cluster.
+        ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n_read;
         if (n_read == 0) {
             # Clean EOF. Any carry_len bytes are a truncated multi-
             # byte sequence that will never complete — emit them as
@@ -643,8 +650,12 @@ fn anuenue_filter(): i64 {
 # `bnrmr TEXT`. On a real TTY pipeline the filter path stays canonical.
 fn anuenue_render_bytes(src, len): i64 {
     var line_buf = alloc(ANUENUE_LINE_BUF);
-    if (line_buf == 0) { return 1; }
-    if (_phase_esc_init() != 0) { return 1; }
+    if (line_buf == 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "render line buffer allocation failed");
+    }
+    if (_phase_esc_init() != 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "phase escape table allocation failed");
+    }
 
     var pos = 0;
     var phase = ANUENUE_PHASE_START;

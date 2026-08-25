@@ -26,24 +26,51 @@ jobs:
           test "$FILE_VERSION" = "$TAG_VERSION" || { echo "VERSION ($FILE_VERSION) != tag ($TAG_VERSION)"; exit 1; }
 
       - name: Install Cyrius toolchain
+        # The cyrius.cyml `[package].cyrius` pin is the single source of truth
+        # for the toolchain version (CLAUDE.md "no hardcoded toolchain versions
+        # in CI YAML") — read the pin and hand it to the upstream installer.
+        #
+        # Do NOT hand-roll this by untarring the release asset into
+        # $HOME/.cyrius/{bin,lib}: that is the pre-6.5 layout, and it is what
+        # this repo shipped through v1.2.0. From 6.5.x `cyrius deps` resolves
+        # the stdlib snapshot from $HOME/.cyrius/versions/$CYRIUS_VERSION/lib
+        # and hard-fails with "pins version X but it is not installed" when only
+        # the flattened dirs exist — so the v1.2.1 pin bump to 6.5.35 would have
+        # broken CI on the first push. The installer lays out
+        # versions/<v>/{bin,lib} and symlinks bin/ + lib/ at it, and additionally
+        # does SHA256 + signature verification the hand-rolled block skipped.
+        # Same pattern as darshana / patra / libro.
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain layout
+        # Guards the exact failure this replaced: a successful-looking install
+        # that leaves no versions/<v>/lib snapshot, so every later cyrius
+        # invocation dies on dep resolution instead of here, with an error that
+        # points at the manifest rather than at the installer.
+        run: |
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" \
+            || { echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"; exit 1; }
+          cyrius version
+          echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
 
       - name: Build
+        # CYRIUS_DCE=1 per CLAUDE.md — this is the binary that becomes the
+        # release artifact, and through v1.2.0 it was built WITHOUT the flag
+        # while the docs said otherwise. CI (which gates this job) now builds
+        # the same way, so the artifact and the tested binary match.
         run: |
           cyrius deps
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          CYRIUS_DCE=1 cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          echo "release binary: $(wc -c < build/${{ github.event.repository.name }}) bytes"
 
       - name: Create release
         uses: softprops/action-gh-release@v2

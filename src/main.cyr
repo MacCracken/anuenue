@@ -19,19 +19,17 @@
 # the cyim drift-prevention pattern; never edit by hand).
 # Stdlib (incl. args, flags) + darshana auto-included via cyrius.cyml.
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"
 include "src/animate.cyr"
 include "src/version_str.cyr"
 
-# ---- exit codes ---------------------------------------------------
-# 0 = normal exit (incl. --help / --version paths)
-# 1 = filter runtime error (alloc fail, read error)
-# 2 = usage error (unknown flag, missing required value, bad int)
-var ANUENUE_EXIT_OK    = 0;
-var ANUENUE_EXIT_RUN   = 1;
-var ANUENUE_EXIT_USAGE = 2;
+# Exit codes (ANUENUE_EXIT_*) and the stderr helper `_eprint` moved to
+# src/observe.cyr at v1.2.1 — the error paths in color.cyr / filter.cyr
+# need both, and observe.cyr is the one module every other file can
+# include without a dependency cycle. Values are unchanged.
 
 # ---- print_version -----------------------------------------------
 #
@@ -41,18 +39,6 @@ var ANUENUE_EXIT_USAGE = 2;
 # "Version consistency" step asserts the drift gate.
 fn print_version(): i64 {
     syscall(1, 1, _VERSION_STR_ANUENUE, _VERSION_LEN_ANUENUE);
-    return 0;
-}
-
-# Write a null-terminated string to fd 2 (stderr) using runtime
-# strlen — avoids hardcoded byte counts for UTF-8-bearing help
-# strings (the brand intro contains em-dash + right-arrow + macron-
-# a, each 2–3 UTF-8 bytes). Local to main.cyr because the rest of
-# the program writes either raw byte counts (filter loop hot path)
-# or via lib/io.cyr's stdout helpers.
-fn _eprint(s): i64 {
-    var len = strlen(s);
-    syscall(1, 2, s, len);
     return 0;
 }
 
@@ -80,6 +66,13 @@ fn print_usage(fs): i64 {
     _eprint("  echo \"AGNOS\" | anuenue --color=256           # quantize to xterm 256-cube\n");
     _eprint("  echo \"AGNOS\" | anuenue --color=16            # bright-16 ANSI palette\n");
     _eprint("  iam | anuenue --force-color | tee motd.ansi  # keep colour through a non-TTY pipe\n");
+    _eprint("  echo \"AGNOS\" | anuenue -v                    # trace to stderr; stdout stays pure\n");
+    _eprint("  echo \"AGNOS\" | anuenue --log-level=trace     # maximum verbosity\n");
+    _eprint("\nDiagnostics:\n");
+    _eprint("  -v / --log-level write structured sakshi records to STDERR only.\n");
+    _eprint("  stdout carries the rainbow and nothing else, at every verbosity,\n");
+    _eprint("  so `anuenue -v | wc -c` is byte-identical to `anuenue | wc -c`.\n");
+    _eprint("  Levels: off (default) / fatal / error / warn / info / debug / trace.\n");
     return 0;
 }
 
@@ -107,7 +100,9 @@ fn anuenue_text_args(fs, npos): i64 {
     total = total + (npos - 1) + 1;         # (npos-1) space separators + 1 LF
 
     var buf = alloc(total);
-    if (buf == 0) { return ANUENUE_EXIT_RUN; }
+    if (buf == 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "positional-text buffer allocation failed");
+    }
 
     var pos = 0;
     i = 0;
@@ -153,6 +148,10 @@ fn main(): i64 {
     var f_force_color = cmdit_bool(fs,  67, "force-color", "emit colour even when stdout isn't a TTY");
     var f_color       = cmdit_str (fs,  99, "color",       "auto",
                                    "color mode: auto / 24bit / 256 / 16 / none");
+    # v1.2.1 diagnostics. Both write to stderr only — see src/observe.cyr.
+    var f_verbose     = cmdit_bool(fs, 118, "verbose",     "log to stderr at debug level (stdout unaffected)");
+    var f_log_level   = cmdit_str (fs,   0, "log-level",   "off",
+                                   "stderr log level: off / fatal / error / warn / info / debug / trace");
 
     var pr = cmdit_parse(fs);
     if (pr == CMDIT_RESULT_ERR) {
@@ -160,6 +159,12 @@ fn main(): i64 {
         # the parse, then dump usage. Stderr per POSIX. anuenue keeps its own
         # error wording; cmdit's taxonomy maps 1:1 onto the old FlagErr variants.
         var err = cmdit_error(fs);
+        # Structured record of the raw cmdit code. Silent at default
+        # verbosity, and always silent for THIS path specifically:
+        # observability is configured from parsed flags, which a parse
+        # error means we never got. Kept anyway so the call site is
+        # correct if cmdit ever gains a pre-parse verbosity probe.
+        anuenue_log_kv_int(SK_ERROR, "argument parse failed", "cmdit-err", err);
         if (err == CMDIT_ERR_UNKNOWN) {
             _eprint("anuenue: unknown flag\n");
         } else { if (err == CMDIT_ERR_MISSING_VALUE) {
@@ -183,6 +188,21 @@ fn main(): i64 {
         return print_version();
     }
 
+    # ---- observability init ---------------------------------------
+    #
+    # Runs after parse (it is configured FROM parsed flags) and after
+    # the --help / --version early exits (neither should emit logs).
+    # Everything below writes to stderr only; stdout is untouched at
+    # every verbosity — see src/observe.cyr.
+    var lvl = anuenue_log_parse(cmdit_get_str(fs, f_log_level));
+    if (lvl == ANUENUE_LOG_P_BAD) {
+        return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
+                            "--log-level must be one of: off fatal error warn info debug trace");
+    }
+    anuenue_observe_init(cmdit_get_bool(fs, f_verbose), lvl);
+    anuenue_span_enter("anuenue");
+    anuenue_log_version(_VERSION_STR_ANUENUE, _VERSION_LEN_ANUENUE);
+
     # Apply the numeric flags to the filter's module-level config.
     # The flags lib returns the default for any unspecified flag, so
     # this is unconditional — passing nothing leaves PHASE_STEP at 7
@@ -190,6 +210,8 @@ fn main(): i64 {
     # ties is moot since both add into the same accumulator).
     ANUENUE_PHASE_STEP  = cmdit_get_int(fs, f_freq);
     ANUENUE_PHASE_START = cmdit_get_int(fs, f_seed) + cmdit_get_int(fs, f_offset);
+    anuenue_log_kv_int(SK_DEBUG, "config", "phase-step",  ANUENUE_PHASE_STEP);
+    anuenue_log_kv_int(SK_DEBUG, "config", "phase-start", ANUENUE_PHASE_START);
 
     # M6: detect colour mode from flags + env + TTY, then dispatch.
     var color_override = _color_override_from_str(cmdit_get_str(fs, f_color));
@@ -197,6 +219,13 @@ fn main(): i64 {
         cmdit_get_bool(fs, f_no_color),
         cmdit_get_bool(fs, f_force_color),
         color_override);
+    # The single highest-value verbose line: not just WHICH mode, but
+    # WHY. v1.1.5's "rainbow collapsed to 16 colours on AGNOS" was a
+    # wrong branch here that no output could distinguish from a right one.
+    anuenue_log_kv_str(SK_DEBUG, "colour mode resolved", "mode",
+                       anuenue_color_mode_name(ANUENUE_COLOR_MODE));
+    anuenue_log_kv_str(SK_DEBUG, "colour mode resolved", "reason",
+                       anuenue_color_reason_name(ANUENUE_COLOR_REASON));
 
     # Positional-text mode: any non-flag args → rainbow that text and
     # exit, never touching stdin. This is the `run /bin/anuenue AGNOS`
@@ -204,24 +233,39 @@ fn main(): i64 {
     # terminate there). Checked BEFORE the MONO short-circuit so
     # `--no-color anuenue TEXT` writes plain text instead of falling
     # into anuenue_passthrough()'s stdin read.
+    # v1.2.1: routed through a single `rc` + one exit so the sakshi
+    # span always closes and the byte/route summary always emits. The
+    # four routes and their conditions are unchanged.
+    var rc = ANUENUE_EXIT_OK;
     var npos = cmdit_positional_count(fs);
+
     if (npos > 0) {
-        return anuenue_text_args(fs, npos);
+        anuenue_log_kv_int(SK_DEBUG, "dispatch: positional text", "args", npos);
+        rc = anuenue_text_args(fs, npos);
+    } else {
+        # MONO short-circuits everything (incl. -a). Acceptance:
+        # `NO_COLOR=1 echo X | anuenue` byte-identical to `echo X`.
+        if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_MONO) {
+            anuenue_log_kv_str(SK_DEBUG, "dispatch", "route", "passthrough");
+            rc = anuenue_passthrough();
+        } else {
+            # M4 dispatch: if -a is set, route to animate; otherwise the
+            # M1/M2/M3 pipe-purity filter loop.
+            if (cmdit_get_bool(fs, f_animate) == 1) {
+                anuenue_log_kv_str(SK_DEBUG, "dispatch", "route", "animate");
+                rc = anuenue_animate(cmdit_get_int(fs, f_duration),
+                                     cmdit_get_int(fs, f_speed));
+            } else {
+                anuenue_log_kv_str(SK_DEBUG, "dispatch", "route", "filter");
+                rc = anuenue_filter();
+            }
+        }
     }
 
-    # MONO short-circuits everything (incl. -a). Acceptance:
-    # `NO_COLOR=1 echo X | anuenue` byte-identical to `echo X`.
-    if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_MONO) {
-        return anuenue_passthrough();
-    }
-
-    # M4 dispatch: if -a is set, route to animate; otherwise the
-    # M1/M2/M3 pipe-purity filter loop.
-    if (cmdit_get_bool(fs, f_animate) == 1) {
-        return anuenue_animate(cmdit_get_int(fs, f_duration),
-                               cmdit_get_int(fs, f_speed));
-    }
-    return anuenue_filter();
+    anuenue_log_kv_int(SK_INFO,  "complete", "bytes-in",  ANUENUE_BYTES_IN);
+    anuenue_log_kv_int(SK_DEBUG, "complete", "exit-code", rc);
+    anuenue_span_exit();
+    return rc;
 }
 
 # Bare-call entry: on agnos a `var = main()` top-level runs main as a gvar-init

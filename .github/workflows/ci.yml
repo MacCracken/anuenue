@@ -21,26 +21,72 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Cyrius toolchain
+        # The cyrius.cyml `[package].cyrius` pin is the single source of truth
+        # for the toolchain version (CLAUDE.md "no hardcoded toolchain versions
+        # in CI YAML") — read the pin and hand it to the upstream installer.
+        #
+        # Do NOT hand-roll this by untarring the release asset into
+        # $HOME/.cyrius/{bin,lib}: that is the pre-6.5 layout, and it is what
+        # this repo shipped through v1.2.0. From 6.5.x `cyrius deps` resolves
+        # the stdlib snapshot from $HOME/.cyrius/versions/$CYRIUS_VERSION/lib
+        # and hard-fails with "pins version X but it is not installed" when only
+        # the flattened dirs exist — so the v1.2.1 pin bump to 6.5.35 would have
+        # broken CI on the first push. The installer lays out
+        # versions/<v>/{bin,lib} and symlinks bin/ + lib/ at it, and additionally
+        # does SHA256 + signature verification the hand-rolled block skipped.
+        # Same pattern as darshana / patra / libro.
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain layout
+        # Guards the exact failure this replaced: a successful-looking install
+        # that leaves no versions/<v>/lib snapshot, so every later cyrius
+        # invocation dies on dep resolution instead of here, with an error that
+        # points at the manifest rather than at the installer.
+        run: |
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" \
+            || { echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"; exit 1; }
+          cyrius version
+          echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
 
       - name: Resolve dependencies
         run: cyrius deps
 
       - name: Build
+        # CYRIUS_DCE=1 per CLAUDE.md "every `cyrius build` in CI and release
+        # runs with CYRIUS_DCE=1". It was absent here and in release.yml
+        # through v1.2.0, so the documented rule was never actually enforced.
+        # On 6.5.x DCE NOPs unreachable functions in place rather than removing
+        # them, so this no longer changes the output SIZE — it is still the
+        # documented build mode, and the release artifact is now built the same
+        # way CI tests it.
         run: |
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          CYRIUS_DCE=1 cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          echo "binary: $(wc -c < build/${{ github.event.repository.name }}) bytes"
+
+      - name: Lint
+        # `cyrius lint` gained an untracked-deferral check that the 6.4.62
+        # pin did not run; src/filter.cyr tripped it on the v1.2.1 bump.
+        # Gate it so the next one is caught by CI rather than by the next
+        # person to bump the pin. Zero tolerance: anuenue's src/ is seven
+        # files and has been warning-clean since v0.9.0.
+        run: |
+          fail=0
+          for f in src/*.cyr; do
+            out=$(cyrius lint "$f" 2>&1 || true)
+            echo "$out"
+            echo "$out" | grep -qE '^0 warnings' || fail=1
+            echo "$out" | grep -qE '^0 untracked deferrals' || fail=1
+          done
+          [ $fail -eq 0 ] || { echo "::error::lint warnings or untracked deferrals present"; exit 1; }
 
       - name: Test
         # v5.6.28: bare `cyrius test` picks up the [build].test entry
@@ -80,6 +126,25 @@ jobs:
         # assert_summary() so failing invariants set a non-zero
         # exit. ~1.35M assertions per run on the current corpus.
         run: cyrius fuzz
+
+      - name: Observability gate (v1.2.1)
+        # The sakshi/agnostik wiring's load-bearing property is one a unit
+        # test cannot express: enabling -v must not move a single byte of
+        # STDOUT. anuenue lives in the middle of pipelines, so a diagnostics
+        # feature that leaked one byte onto fd 1 would corrupt every
+        # `iam | anuenue | ...` it was enabled in. The script asserts that
+        # across every corpus x colour-mode x verbosity combination, plus
+        # silence at default verbosity, the -v field set, and the
+        # agnostik-typed failure path with its numeric code.
+        run: sh scripts/observe-check.sh
+
+      - name: distlib drift check
+        # dist/anuenue.cyr is what consumers `include`, not src/. Without
+        # this gate a src/hsv.cyr change can land while the shipped bundle
+        # stays stale. v1.2.1 also added dist/anuenue.deps — the 6.5.x
+        # stdlib-leaf sidecar that `cyrius distlib --check` treats a missing
+        # copy of as STALE, so it must be committed alongside the bundle.
+        run: cyrius distlib --check
 
       - name: Version consistency
         # Asserts VERSION matches every place the version literal

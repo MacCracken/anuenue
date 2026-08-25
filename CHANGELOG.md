@@ -4,120 +4,254 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.2.1] — 2026-08-25 (toolchain + dep refresh)
+## [1.2.1] — 2026-08-25 (toolchain + deps + observability + CI repair)
 
-Maintenance cut — toolchain pin advance plus the first-party-dep sandhi refresh
-accumulated since v1.2.0, including **darshana's v1.0.0 API freeze**. No
-behavioural change: the old and new binaries are **byte-identical across 160
-output comparisons** (16 input corpora × 10 flag combinations, covering invalid
-UTF-8, truncated sequences, 200 KB of raw binary, a 5 000-combiner cluster, and
-all four colour modes) plus 16 exit-code comparisons, and the entire CLI surface
-— `--help`, every error path, every exit code — is unchanged apart from the
-version literal. All six golden fixtures byte-identical, three MONO checks hold,
-animate-smoke green in truecolor / 256 / 16 / long-cluster, **242/242** unit
-assertions and **1 354 581** fuzz assertions pass. The v1.x public API contract
-(flags / exit codes / output shape / capability surface) is unchanged.
+Maintenance cut with three threads: the toolchain/dep refresh, the **sakshi +
+agnostik wiring that should have existed since M0**, and a **CI repair the pin
+bump made urgent**.
+
+The filter itself is untouched. The v1.2.0 and v1.2.1 binaries are byte-identical
+on stdout across **192 comparisons** (16 input corpora × 12 flag combinations,
+covering invalid UTF-8, truncated sequences, 200 KB of raw binary, a
+5 000-combiner cluster and all four colour modes), with matching exit codes on
+all 192. All six goldens byte-identical, three MONO checks hold, animate-smoke
+green across truecolor / 256 / 16 / long-cluster. **308 unit assertions** (was
+242) and **1 354 581** fuzz assertions pass. Per-byte throughput is unchanged
+within noise. The v1.x public API contract (exit codes, output shape, capability
+surface) is unchanged; the flag set is **additively** extended by two
+diagnostics flags.
+
+### Added
+
+- **`-v` / `--verbose` and `--log-level=<level>` — structured diagnostics via
+  sakshi, with agnostik-typed errors (`src/observe.cyr`, new).**
+
+  sakshi and agnostik had been declared deps since the M0 scaffold with **zero
+  call sites in any anuenue source file**. They were linked into every binary
+  and never called. That is not a dependency anuenue doesn't need — it is a
+  dependency anuenue never wired up. first-party-standards makes sakshi the
+  canonical error/tracing crate and agnostik the shared Result/Error shapes;
+  anuenue now uses them like the first-party tool it is.
+
+  `-v` is shorthand for `--log-level=debug`; an explicit `--log-level` wins when
+  both are given. Levels are `off` (default) / `fatal` / `error` / `warn` /
+  `info` / `debug` / `trace`. An unrecognised level is a usage error (exit 2)
+  rather than a silent default, because the failure mode of a silent default is
+  a user who asked for output, got none, and concludes the tool is broken.
+
+  What a run reports: version, resolved phase step and start, the resolved
+  colour mode **and the branch that chose it**, the dispatch route
+  (filter / animate / passthrough / positional-text), bytes read, exit code, and
+  an enclosing span with elapsed time.
+
+  Spans are gated at debug-or-finer rather than at "logging is on". sakshi does
+  not level-gate `sakshi_span_enter` / `_exit` at all — they emit whenever
+  called — so without anuenue's own gate a `--log-level=error` run printed
+  ENTER/EXIT around its errors, and no level could suppress it. A clean
+  `--log-level=warn` run is now completely silent.
+
+  The colour *reason* is the highest-value line here and the reason the feature
+  earns its place. v1.1.5's "rainbow collapsed to 16 colours on AGNOS" was
+  `anuenue_detect_color_mode` reaching its env-heuristic tail on a platform that
+  sets no env — a wrong branch that no output could distinguish from a right
+  one. `anuenue -v` now prints `reason=agnos framebuffer console` or
+  `reason=no signal — 16-colour fallback`, and the difference is one line
+  instead of a source read.
+
+- **Pipe-purity is enforced, not asserted (`scripts/observe-check.sh`, new).**
+
+  Every byte the diagnostics can emit goes to **fd 2**. stdout carries the
+  rainbow and nothing else, at every verbosity. anuenue lives in the middle of
+  pipelines (ADR 0001), so a diagnostics feature that leaked one byte onto fd 1
+  would silently corrupt every `iam | anuenue | ...` it was enabled in — which
+  is a process-level, fd-level property no unit test can express. The new gate
+  asserts it directly across 22 checks: stdout is byte-identical over **144 corpus
+  × colour-mode × verbosity combinations**, stderr is empty in every
+  default-verbosity run, `-v` carries the fields a bug report needs, level
+  filtering actually filters, and the failure path emits its agnostik code.
+  Wired into CI.
+
+  Two mechanisms hold the property up. sakshi's sink is pinned with
+  `sakshi_set_output_fd(2)` — the file and UDP targets are never selected, so
+  the capability bound in CLAUDE.md (no file I/O, no network) is intact and the
+  syscall surface stays read/write/brk/exit. And logging is **off by default**:
+  sakshi's own default is `SK_INFO`, which would have put info lines on the
+  stderr of every MOTD, so `anuenue_observe_init` drops the level below
+  `SK_FATAL` unless asked. A pipe filter is silent until told otherwise.
+
+- **66 new unit assertions** (242 → 308) over the log-level parser (including
+  case-sensitivity, the empty string and a null pointer), the parse-to-sakshi
+  scale mapping, verbosity resolution, colour-reason recording, name-function
+  totality, and the agnostik-kind → exit-code mapping.
+
+### Fixed
+
+- **CI would have broken on the first push after the pin bump.** Both workflows
+  hand-rolled the toolchain install by untarring the release asset into
+  `$HOME/.cyrius/{bin,lib}` — the **pre-6.5 layout**. From 6.5.x `cyrius deps`
+  resolves the stdlib snapshot from `$HOME/.cyrius/versions/$CYRIUS_VERSION/lib`
+  and hard-fails with *"pins version X but it is not installed"* when only the
+  flattened directories exist. Replaced with the upstream installer
+  (`scripts/install.sh` with `CYRIUS_VERSION`), which lays out
+  `versions/<v>/{bin,lib}`, symlinks `bin/` and `lib/` at it, and additionally
+  does SHA256 + signature verification the hand-rolled block skipped. Same
+  pattern as darshana / patra / libro. A new **Verify toolchain layout** step
+  fails loudly at install time rather than letting the next `cyrius` invocation
+  die pointing at the manifest.
+
+- **`CYRIUS_DCE=1` was never actually set in CI or release.** CLAUDE.md § CI /
+  Release states it as a hard rule for *every* `cyrius build`; neither workflow
+  did it, so the release artifact was built differently from the tested binary.
+  Both now set it. (On 6.5.x this no longer changes output size — see below —
+  but the artifact and the tested binary now match.)
+
+- **A failing filter said nothing.** `anuenue_filter` / `anuenue_passthrough`
+  returned bare `1` on a read error or allocation failure, with **no message on
+  any fd** — the pipeline just ended short. They now route through
+  `anuenue_fail`, which prints e.g. `anuenue: i/o error: read from stdin failed`
+  to stderr and, under `-v`, logs the agnostik code (`CODE_IO` = 1010). **Exit
+  codes are unchanged** (1 for runtime, 2 for usage) — this adds a diagnostic to
+  a path that previously failed silently. It is the one intentional change to
+  default-verbosity stderr in this release.
+
+- **`src/filter.cyr` — untracked deferral surfaced by the 6.5.35 lint.** The
+  grapheme-cluster comment said Devanagari spacing marks advance "for now" and
+  that "ADR 0003 (M7) *will* record this trade-off" — stale future tense since
+  v0.8.0, when ADR 0003 shipped and did record it, including both visible misses
+  (Hangul L/V/T composition, Devanagari spacing marks). Now cross-referenced.
+  A **Lint gate** was added to CI so the next one is caught there rather than by
+  the next person to bump the pin.
+
+- **A `Str` coercion trap that would have shipped every error message empty.**
+  `agnostik_err_new(kind, message: Str)` stores the value and
+  `agnostik_err_print` reads it back through `str_data` / `str_len`. On cyrius
+  6.5.35 a string literal is coerced to `Str` at a call site whose parameter is
+  typed `Str` — but **not in return-expression position**:
+
+  ```
+  anuenue_fail(KIND, "literal");           # statement   -> coerced, prints
+  return anuenue_fail(KIND, "literal");    # return expr -> NOT coerced
+  ```
+
+  Same function, same literal, same signature. Uncoerced, `str_data` loads the
+  first eight characters *as a pointer* and every error prints its kind with an
+  empty message (`anuenue: invalid argument:`). Every anuenue call site is a
+  `return anuenue_fail(...)`, so all of them were in the broken position.
+  `anuenue_fail` now takes an ordinary cstr and converts explicitly with
+  `str_new`, which is position-independent. Caught by running the path, not by
+  reading it.
 
 ### Changed
 
 - **Cyrius toolchain pin `6.4.62` → `6.5.35`** (`cyrius.cyml [package].cyrius`).
   `./lib/` re-synced via `cyrius lib sync --full` (108 stdlib files; four new
-  modules arrive — `async_macos`, `async_win`, `thread_macos`, `yantra`). Both
-  build-time warnings the old tree carried are gone: the `./lib/` shadow-drift
-  warning and the manifest-pin drift warning. The three
-  `lib/bayan.cyr` "assigning non-pointer to typed pointer" warnings are also
-  gone — fixed upstream.
+  modules — `async_macos`, `async_win`, `thread_macos`, `yantra`). Both
+  build-time warnings the old tree carried are gone (the `./lib/` shadow-drift
+  and manifest-pin-drift warnings), as are three `lib/bayan.cyr`
+  "assigning non-pointer to typed pointer" warnings fixed upstream.
+
 - **`[deps]` tags re-pinned to the versions actually vendored, then advanced to
   current**: darshana `0.9.0` → **`1.0.0`**, cmdit `1.1.0` → **`1.2.4`**,
   sakshi `2.4.6` → **`2.4.11`**, agnostik `1.3.4` → **`1.5.1`**.
 
   The tags had drifted from the bytes: the committed bundles were already at
   cmdit 1.2.2, sakshi 2.4.11 and agnostik 1.3.5 while the manifest still claimed
-  1.1.0 / 2.4.6 / 1.3.4. `path`-mode deps resolve by tag only when the lock
-  agrees, so the manifest had become documentation rather than a pin. Tags and
-  bytes now agree.
+  1.1.0 / 2.4.6 / 1.3.4. A `path`-mode tag binds only when `cyrius.lock` agrees,
+  so editing a tag without invalidating the lock silently keeps the locked
+  commit — and the manifest had quietly become documentation rather than a pin.
+  Tags and bytes now agree.
+
 - **darshana 1.0.0 is the API freeze.** The nine darshana symbols anuenue calls
   (`tty_fg_rgb_buf`, `tty_fg_256_buf`, `tty_sgr_buf`, `tty_sgr_reset_buf`,
   `tty_sgr_reset`, `tty_cursor_up`, `tty_cursor_hide`, `tty_cursor_show`,
   `tty_isatty`) all sit inside the frozen 29-function surface. The two v0.9.3
   breaks are non-events here: the `AGNOS_*` → `_AGNOS_*` privatization touches
-  symbols anuenue never named, and `tty_sgr_reset_buf`'s new `-1`-on-negative-`pos`
-  return is unreachable from anuenue — every `pos` at all fifteen call sites
-  (11 in `src/filter.cyr`, 4 in `src/animate.cyr`) is a non-negative accumulator. `tty_open_signalfd`'s `-errno` → `-1` change is
-  likewise moot: `src/animate.cyr` deliberately rolls its own *non-blocking*
-  signalfd instead of using darshana's blocking helper.
+  symbols anuenue never named, and `tty_sgr_reset_buf`'s new
+  `-1`-on-negative-`pos` return is unreachable — every `pos` at all fifteen call
+  sites (11 in `src/filter.cyr`, 4 in `src/animate.cyr`) is a non-negative
+  accumulator. `tty_open_signalfd`'s `-errno` → `-1` change is likewise moot:
+  `src/animate.cyr` deliberately rolls its own *non-blocking* signalfd.
+
 - **cmdit 1.2.4 is the P-1 audit cut** (completion-script program-name injection
   plus three memory-safety / contract fixes). anuenue is exposed to none of them
   — it passes a literal prog name to `cmdit_new` and never calls
-  `cmdit_completions` — so the bump is dist-bytes hygiene rather than a required
-  fix. Verified rather than assumed: the CLI-surface diff above is byte-identical.
+  `cmdit_completions` — verified rather than assumed: the full CLI surface
+  (`--help`, every error path, every exit code) is byte-identical across the
+  bump apart from the version literal.
+
+- **Exit codes moved from three initialized globals to an `AnuenueExit` enum**
+  and, with `_eprint`, relocated from `src/main.cyr` to `src/observe.cyr` so the
+  error paths in `color.cyr` and `filter.cyr` can reach them. Values unchanged
+  (0 / 1 / 2) — this is the v1.x contract. Per the CLAUDE.md convention
+  ("Enum values for constants — don't consume `gvar_toks` slots").
+
+- **`main()` dispatch routed through a single `rc` and one exit** so the sakshi
+  span always closes and the completion summary always emits. The four routes
+  and their conditions are unchanged.
+
 - **`dist/anuenue.deps` is a new committed artifact.** The 6.5.x toolchain emits
-  a stdlib-leaf sidecar next to the distlib bundle and `cyrius distlib --check`
-  treats its absence as STALE, so it ships alongside `dist/anuenue.cyr`.
-
-### Fixed
-
-- **`src/filter.cyr` — untracked deferral surfaced by the 6.5.35 lint.** The
-  grapheme-cluster comment block said Devanagari spacing marks are treated as
-  advancing "for now" and that "ADR 0003 (M7) *will* record this trade-off" —
-  stale future tense since v0.8.0, when ADR 0003 shipped and did record it,
-  including both visible misses (Hangul L/V/T composition, Devanagari spacing
-  marks). The comment now cross-references
-  [`docs/adr/0003-grapheme-cluster-cycling.md`](docs/adr/0003-grapheme-cluster-cycling.md).
-  `cyrius lint` is clean again across all seven `src/*.cyr`: 0 warnings, 0
-  untracked deferrals.
+  a stdlib-leaf sidecar beside the distlib bundle, and `cyrius distlib --check`
+  treats its absence as STALE. A **distlib drift check** step was added to CI.
 
 ### Performance
 
-Unchanged within noise — measured head-to-head on one idle host, same fixture,
-`RUNS=11`, v1.2.0 binary vs v1.2.1 binary rather than against a historical figure:
+Unchanged. Measured head-to-head on one idle host, same fixture, `RUNS=11`,
+v1.2.0 binary vs the final v1.2.1 binary (observability included):
 
 | Corpus | v1.2.0 | v1.2.1 | Δ |
 |---|---:|---:|---:|
-| ascii (no LF) | 47.88 ns/byte | **47.20 ns/byte** | −1.4% |
-| ascii (w/ LFs) | 52.01 ns/byte | **51.77 ns/byte** | −0.5% |
-| utf8 mixed | 42.45 ns/byte | **42.14 ns/byte** | −0.7% |
+| ascii (no LF) | 47.20 ns/byte | **46.63 ns/byte** | −1.2% |
+| ascii (w/ LFs) | 50.98 ns/byte | **50.99 ns/byte** | +0.0% |
+| utf8 mixed | 41.85 ns/byte | **41.77 ns/byte** | −0.2% |
 
-All three stay under the 60 ns/byte M5 acceptance cap. The microbench moved
-(`hsv_rainbow` 18 → 8 ns, `tty_fg_rgb_buf` 95 → 52 ns) but is **not** comparable
-across this cut: 6.5.35's `bench` harness now measures and subtracts a timer
-floor (1.347 µs per clock read here), which the 6.4.62 harness did not.
+All under the 60 ns/byte M5 acceptance cap. Nothing in `src/observe.cyr` is
+called per byte or per cluster — the call sites are startup, dispatch, teardown
+and the error paths. The one addition inside the read loop is a single
+accumulate of `n_read`, executed once per `read(2)`: a few dozen additions
+across a multi-megabyte stream.
 
-### Known issue — the DCE binary breaches the 512 KB cap
+Diagnostics output is **O(1) in input size** — exactly 10 records regardless of
+stream length:
 
-**389 648 B → 803 960 B (+414 312, +106%)**, against the 512 KB cap discipline
-recorded in [`state.md`](docs/development/state.md). Nothing anuenue wrote caused
-it; the growth decomposes cleanly, each figure measured with an invalidated lock
-in an isolated worktree:
+| Input | stderr under `-v` | records |
+|---:|---:|---:|
+| 1 KB | 489 B | 10 |
+| 100 KB | 492 B | 10 |
+| 1.4 MB | 494 B | 10 |
+| 5 MB | 494 B | 10 |
+
+Enabling `-v` costs ~11 ms of fixed startup/teardown on this host (clock reads
+and unbuffered stderr writes) and nothing per byte.
+
+The microbench moved (`hsv_rainbow` 18 → 8 ns, `tty_fg_rgb_buf` 95 → 52 ns) but
+is **not** comparable across this cut: 6.5.35's `bench` harness measures and
+subtracts a timer floor (1.347 µs per clock read here) that 6.4.62's did not.
+
+### Binary size
+
+**389 648 B → 809 520 B** (+419 872, +108%), against the 512 KB cap discipline
+recorded in [`state.md`](docs/development/state.md). The growth is the toolchain
+and dep surface, not anuenue code — the observability module accounts for 5 560 B
+of it. Each figure below was measured with an invalidated lock in an isolated
+worktree, so the tag actually resolves:
 
 | Step | Binary | Δ |
 |---|---:|---:|
 | v1.2.0 (cycc 6.4.62 + old dep tags) | 389 648 B | — |
 | + dep bump only (cycc 6.4.62) | 524 888 B | +135 240 |
-| + toolchain bump (cycc 6.5.35) | **803 960 B** | +279 072 |
+| + toolchain bump (cycc 6.5.35) | 803 960 B | +279 072 |
+| + observability wiring | **809 520 B** | +5 560 |
 
-Attribution by dep, at the new pin:
+`CYRIUS_DCE=1` no longer changes the output size — 6.5.35 NOPs unreachable
+functions in place rather than eliminating them, so the DCE and non-DCE binaries
+are byte-for-byte the same size. "DCE binary size" now measures the whole binary,
+which is part of why the step change reads so large.
 
-| Removed | Binary | Contribution |
-|---|---:|---:|
-| — (as shipped) | 803 960 B | — |
-| agnostik | 257 536 B | **546 424 B (68%)** |
-| sakshi | 714 072 B | 89 888 B (11%) |
-| both | **167 600 B** | 636 360 B (79%) |
-
-**anuenue names zero symbols from either.** They are declared because
-first-party-standards makes sakshi the canonical error/tracing crate and agnostik
-the shared Result/Error shapes it surfaces — but no anuenue source file
-references a `sakshi_*` or agnostik symbol, and dropping both puts the binary at
-167 600 B, comfortably inside the cap. Left in place: dropping a canonical dep is
-a standards decision, not a maintenance one. Recorded here so the cap breach is a
-choice rather than a surprise.
-
-Also note `CYRIUS_DCE=1` no longer changes the output size — 6.5.35 NOPs
-unreachable functions in place rather than eliminating them, so the DCE and
-non-DCE binaries are byte-for-byte the same size. The "DCE binary size" metric
-now measures the *whole* binary, which is part of why the step change is so
-large.
+The cap decision is deferred to the next cut rather than resolved here. Note
+that the two largest contributors — agnostik (~546 KB) and sakshi (~90 KB) —
+are now **called code**, not dead weight: this release is what gave them call
+sites. Raising the cap with a rationale is the likely resolution; dropping a
+canonical first-party dep is not.
 
 ## [1.2.0] — 2026-07-14
 

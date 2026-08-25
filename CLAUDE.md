@@ -51,6 +51,7 @@ CYRIUS_DCE=1 cyrius build ...            # DCE release build
 echo "AGNOS" | ./build/anuenue           # one-shot tint
 iam | ./build/anuenue                    # MOTD pipeline
 ./build/anuenue -a < poem.txt            # animated mode
+echo "AGNOS" | ./build/anuenue -v        # diagnostics on stderr (stdout unchanged)
 ```
 
 ## Key Principles
@@ -82,6 +83,8 @@ iam | ./build/anuenue                    # MOTD pipeline
 - Do not use `break` in while loops with `var` declarations — use flag + `continue`
 - Do not add Cyrius stdlib includes in individual src files — the manifest resolves them
 - Do not hardcode toolchain versions in CI YAML — the `cyrius = "X.Y.Z"` pin in `cyrius.cyml` is the only source of truth
+- Do not hand-roll the toolchain install in CI — pipe the pin to the upstream `scripts/install.sh`. Untarring into `$HOME/.cyrius/{bin,lib}` is the pre-6.5 layout and `cyrius deps` hard-fails on it from 6.5.x
+- Do not write diagnostics to stdout, ever — anuenue is a pipe filter. See [ADR 0004](docs/adr/0004-stderr-only-observability.md)
 
 ## Process
 
@@ -161,14 +164,16 @@ Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of
 - `return;` without value is invalid — always `return 0;`
 - All `var` declarations are function-scoped — no block scoping
 - Max limits per compilation unit: 4,096 variables, 1,024 functions, 256 initialized globals
+- **`var` is function-scoped, not block-scoped** — two `var x` in different `if`/`while` bodies of the same function is a `duplicate variable` compile error. Prefix helper locals in long functions (e.g. test bodies) to avoid collisions
+- **Do not rely on implicit literal→`Str` coercion across a function boundary.** A string literal is coerced at a call site whose parameter is typed `Str`, but *not* in return-expression position (`return f(K, "lit")` does not coerce, `f(K, "lit");` does). Convert explicitly with `str_new(cstr, strlen(cstr))` at the boundary — see [ADR 0004](docs/adr/0004-stderr-only-observability.md)
 
 ## Dependencies (durable map; versions in state.md)
 
 | Dep | Role | Notes |
 |-----|------|-------|
 | `darshana` | ANSI color escape generation (24-bit / 256 / 16-color fallback paths) | Substrate. anuenue should NEVER emit raw `\x1b[...m` — always via darshana. |
-| `sakshi` | Errors / tracing / structured logging | Canonical per first-party-standards. No inline error types. |
-| `agnostik` | Shared Result / Error type shapes | Used wherever sakshi APIs surface |
+| `sakshi` | Errors / tracing / structured logging | Canonical per first-party-standards. No inline error types. Wired at v1.2.1 via `src/observe.cyr`. **stderr only** — never `sakshi_output_file` / `_udp`, which would breach the capability bound. See [ADR 0004](docs/adr/0004-stderr-only-observability.md). |
+| `agnostik` | Shared Result / Error type shapes | Used wherever sakshi APIs surface. Every anuenue failure path returns through `anuenue_fail(kind, msg)`; kind → exit code is `STIK_ERR_INVALID_ARGUMENT` → 2, everything else → 1. |
 | Cyrius stdlib | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, flags, chrono | Auto-resolved by `cyrius deps`. `args` + `flags` added at M2; `chrono` at M4 for `sleep_ms` + `clock_now_ns`. |
 
 HSV→RGB math is inline in `src/hsv.cyr` (~30 lines incl. phase-wrap + 6-sector branch table; no `abaco` dep needed). See [ADR 0002](docs/adr/0002-hsv-inline-not-abaco.md) for the design + post-v1.0 revisit triggers.
@@ -180,7 +185,7 @@ HSV→RGB math is inline in `src/hsv.cyr` (~30 lines incl. phase-wrap + 6-sector
 - **Tag filter**: release workflow triggers on `tags: ['[0-9]*']` — semver-only.
 - **Version-verify gate**: release asserts `VERSION == cyrius.cyml version == git tag` before building.
 - **Workflow layout**:
-  - `.github/workflows/ci.yml` — build, test, golden-check, animate-smoke, fuzz, version-consistency
+  - `.github/workflows/ci.yml` — install (upstream `install.sh`), verify-layout, deps, DCE build, lint, test, golden-check, animate-smoke, fuzz, observe-check, distlib-drift, version-consistency
   - `.github/workflows/release.yml` — version gate → CI gate → DCE build → artifacts
 
 ## Docs

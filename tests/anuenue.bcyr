@@ -21,6 +21,7 @@
 #
 # Stdlib + darshana + the filter source auto-included via cyrius.cyml.
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"

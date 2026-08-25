@@ -17,6 +17,7 @@
 #   - Long-cluster patterns (base + many combiners) — the M8 attack shape
 #   - max_clusters cap exhaustion (cluster count saturates, sentinel lags)
 
+include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"
