@@ -1,139 +1,275 @@
 # anuenue — Roadmap
 
-> Milestone plan through v1.0. State lives in [`state.md`](state.md);
-> this file is the sequencing — what ships, in what order, against
-> what dependency gates.
+> **Sequencing, not status.** What ships next, in what order, against what
+> gates. Current-state numbers (version, size, counts, pins) live in
+> [`state.md`](state.md); per-cut narrative lives in
+> [`CHANGELOG.md`](../../CHANGELOG.md).
+>
+> Reorganised at v1.2.2. The pre-GA milestone plan (M0–M8) is finished and
+> collapsed into [§ Shipped](#shipped); everything below the fold is forward
+> work only. **Every open item in this file traces to a specific deferral in the
+> code, an ADR, or an audit report** — if it isn't here, it isn't planned.
 
 ## What anuenue is
 
-A Cyrius-native `lolcat` equivalent. Pure stdin → stdout pipe filter that tints each character (or grapheme cluster, post-M3) along an HSV cycle, emitting 24-bit ANSI escapes via `darshana`. Capability-bounded: no file I/O, no network, no fork/exec.
+A Cyrius-native `lolcat` equivalent. Pure stdin → stdout pipe filter that tints
+each grapheme cluster along an HSV cycle, emitting ANSI escapes via `darshana`.
+Capability-bounded: no file I/O, no network, no fork/exec.
 
-Position in the AGNOS userland: founder of the **pipe-decorator family** (see [shared-crates.md § Pipe-decorator family](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)). Sibling-not-overlap with the terminal-aesthetics quintet (those produce their own output; pipe-decorators are pure filters on what passes through them).
+Founder of the **pipe-decorator family** in the AGNOS userland (see
+[shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)).
+Sibling-not-overlap with the terminal-aesthetics quintet: those produce their
+own output, pipe-decorators are pure filters on what passes through them.
 
-## v1.0 Criteria
+## Where things stand
 
-**v1.0.0 tagged 2026-05-22 on user signal — 8 of 10 met.** The
-two deferred items (Dogfooded + Downstream gate) block on external
-consumer wiring (`agnoshi` MOTD or `iam` login splash); they're
-adoption properties the project can't satisfy unilaterally and
-are tracked post-1.0. The full criterion list:
+**v1.2.2.** The v1.x public API contract — flag set, exit codes, output shape,
+capability surface — has been frozen since GA and is unbroken. Two P(-1) audits
+have run against it with zero HIGH+ findings open.
 
-- [x] **Public CLI surface frozen** — every flag documented, every flag exercised in tests, every flag behavior matches docs *— shipped at M7 / v0.8.0; refreshed `print_usage`, three ADRs (0001/0002/0003), `docs/guides/integrating-anuenue.md`, and eight runnable examples land the contract*
-- [x] **UTF-8 correct by default** — grapheme-cluster aware cycling (Ruby lolcat got this wrong; AGNOS ships it right) *— shipped at M3 / v0.4.0; practical-subset classifier, ADR 0003 (M7) records the trade vs full UAX #29*
-- [x] **TTY-aware** — no ANSI when stdout isn't a terminal; sensible behavior with `NO_COLOR` env *— shipped at M6 / v0.7.0; isatty via darshana 0.5.3's `tty_isatty` (sandhi closeout v0.7.1); NO_COLOR / `--no-color` / stdout-not-TTY all route to MONO*
-- [x] **Color-mode negotiation** — 24-bit / 256-color / 16-color / monochrome fallback per `TERM` + `COLORTERM` *— shipped at M6 / v0.7.0; four-mode taxonomy with priority chain, override via `--color <mode>`*
-- [x] **Animation parity with `lolcat -a`** — cursor positioning, frame timing, signal-safe (SIGINT restores cursor) *— shipped at M4 / v0.5.0; non-blocking signalfd probe between frames, `tty_cursor_up` re-anchor, 16 ms frame interval*
-- [x] **Per-character overhead measured** — benchmark showing the cost vs `cat`, tracked in `docs/benchmarks.md` *— M5 (v0.6.0) shipped scripts/perf-bench.sh as the ratchet; ASCII no-LF at 47 ns/byte, below the v0.3.0 53 ns/byte floor*
-- [ ] **Dogfooded** in real AGNOS pipelines (`iam | anuenue` MOTD; `bnrmr | anuenue` banners) for at least one minor-cycle window *— deferred to post-1.0; blocks on first external-consumer wiring (`agnoshi` MOTD chain or `iam` login splash anticipated)*
-- [x] **Security audit pass** — `docs/audit/YYYY-MM-DD-audit.md` clean; specific checks for stdin-bytes-as-untrusted and buffer-bounds on the line buffer *— shipped at M8 / v0.8.0; [`docs/audit/2026-05-22-audit.md`](../audit/2026-05-22-audit.md), 1 HIGH (fixed in-cycle: `_render_frame` long-cluster heap overflow), 1 LOW + 8 INFO; zero HIGH+ open at the audit close*
-- [x] **CHANGELOG complete** from v0.1.0 onward *— all eight cuts (v0.1.0 → v0.7.1) sectioned; maintained at every cut*
-- [ ] **Downstream gate**: at least one consumer green (likely `agnoshi` MOTD pipeline or `iam`'s default chain) *— deferred to post-1.0; same blocker as Dogfooded above*
+The v1.0 acceptance scorecard closed **8 of 10** at GA. The two open items are
+adoption properties, not code, and are tracked in
+[§ Adoption](#adoption--blocked-on-external-consumers) below.
 
-## Dependency Map
+---
 
-anuenue is small enough that the dep map is the *core* of the roadmap — each milestone gates on what darshana / sakshi / vyakarana expose.
+## v1.3.0 — Animation slot
 
-| Dep | Used At | Provides | Pin Strategy |
-|-----|---------|----------|--------------|
-| **darshana** | v0.2.0+ | ANSI 24-bit escape generation (`tty_fg_rgb_buf` / `tty_sgr_reset_buf`); relative cursor positioning (`tty_cursor_up` / `_down` at 0.5.2); `tty_isatty` + `tty_sgr_buf` + `tty_fg_256_buf` at 0.5.3 | Track latest stable; bump on sandhi at each minor close per [feedback_dep_lockin_sandhi_unlock](https://github.com/MacCracken/agnosticos/blob/main/.claude/projects/-home-macro-Repos-agnosticos/memory/feedback_dep_lockin_sandhi_unlock.md). Currently pinned to **0.5.3** (sandhi closeout v0.7.1). |
-| **sakshi** | v0.1.0+ (required by standards) | Error type, tracing, structured logging | Tag-pinned; bump on consumer-need or sandhi. Currently 2.2.5. |
-| **agnostik** | v0.1.0+ | Shared Result / Error shapes | Tag-pinned. Currently 1.2.2. |
-| **Cyrius stdlib** | all | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, flags (M2+) | Toolchain pin (`cyrius.cyml [package].cyrius`). Currently 6.0.1. |
+Everything currently actionable clusters on one surface. Animation is the least
+exercised path in the tree: it is the only code that touches signals, the only
+code with input caps, and the only code no test drives through a real terminal.
 
-Explicitly **not** wired (evaluated and rejected for v1.0):
+| Item | Source of the deferral | Shape |
+|------|------------------------|-------|
+| ~~**`-i` / `--interval <ms>`**~~ **— DONE** | `src/animate.cyr` | Shipped. Rejects non-positive (usage error) and clamps above `ANUENUE_MAX_INTERVAL_MS`, because `sleep_ms` truncates to a 32-bit `int` and a large value lands on either "blocks forever" or "returns instantly". Surfaced **B-01/B-02/B-03** — see below. |
+| **PTY-backed animation test** | [2026-08-25 audit § Next audit](../audit/2026-08-25-audit.md) | `scripts/animate-smoke.sh` asserts the *structure* of the escape stream; nothing drives anuenue through a real terminal. darshana's `tests/pty.tcyr` is the reference implementation. Target: the cursor-restore paths on both clean exit and SIGINT. |
+| ~~**Re-measure audit INFO 8 + 9**~~ **— DONE, and they were a real defect** | [2026-05-22 audit](../audit/2026-05-22-audit.md) findings 8 and 9 | Measured via `tests/probes/sigmask-probe.cyr` under `prlimit --nofile=3`. **B-01**: `_open_exit_signalfd` leaked its `SIG_BLOCK` on a failed `signalfd(2)`, leaving HUP/INT/TERM blocked with no fd to drain them — Ctrl-C, `kill` and hangup all inert, only SIGKILL working. The same defect darshana fixed at v0.9.3; anuenue's hand-rolled copy predates it. Mutation-proven. Why it went unmeasured for three minors is recorded in the CHANGELOG: the obvious test cannot work, because `args_init()` needs a descriptor to read argv, so the CLI never reaches animation under an fd limit. |
+| **Fuzz `_color_override_from_str` + `anuenue_log_parse`** | [2026-08-25 audit § Next audit](../audit/2026-08-25-audit.md) | Both parsers now **reject** unknown input rather than falling back (A-04, and the v1.2.1 `--log-level` rule). A rejecting parser has a failure mode a falling-back one doesn't — asserting total behaviour over random byte strings is cheap and there are five existing harnesses to copy. |
+| **Populate `docs/architecture/`** | `docs/architecture/README.md` — Items section still reads "_Empty_" while CLAUDE.md lists it as a documentation path | The v1.2.2 audit surfaced several qualifying invariants: `_pretag_clusters` writes its sentinel at the *stop offset* (so the caps drop input rather than uncolouring it); `FLUSH_RESERVE = 32` and why; the phase-normalization contract that keeps `_PHASE_ESC_TABLE` indices in range; `src/observe.cyr` must depend on nothing from anuenue or the include order cycles. Each is "how the world is", not a decision — ADRs are the wrong home. |
 
-- **vyakarana** — evaluated at M3, rejected: it's a *source-code tokenizer* (token-kind spans for syntax highlighting via CYML grammars), not a Unicode database. anuenue ships an inline practical-subset grapheme-cluster classifier (~18 combining ranges + ZWJ + VS + RI) instead. ADR 0003 (planned M7) will record the trade vs full UAX #29.
-- **abaco** — math/expression eval. HSV→RGB is ~10 lines inline; pulling abaco is overkill. Revisit only if a second pipe-decorator wants shared color math.
-- **ranga** — image-processing color conversion. Wrong substrate shape — anuenue is per-character at terminal output, not pixel-buffer manipulation. Possible v2+ dep if anuenue grows an image-input mode (it shouldn't).
-- **kashi** — PSF font rendering. Wrong domain — anuenue tints existing glyphs, doesn't draw them.
+**Found while doing the above** — three defects the `-i` flag exposed, all fixed
+in-slot and all covered by `scripts/signal-check.sh`:
 
-## Current focus
+- **B-01 (MEDIUM)** — `SIG_BLOCK` leaked on a failed `signalfd(2)`; process
+  left unkillable except by SIGKILL.
+- **B-02 (MEDIUM)** — the frame loop slept a whole interval before checking for
+  signals, so a long `-i` made the process unresponsive to SIGTERM for that
+  whole interval. `_frame_wait` now slices the wait at `ANUENUE_TICK_MS`.
+- **B-03 (LOW)** — `--duration` overshot by up to one interval, same cause.
 
-**v1.0.0 GA — shipped 2026-05-22.** The public API contract is
-frozen for the v1.x line. The project enters its
-maintenance + organic-adoption phase: patch cuts fix what
-consumers find; minor cuts add non-breaking surface; v2.0 is
-reserved for breaking changes.
+**Gate**: the usual — `cyrius audit` clean on all three gates, all six goldens
+byte-identical, perf within noise of v1.2.2's 46.64 ns/byte, and a P(-1) audit
+delta recorded per the cadence below.
 
-**Shipped:** M0 (v0.1.0) → M1 (v0.2.0) → M2 (v0.3.0) → M3 (v0.4.0)
-→ M4 (v0.5.0) → M5 (v0.6.0) → M6 (v0.7.0) → sandhi closeout
-(v0.7.1) → M7 (docs) + M8 (audit) (v0.8.0) → quality slot
-(v0.9.0) → **v1.0.0 GA**. Eleven releases across two calendar
-days (2026-05-21 / 2026-05-22). See the per-milestone entries
-below for delivered surface.
+---
 
-**Post-v1.0:** maintenance + organic adoption. Two deferred
-v1.0 acceptance items (Dogfooded + Downstream gate) close once
-an external consumer is green. See [§ Post-v1.0](#post-v10--maintenance--organic-adoption).
+## v1.x — later minors
 
-## Milestones
+Real, but not scheduled: each is either blocked on something outside the repo or
+waiting for a second data point.
 
-### Shipped — M0 through v1.0.0
+### Adoption — blocked on external consumers
 
-Full per-cut narratives live in [`CHANGELOG.md`](../../CHANGELOG.md);
-this table is just the index.
+The two v1.0 acceptance items still open. Neither is code anuenue can write.
 
-| Cut      | Slot                            | Headline                                                                                                                |
-|----------|---------------------------------|-------------------------------------------------------------------------------------------------------------------------|
-| v0.1.0   | M0 — Scaffold                   | `cyrius init anuenue` scaffold; doc tree; deps pinned (darshana 0.5.0, sakshi 2.2.5, agnostik 1.2.2).                    |
-| v0.2.0   | M1 — Minimum Viable Filter      | stdin → stdout per-byte 24-bit rainbow via darshana 0.5.1's `tty_fg_rgb_buf`. Pipe-pure: read+write+brk+exit only.       |
-| v0.3.0   | M2 — Flag Surface               | `-h` / `-V` / `-p` / `-s` / `-F` via `lib/flags.cyr`; deterministic-seed golden harness.                                 |
-| v0.4.0   | M3 — UTF-8 Grapheme Awareness   | Cycle by cluster, not byte. Practical-subset extending-cp classifier + ZWJ + RI latches + chunk-boundary carry.         |
-| v0.5.0   | M4 — Animation Mode             | `-a` / `-d` / `-S`; cluster pre-tag + 16 ms frame loop + non-blocking signalfd + darshana 0.5.2 `tty_cursor_up`.        |
-| v0.6.0   | M5 — Performance Pass           | ASCII short-circuit + binary-searched `cp_is_extending` LUT + 1 530-entry phase-cached escape buffer. 91.6 → 47.0 ns/B. |
-| v0.7.0   | M6 — Color-Mode Negotiation     | TRUECOLOR / 256 / 16 / MONO with priority chain; `--no-color` / `--force-color` / `--color <mode>` flags.               |
-| v0.7.1   | Sandhi closeout                 | darshana 0.5.3 swap (`tty_isatty` / `tty_sgr_buf` / `tty_fg_256_buf`); stand-ins removed; DCE cap raised 350 → 512 KB.   |
-| v0.8.0   | M7 + M8 — Docs + Audit          | Three ADRs (pipe-purity / HSV-inline / grapheme-cluster), integration guide, 8 examples, refreshed `print_usage`. M8 audit found + fixed one HIGH (`_render_frame` long-cluster heap overflow); zero HIGH+ open. |
-| v0.9.0   | Quality slot                    | `fuzz/` populated with 5 harnesses (1.35M assertions, CI-gated). `animate-smoke.sh` extended to `--color=256` + `--color=16`. M0-anticipated `src/hsv.cyr` split landed. 5 pre-existing main.cyr lint warnings cleared. DCE binary byte-identical at 351 200 B. |
-| **v1.0.0** | **GA**                        | Public API contract frozen for the v1.x line. 8 of 10 v1.0 acceptance criteria met at tag; Dogfooded + Downstream gate deferred to post-1.0 organic adoption. DCE binary 351 200 B unchanged from v0.9.0. |
+- **Dogfooded** — `iam | anuenue` MOTD or `bnrmr | anuenue` banners running in a
+  real AGNOS pipeline for at least one minor-cycle window.
+- **Downstream gate** — at least one consumer green against v1.x (`agnoshi`
+  MOTD chain or `iam`'s default login chain anticipated).
 
-### v1.0.0 — GA (shipped 2026-05-22)
+Both close as retroactive acceptance once an integration lands. The v1.0
+*contract* is what makes adoption tractable; shipping it was the deliverable,
+and adoption is not a property the project can satisfy unilaterally.
 
-Public API contract frozen for the v1.x line. Dep pins set
-(darshana 0.5.3 / sakshi 2.2.5 / agnostik 1.2.2 / Cyrius 6.0.1).
-Tagged on user signal per
-[feedback_no_unprompted_version_bumps](https://github.com/MacCracken/agnosticos/blob/main/.claude/projects/-home-macro-Repos-agnosticos/memory/feedback_no_unprompted_version_bumps.md).
+### Waiting for a second data point
 
-**Acceptance scorecard** (8/10 met at tag): see the table in
-[v1.0 Criteria](#v10-criteria) above. The two deferred items
-(Dogfooded + Downstream gate) close once at least one external
-consumer (`agnoshi` MOTD or `iam` login splash) is green against
-v1.x for a minor-cycle window. Both are post-1.0 organic-adoption
-work — the v1.0 *contract* is what makes adoption tractable, and
-shipping that contract is the project deliverable.
+| Item | Trigger that unblocks it | Source |
+|------|--------------------------|--------|
+| **Extract the HSV model to a shared crate** (or pull `abaco`) | A second pipe-decorator wants its own rainbow tint. Until then the inline copy is free. | [ADR 0002 § Revisit triggers](../adr/0002-hsv-inline-not-abaco.md) |
+| **`-vvv` repeat-count verbosity** | A consumer asks. `--log-level=trace` is self-documenting in a script and greppable in shell history; `-v` covers the interactive case. cmdit supports repeat counts, so the cost is low if the ask arrives. | [ADR 0004 § Alternatives](../adr/0004-stderr-only-observability.md) |
+| **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. Needs a real use case before trading either away. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
+| **Fixed input corpus for `tests/anuenue.bcyr`** | Wanting end-to-end numbers *inside* the bench harness. Today `scripts/perf-bench.sh` owns end-to-end measurement and the `.bcyr` file benches two functions. The split works; this only matters if the shell harness becomes the bottleneck. | `tests/anuenue.bcyr` — "once we have a fixed input corpus to bench" |
 
-### Post-v1.0 — maintenance + organic adoption
+### Explicitly declined
 
-- **API stable.** Breaking changes require v2.0. Sandhi bumps
-  within v1.x update internal helpers / perf surface but not the
-  documented user contract.
-- **Patch cuts** (`1.0.x`) fix what consumers find.
-- **Minor cuts** (`1.x.0`) add non-breaking surface or close the
-  remaining v1.0 acceptance items once consumers land.
-- **Sandhi cadence** continues — `darshana` / `sakshi` /
-  `agnostik` bumps follow the proposal → swap → goldens-unchanged
-  pattern. The darshana 0.5.1 → 0.5.2 → 0.5.3 sequence (M1 / M4 /
-  M6 closeout) is the reference.
-- **Audit cadence:** re-run the security audit at each minor cut;
-  record as a delta vs [`docs/audit/2026-05-22-audit.md`](../audit/2026-05-22-audit.md).
+Recorded so they are not re-raised as findings.
 
-## Out of Scope (for v1.0)
+- **Logging parse errors.** Observability is configured *from* parsed flags, so
+  a `cmdit` parse failure precedes the level being known. A pre-parse argv scan
+  for `-v` would duplicate cmdit's tokenizer — exactly the duplication adopting
+  cmdit at v1.1.4 removed. Those paths keep their existing stderr wording.
+  ([ADR 0004](../adr/0004-stderr-only-observability.md))
+- **Flattening the remaining `} } } }` chains** in `src/main.cyr` and
+  `src/filter.cyr`. Both are genuine 4-way dispatches at ≤24 columns and both
+  pass `cyrius fmt`. `hsv_rainbow` was flattened at v1.2.2 because the formatter
+  cascaded it to 24 columns *and* it is a lookup table whose parallel alignment
+  carries meaning. These two are neither. ([2026-08-25 audit § Deferred](../audit/2026-08-25-audit.md))
 
-Capture what's deliberately NOT in scope — keeps future contributors from adding to v1.0 by accident.
+### Upstream, not anuenue's to fix
 
-- **File-input mode** (`anuenue file.txt`). Use `cat file.txt | anuenue`. Pipe purity is the design.
-- **Image input** — wrong domain; anuenue is for terminal text. (If image-rainbow ever wants to exist, it's a different tool consuming `ranga`.)
-- **Custom palettes** beyond HSV cycle. ROYGBIV is the brand; if other palettes ship, post-1.0.
-- **Configuration file**. The CLI flags are the surface. No `~/.anuenue.cyml`.
-- **Themes / output styles** beyond color. No bold, no italic, no underline injection. ANSI fg only.
-- **Network features** — there are none. Don't add any.
+- **`-p -9223372036854775808` is rejected while `i64::MAX` is accepted.** cmdit's
+  integer parser refuses the most-negative i64 (the negate-MIN case). Rejecting
+  is the safe direction and the asymmetry is cmdit's to resolve. Recorded so the
+  next audit does not re-derive it.
 
-## Pipe-Decorator Family Successors (post-1.0, idea-tier)
+---
 
-When anuenue ships, the pipe-decorator family exists as a category. Possible siblings (idea-stage, no commitments — captured in [shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md) when they earn entries):
+## v2.0 — reserved
 
-- `boxes`-equivalent — wrap stdin in ASCII borders (Sanskrit naming TBD)
-- `cowsay`-equivalent — ASCII speech bubble (cultural anchor TBD)
+**Nothing is queued.** The v1.x contract is frozen and no open item requires
+breaking it.
+
+What would earn a major: removing or renaming a flag; changing an exit code;
+changing the output byte shape for input that renders today; narrowing the
+capability surface a consumer depends on. Anything that only *adds* surface is a
+minor.
+
+---
+
+## Ongoing cadence — not milestones
+
+These run every cut and never "complete".
+
+- **Audit cadence.** A P(-1) sweep at every minor cut, recorded as a delta vs the
+  previous report. Two have run: the
+  [v0.8.0 baseline](../audit/2026-05-22-audit.md) and the
+  [v1.2.2 P-1 sweep](../audit/2026-08-25-audit.md). The v1.2.2 lesson is now
+  policy: **an accepted INFO finding is a hypothesis about behaviour, not a
+  measurement of it** — re-measure accepted items rather than carrying the prior
+  description forward. That is why INFO 8 and 9 are scheduled work above and not
+  a footnote.
+- **Sandhi cadence.** darshana / cmdit / sakshi / agnostik bumps follow
+  proposal → swap → goldens-unchanged. Re-evaluate pin lag at each minor cut,
+  per [feedback_dep_lockin_sandhi_unlock](https://github.com/MacCracken/agnosticos/blob/main/.claude/projects/-home-macro-Repos-agnosticos/memory/feedback_dep_lockin_sandhi_unlock.md).
+  v1.2.1 is the cautionary reference: manifest tags had drifted from the
+  vendored bytes because a `path`-mode tag only binds when `cyrius.lock` agrees.
+  Invalidate the lock when changing a tag, and check the bundle's `# Version:`
+  header.
+- **Binary size: track, do not cap.** The 512 KB cap was removed at v1.2.2 —
+  the number now measures the first-party dep surface far more than it measures
+  anuenue, and `CYRIUS_DCE=1` stopped removing anything on 6.5.x. Record the
+  size every release and attribute any step change. See
+  [`state.md` § Binary](state.md#binary).
+- **Perf ratchet.** `scripts/perf-bench.sh` at every cut, measured head-to-head
+  against a rebuilt prior binary on one idle host rather than against a
+  historical figure. M5 acceptance: ASCII no-LF ≤ 60 ns/byte.
+
+---
+
+## Out of scope
+
+Deliberately not in anuenue, at any version. Keeps contributors from adding
+them by accident.
+
+- **File-input mode** (`anuenue file.txt`). `cat file.txt | anuenue` is the
+  file story. Pipe purity is the design — [ADR 0001](../adr/0001-pipe-purity.md).
+- **Configuration file.** The CLI flags are the surface. No `~/.anuenue.cyml`.
+- **Custom palettes / theme system.** The rainbow is the brand.
+- **Output styles beyond colour.** No bold, italic or underline injection.
+  ANSI foreground only.
+- **User-supplied colour expressions** (`-e 'hsv(phase*2)'`). Would need an
+  expression evaluator and violates ADR 0001. This is also the second
+  [ADR 0002](../adr/0002-hsv-inline-not-abaco.md) revisit trigger — if the rule
+  ever relaxes, that ADR reopens first.
+- **Image input.** Wrong domain. A different tool consuming `ranga`, if ever.
+- **Network features.** There are none. Do not add any.
+- **Diagnostics on stdout.** Every diagnostic byte goes to fd 2, at every
+  verbosity — [ADR 0004](../adr/0004-stderr-only-observability.md), enforced by
+  `scripts/observe-check.sh`.
+
+---
+
+## Shipped
+
+Per-cut narrative in [`CHANGELOG.md`](../../CHANGELOG.md); this is the index.
+
+### v1.x
+
+| Cut | Slot | Headline |
+|-----|------|----------|
+| v1.2.2 | P(-1) audit sweep | 9 findings (2 MEDIUM, 5 LOW, 2 INFO), all fixed in-cut, zero HIGH+ open. Unchecked `alloc` → null write; `--duration` overflow inverting long animations to a one-frame exit; three silent-fallback defects. `scripts/robustness-check.sh` added (11 checks: UTF-8 carry across the read boundary, byte preservation under malformed input, argv at i64 extremes). **512 KB size cap removed.** 308 → 349 assertions. |
+| v1.2.1 | Toolchain + deps + observability + CI repair | cyrius `6.4.62` → `6.5.35`; darshana `1.0.0` (API freeze), cmdit `1.2.4`, sakshi `2.4.11`, agnostik `1.5.1`. **sakshi + agnostik wired** (`src/observe.cyr`) after being declared-but-uncalled since M0 — `-v` / `--log-level`, stderr-only, ADR 0004. CI's hand-rolled pre-6.5 toolchain install replaced with the upstream installer (it would have broken on the pin bump). 242 → 308 assertions. |
+| v1.2.0 | Library surface | `dist/anuenue.cyr` distlib — the pure HSV phase model becomes consumable in-process. First consumer: thoth's `/theme rainbow`. |
+| v1.1.5 | AGNOS colour fix | Rainbow collapsed to 16 colours on AGNOS (env heuristics on a platform that sets no env); agnos now defaults to truecolor. |
+| v1.1.4 | CLI parsing → cmdit | Dropped the stdlib `flags` parser for the cmdit distlib. Byte-compatible; anuenue is cmdit's second worked migration. |
+| v1.1.3 | Toolchain + dep refresh | cyrius `6.1.14` → `6.2.24` plus the first sandhi refresh after GA. |
+| **v1.0.0** | **GA** | Public API contract frozen for the v1.x line. 8 of 10 acceptance criteria met at tag. |
+
+### Pre-GA — M0 through v0.9.0
+
+Eleven releases across two calendar days (2026-05-21 / 2026-05-22).
+
+| Cut | Slot | Headline |
+|-----|------|----------|
+| v0.9.0 | Quality slot | `fuzz/` populated with 5 harnesses (1.35 M assertions, CI-gated). `animate-smoke.sh` extended to 256 / 16-colour. `src/hsv.cyr` split landed. |
+| v0.8.0 | M7 + M8 — Docs + Audit | Three ADRs, integration guide, 8 examples. Audit found and fixed one HIGH (`_render_frame` long-cluster heap overflow). |
+| v0.7.1 | Sandhi closeout | darshana 0.5.3 swap; stand-ins removed. |
+| v0.7.0 | M6 — Colour-mode negotiation | TRUECOLOR / 256 / 16 / MONO priority chain; `--no-color` / `--force-color` / `--color`. |
+| v0.6.0 | M5 — Performance pass | ASCII short-circuit, binary-searched `cp_is_extending` LUT, 1 530-entry phase-cached escape table. 91.6 → 47.0 ns/byte. |
+| v0.5.0 | M4 — Animation mode | `-a` / `-d` / `-S`; cluster pre-tag, 16 ms frame loop, non-blocking signalfd. |
+| v0.4.0 | M3 — UTF-8 grapheme awareness | Cycle by cluster, not byte. Practical-subset classifier + ZWJ + RI latches + chunk-boundary carry. |
+| v0.3.0 | M2 — Flag surface | `-h` / `-V` / `-p` / `-s` / `-F`; deterministic-seed golden harness. |
+| v0.2.0 | M1 — Minimum viable filter | stdin → stdout per-byte 24-bit rainbow. Pipe-pure: read + write + brk + exit. |
+| v0.1.0 | M0 — Scaffold | `cyrius init anuenue`; doc tree; deps pinned. |
+
+### v1.0 acceptance scorecard
+
+Eight of ten met at the GA tag. The two open items are in
+[§ Adoption](#adoption--blocked-on-external-consumers).
+
+- [x] Public CLI surface frozen — M7 / v0.8.0
+- [x] UTF-8 correct by default — M3 / v0.4.0, [ADR 0003](../adr/0003-grapheme-cluster-cycling.md)
+- [x] TTY-aware (`NO_COLOR`, stdout-not-a-TTY) — M6 / v0.7.0
+- [x] Colour-mode negotiation — M6 / v0.7.0
+- [x] Animation parity with `lolcat -a` — M4 / v0.5.0
+- [x] Per-character overhead measured — M5 / v0.6.0, `docs/benchmarks.md`
+- [x] Security audit pass — M8 / v0.8.0, re-run at v1.2.2
+- [x] CHANGELOG complete from v0.1.0 — maintained at every cut
+- [ ] **Dogfooded** in real AGNOS pipelines for one minor-cycle window
+- [ ] **Downstream gate** — at least one consumer green
+
+---
+
+## Dependency map
+
+Versions live in [`state.md` § Dependencies](state.md#dependencies); this is the
+durable shape and the rationale.
+
+| Dep | Provides | Notes |
+|-----|----------|-------|
+| **darshana** | ANSI escape generation — `tty_fg_rgb_buf`, `tty_fg_256_buf`, `tty_sgr_buf`, `tty_sgr_reset_buf`, `tty_sgr_reset`, `tty_cursor_up` / `_hide` / `_show`, `tty_isatty` | v1.0.0 is the API freeze; anuenue's nine call sites are all inside the frozen 29-function surface. anuenue never emits a raw escape. |
+| **cmdit** | CLI / argument parsing (getopt-long) | Adopted at v1.1.4, replacing the stdlib `flags` parser. anuenue is cmdit's second worked migration, after kii. |
+| **sakshi** | Errors / tracing / structured logging | Canonical per first-party-standards. Wired at v1.2.1 (`src/observe.cyr`). **stderr only** — the file and UDP output targets would breach the capability bound and are never selected. |
+| **agnostik** | Shared Result / Error shapes | Wired at v1.2.1. Every failure returns through `anuenue_fail(kind, msg)`; `STIK_ERR_INVALID_ARGUMENT` → exit 2, everything else → exit 1. |
+| **Cyrius stdlib** | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, chrono | `flags` was dropped at v1.1.4; `chrono` added at M4 for frame timing. |
+
+Evaluated and **not** wired:
+
+- **vyakarana** — a *source-code tokenizer* (token-kind spans for syntax
+  highlighting), not a Unicode database. anuenue ships an inline
+  practical-subset grapheme-cluster classifier instead;
+  [ADR 0003](../adr/0003-grapheme-cluster-cycling.md) records the trade against
+  full UAX #29.
+- **abaco** — expression evaluation. HSV→RGB is ~30 lines inline;
+  [ADR 0002](../adr/0002-hsv-inline-not-abaco.md) records the decision and its
+  two revisit triggers.
+- **ranga** — image-processing colour conversion. Wrong substrate: anuenue is
+  per-character at terminal output, not pixel-buffer manipulation.
+- **kashi** — PSF font rendering. Wrong domain: anuenue tints existing glyphs,
+  it doesn't draw them.
+
+---
+
+## Pipe-decorator family successors
+
+Idea-tier, no commitments. Captured so v1.x architectural decisions leave room
+for siblings, and because [ADR 0002](../adr/0002-hsv-inline-not-abaco.md)'s
+first revisit trigger fires when the second of these wants a rainbow.
+
+- `boxes`-equivalent — wrap stdin in ASCII borders
+- `cowsay`-equivalent — ASCII speech bubble
 - `pv`-equivalent — pipe-viewer with throughput indicator
 
-These are not commitments — they're a shape-of-future-family marker, so the v1.0 architectural decisions leave room for sibling tools.
+They earn entries in
+[shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)
+when they become real.

@@ -1,0 +1,68 @@
+# tests/probes/sigmask-probe.cyr — forced-failure probe for
+# _open_exit_signalfd's SIG_BLOCK rollback (v1.3.0, closes the
+# 2026-05-22 audit's INFO 8 + 9).
+#
+# Driven by scripts/signal-check.sh; not a .tcyr, because it has to be
+# a standalone binary that can be run under an fd limit.
+#
+# WHY A SEPARATE BINARY
+#
+# The interesting case is "signalfd(2) fails", and the only portable
+# way to force that is to exhaust the fd table with
+# `prlimit --nofile=3`. anuenue's own CLI cannot be tested that way:
+# `args_init()` opens /proc/self/cmdline to read argv, so under
+# --nofile=3 the real binary never parses a flag, never reaches
+# animation, and never calls _open_exit_signalfd at all. (That is why
+# these two findings sat unmeasured from 2026-05-22 to v1.3.0.)
+#
+# So the probe calls NO args_init and reads NO file. It needs only the
+# three inherited descriptors, which leaves signalfd(2) as the first
+# thing that asks for fd 3 — and therefore the thing that fails.
+#
+# HOW IT OBSERVES THE MASK
+#
+# Reading /proc/self/status would need a fourth fd. Instead it queries
+# sigprocmask itself: SIG_BLOCK (how = 0) with an EMPTY set changes
+# nothing and returns the current mask through `oldset`. No fd, no
+# allocation, no side effect.
+#
+# Expected output:
+#   normal    -> fd >= 0, exit_bits_blocked = 16387 (0x4003, HUP|INT|TERM)
+#   --nofile=3 -> fd = -1, exit_bits_blocked = 0     (rollback happened)
+#
+# Mutation-proven: deleting the sys_sigprocmask(1, ...) rollback in
+# src/animate.cyr makes the second case report 16387 — signals blocked
+# for the rest of the process with no fd to drain them, so Ctrl-C,
+# `kill` and terminal hangup are all inert and only SIGKILL works.
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+fn cur_mask(): i64 {
+    # SIG_BLOCK with an empty set is a pure query: returns the current
+    # mask in oldset without changing it.
+    var empty[8];
+    var out[8];
+    var i = 0;
+    while (i < 8) { store8(&empty + i, 0); store8(&out + i, 0); i = i + 1; }
+    sys_sigprocmask(0, &empty, &out);
+    return load64(&out);
+}
+
+fn probe(): i64 {
+    var before = cur_mask();
+    var fd = _open_exit_signalfd();
+    var after = cur_mask();
+
+    syscall(1, 1, "mask_before=", 12); fmt_int(before);
+    syscall(1, 1, " fd=", 4);          fmt_int(fd);
+    syscall(1, 1, " mask_after=", 12); fmt_int(after);
+    syscall(1, 1, " exit_bits_blocked=", 19);
+    fmt_int(after & TTY_SIGMASK_EXIT);
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+var r = probe();
+syscall(60, 0);

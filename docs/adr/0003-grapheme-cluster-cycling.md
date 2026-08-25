@@ -170,7 +170,7 @@ common emoji ZWJ-sequence shape.
 - **Depend on `vyakarana`.** Rejected at M3: vyakarana is a source-
   code tokenizer (CYML token-kind spans), not a Unicode database.
   Different domain. The roadmap captures the rejection narrative
-  ([roadmap.md § Dependency Map, "Not wired"](../development/roadmap.md#dependency-map)).
+  ([roadmap.md § Dependency map, "not wired"](../development/roadmap.md#dependency-map)).
 - **Cycle per codepoint, accept the lolcat-c regression.** Rejected:
   the v1.0 acceptance criterion explicitly calls out cluster
   awareness as the differentiator vs the Ruby and C predecessors.

@@ -41,10 +41,37 @@ var ANUENUE_ANIMATE_INPUT_MAX = 65536;
 # trends higher).
 var ANUENUE_ANIMATE_CLUSTER_MAX = 8192;
 
-# Frame interval. 16 ms ≈ 60 fps — the roadmap target. Mutable so a
-# future -i / --interval flag could override; M4 itself ships no
-# flag for this.
+# Frame interval. 16 ms ≈ 60 fps — the roadmap target. Mutable so the
+# -i / --interval flag (v1.3.0) can override it without touching the
+# frame loop; main.cyr writes this var, the same shape as
+# ANUENUE_PHASE_STEP / _START.
 var ANUENUE_FRAME_MS = 16;
+
+# Upper bound for -i / --interval, and it is a correctness bound, not
+# a taste one.
+#
+# `sleep_ms(ms)` on Linux and macOS is `poll(NULL, 0, ms)`, and
+# poll(2)'s timeout argument is a 32-bit **int**. An i64 millisecond
+# count is therefore truncated on the way in, and the result is not
+# merely imprecise — it is non-monotonic. Measured on this toolchain:
+#
+#   sleep_ms(2147483647)  -> blocks ~24.8 days   (int32 max; honest)
+#   sleep_ms(2147483648)  -> truncates to -2^31  -> BLOCKS FOREVER
+#   sleep_ms(4294967296)  -> truncates to 0      -> returns instantly
+#   sleep_ms(4294967396)  -> truncates to 100    -> sleeps 100 ms
+#   sleep_ms(i64::MAX)    -> truncates to -1     -> BLOCKS FOREVER
+#
+# So a large -i does not give a slow animation. Depending on which
+# side of a power of two it lands, it gives either a hung terminal or
+# a busy-loop that renders as fast as the CPU allows — both the
+# opposite of "wait longer between frames". Same defect class as A-02
+# (2026-08-25 audit), reached through a different arithmetic.
+#
+# 3 600 000 ms is one hour per frame: far inside int32's positive
+# range, and already so far past useful that anything above it is a
+# typo rather than an intent. Values above are clamped and warned
+# about rather than rejected, matching -d.
+var ANUENUE_MAX_INTERVAL_MS = 3600000;
 
 # Default animation duration when -d isn't passed. 5 seconds is enough
 # to read the rainbow scrolling across a short fortune / motd line
@@ -336,6 +363,29 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
     return 0;
 }
 
+# Longest single sleep the frame loop will take before it re-checks
+# for a signal and for the duration deadline.
+#
+# B-02 / B-03 (v1.3.0). The loop used to sleep the entire frame
+# interval in one call and check afterwards. With ANUENUE_FRAME_MS
+# fixed at 16 that window was invisible. `-i` makes it user-supplied,
+# and two things break at the top of its range:
+#
+#   * SIGINT / SIGTERM are BLOCKED for the whole animation (they are
+#     drained through the signalfd instead), so a long sleep does not
+#     merely delay the reaction — the default disposition never fires
+#     either. Measured with `-i 3600000`: `timeout` could not kill the
+#     process at all. Only SIGKILL worked.
+#   * `-d` overshoots by up to one full interval, so `-i 3600000 -d 1`
+#     asks for one second and takes an hour.
+#
+# Slicing the wait fixes both without changing the visible frame rate:
+# the total sleep per frame is unchanged, only the granularity at
+# which we look up from it. 16 ms keeps Ctrl-C feeling instant and
+# costs one extra clock read per slice on a path that is already
+# sleeping.
+var ANUENUE_TICK_MS = 16;
+
 # ---- signal handling ----------------------------------------------
 #
 # Open a non-blocking signalfd masking SIGHUP/SIGINT/SIGTERM. Goes
@@ -359,7 +409,37 @@ fn _open_exit_signalfd(): i64 {
     # SIG_BLOCK = 0 — pile pending signals on the fd instead of
     # letting them kill us.
     if (sys_sigprocmask(0, &mask, 0) < 0) { return 0 - 1; }
-    return sys_signalfd(0 - 1, &mask, ANUENUE_SFD_NONBLOCK);
+    var fd = sys_signalfd(0 - 1, &mask, ANUENUE_SFD_NONBLOCK);
+    if (fd < 0) {
+        # B-01 (v1.3.0). Acquire order is block-then-open, so a failed
+        # open must unwind the block or the process runs the rest of
+        # its life with HUP/INT/TERM blocked and NO fd to drain them:
+        # Ctrl-C inert, `kill` inert, terminal hangup inert, only
+        # SIGKILL working. The caller is documented to degrade
+        # gracefully on -1, and "gracefully" has to mean the signals
+        # still work.
+        #
+        # This is the same defect darshana fixed in its own
+        # tty_open_signalfd at v0.9.3. anuenue rolls its own (it needs
+        # a NON-blocking fd; darshana's helper is sized for an
+        # epoll-driven consumer) and the copy predates that fix.
+        #
+        # SIG_UNBLOCK = 1. Unblock-what-you-blocked rather than
+        # restore-a-saved-mask: we passed oldset = 0 above, so there is
+        # no prior mask to restore, and unblocking exactly our three is
+        # correct even if the caller had blocked others.
+        sys_sigprocmask(1, &mask, 0);
+        # Degrading here is legitimate — the caller falls back to
+        # no-signal handling and Ctrl-C still kills the process
+        # normally, just without the explicit cursor-restore tidy-up.
+        # But it was *silent*, so a terminal left cursorless after
+        # Ctrl-C had no explanation anywhere. Same discoverability
+        # lesson as A-05.
+        anuenue_log_kv_int(SK_WARN, "signalfd unavailable; animation runs without signal-driven cursor restore",
+          "errno", 0 - fd);
+        return 0 - 1;
+    }
+    return fd;
     #endif
     # agnos: no terminal-signal generation yet (no Ctrl-C → SIGINT), so the
     # signalfd exit-cleanup is a no-op — return -1, the function's documented
@@ -382,6 +462,45 @@ fn _signal_pending(sigfd): i64 {
     #          "no signal arrived this tick".
     if (n > 0) { return 1; }
     return 0;
+}
+
+# ---- _frame_wait --------------------------------------------------
+#
+# Wait one frame interval, in slices no longer than ANUENUE_TICK_MS,
+# checking for an exit signal and for the duration deadline between
+# slices. Returns 1 if the frame loop should stop (signal arrived, or
+# the deadline passed), 0 to keep animating.
+#
+# The total sleep is ANUENUE_FRAME_MS either way — this changes the
+# granularity at which the loop looks up, not the frame rate. See
+# ANUENUE_TICK_MS for why that matters once -i is user-supplied.
+#
+# `remaining = 0; continue;` rather than `break`: cyrius `break` is
+# unreliable in a while loop that declares a `var` in its body
+# (CLAUDE.md), and this one declares `slice`.
+fn _frame_wait(sigfd, deadline_ns): i64 {
+    var remaining = ANUENUE_FRAME_MS;
+    var stop = 0;
+    while (remaining > 0) {
+        var slice = remaining;
+        if (slice > ANUENUE_TICK_MS) { slice = ANUENUE_TICK_MS; }
+        sleep_ms(slice);
+        remaining = remaining - slice;
+
+        if (_signal_pending(sigfd) == 1) {
+            stop = 1;
+            remaining = 0;
+            continue;
+        }
+        if (deadline_ns > 0) {
+            if (clock_now_ns() >= deadline_ns) {
+                stop = 1;
+                remaining = 0;
+                continue;
+            }
+        }
+    }
+    return stop;
 }
 
 # ---- main animate driver ------------------------------------------
@@ -474,13 +593,7 @@ fn anuenue_animate(duration_secs, speed): i64 {
 
         _render_frame(in_buf, ctab, n_clusters, phase_base, line_buf, ends_lf);
 
-        sleep_ms(ANUENUE_FRAME_MS);
-
-        if (_signal_pending(sigfd) == 1) { go = 0; continue; }
-
-        if (deadline_ns > 0) {
-            if (clock_now_ns() >= deadline_ns) { go = 0; continue; }
-        }
+        if (_frame_wait(sigfd, deadline_ns) == 1) { go = 0; continue; }
 
         phase_base = phase_base + speed;
     }

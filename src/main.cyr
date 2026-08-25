@@ -62,6 +62,7 @@ fn print_usage(fs): i64 {
     _eprint("  iam | anuenue -p 3                           # tighter rainbow (MOTD pipeline)\n");
     _eprint("  bnrmr \"AGNOS\" | anuenue -s 42                # deterministic seed\n");
     _eprint("  cat poem.txt | anuenue -a                    # animate (~5 s, Ctrl-C to stop)\n");
+    _eprint("  cat poem.txt | anuenue -a -i 33              # animate at ~30 fps instead of 60\n");
     _eprint("  NO_COLOR=1 echo \"AGNOS\" | anuenue            # passthrough — byte-identical to input\n");
     _eprint("  echo \"AGNOS\" | anuenue --color=256           # quantize to xterm 256-cube\n");
     _eprint("  echo \"AGNOS\" | anuenue --color=16            # bright-16 ANSI palette\n");
@@ -152,6 +153,8 @@ fn main(): i64 {
       "animation duration in seconds (0 = until SIGINT)");
     var f_speed       = cmdit_int (fs,  83, "speed",       ANUENUE_DEFAULT_SPEED,
       "animation: phase advance per frame");
+    var f_interval    = cmdit_int (fs, 105, "interval",    ANUENUE_FRAME_MS,
+      "animation: milliseconds between frames (default 16 = ~60 fps)");
     var f_no_color    = cmdit_bool(fs, 110, "no-color",    "disable colour (pass-through cat)");
     var f_force_color = cmdit_bool(fs,  67, "force-color", "emit colour even when stdout isn't a TTY");
     var f_color       = cmdit_str (fs,  99, "color",       "auto",
@@ -231,6 +234,33 @@ fn main(): i64 {
         return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
           "--duration must be >= 0 (0 means run until SIGINT)");
     }
+
+    # v1.3.0 -i / --interval. Rejected low, clamped high, for two
+    # different reasons.
+    #
+    # Low: a non-positive interval is not "as fast as possible" — 0 is
+    # a busy-loop that pins a core, and a negative value reaches
+    # poll(2) as an infinite timeout and hangs the terminal. Neither is
+    # something anyone asks for, so it is a usage error, the same shape
+    # as --duration (A-03).
+    #
+    # High: see ANUENUE_MAX_INTERVAL_MS in src/animate.cyr. sleep_ms
+    # truncates to a 32-bit int, so a large value lands anywhere from
+    # "blocks forever" to "returns instantly" depending on which side
+    # of a power of two it falls on. Clamping keeps the flag monotonic
+    # — a bigger number always means a slower animation.
+    var interval_ms = cmdit_get_int(fs, f_interval);
+    if (interval_ms <= 0) {
+        return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
+          "--interval must be > 0 milliseconds");
+    }
+    if (interval_ms > ANUENUE_MAX_INTERVAL_MS) {
+        anuenue_log_kv_int(SK_WARN, "--interval clamped; sleep_ms truncates to a 32-bit int above this",
+          "max-ms", ANUENUE_MAX_INTERVAL_MS);
+        interval_ms = ANUENUE_MAX_INTERVAL_MS;
+    }
+    ANUENUE_FRAME_MS = interval_ms;
+    anuenue_log_kv_int(SK_DEBUG, "config", "interval-ms", ANUENUE_FRAME_MS);
 
     # M6: detect colour mode from flags + env + TTY, then dispatch.
     var color_override = _color_override_from_str(cmdit_get_str(fs, f_color));

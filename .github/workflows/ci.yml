@@ -127,6 +127,21 @@ jobs:
         # exit. ~1.35M assertions per run on the current corpus.
         run: cyrius fuzz
 
+      - name: Signal + pacing gate (v1.3.0)
+        # Animation blocks SIGHUP/SIGINT/SIGTERM and drains them through
+        # a signalfd. This gate covers what animate-smoke.sh cannot: the
+        # process SIGNAL MASK, and whether the frame loop stays
+        # responsive when the interval is user-supplied via -i.
+        #
+        # Gate 1 forces signalfd(2) to fail with `prlimit --nofile=3`
+        # and asserts the SIG_BLOCK is rolled back. That closes INFO 8
+        # and 9 from the 2026-05-22 audit, which sat unmeasured for
+        # three minors because anuenue's own CLI cannot be tested under
+        # an fd limit — args_init() needs a descriptor to read argv, so
+        # the real binary never reaches animation. See
+        # tests/probes/sigmask-probe.cyr.
+        run: sh scripts/signal-check.sh
+
       - name: Robustness gate (v1.2.2 audit)
         # Adversarial byte streams and adversarial argv — the two
         # surfaces the unit suite and the seeded fuzz harnesses do not

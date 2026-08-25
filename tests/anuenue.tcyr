@@ -94,10 +94,13 @@ fn main(): i64 {
     assert_eq(load64(&rgb + 16), 127, "sector 5 mid: B=127 (falling)");
 
     # ---- hsv_rainbow: phase normalization (large + negative) --------
-    # The modulus must wrap any phase value back into [0, 1530). The
-    # filter loop's per-byte phase advance will never go negative on
-    # its own, but a future M2 -F flag may land negative offsets and
-    # we want the model robust now.
+    # The modulus must wrap any phase value back into [0, 1530).
+    # Negative input is not hypothetical: `-s` and `-F` (shipped at
+    # M2 / v0.3.0) take arbitrary i64 from argv and are summed into
+    # ANUENUE_PHASE_START, so `-F -1` reaches here directly. A large
+    # `-p` also wraps the accumulator at i64. Either way the result
+    # indexes _PHASE_ESC_TABLE, so the normalization is a bounds
+    # guarantee, not a nicety.
     test_group("hsv_rainbow — phase normalization");
     hsv_rainbow(3060, &rgb);    # 2 * 1530 → wraps to 0
     assert_eq(load64(&rgb + 0),  255, "phase 3060 (2×mod) → red R");
@@ -978,6 +981,51 @@ fn main(): i64 {
     assert_eq(load64(aud_ct + aud_c * 8), ANUENUE_ANIMATE_CLUSTER_MAX,
               "sentinel is the stop offset, so bytes past it are dropped");
     assert_eq(load64(aud_ct + aud_c * 8) < aud_n, 1, "sentinel is short of the input length");
+
+    # ---- v1.3.0 — animation slot ----------------------------------
+
+    test_group("v1.3.0 B-02 — frame wait is sliced, not one long sleep");
+    # sleep_ms is poll(NULL, 0, ms) on Linux/macOS and poll(2)'s timeout
+    # is a 32-bit int, so a large millisecond count truncates. Measured:
+    #   2147483648 -> -2^31 -> blocks forever
+    #   4294967296 ->     0 -> returns instantly (busy loop)
+    # The tick bounds every individual sleep_ms call well inside int32,
+    # which is what keeps signal latency and deadline accuracy
+    # independent of -i.
+    assert_eq(ANUENUE_TICK_MS > 0, 1, "tick is positive (a 0 tick would spin)");
+    assert_eq(ANUENUE_TICK_MS <= ANUENUE_FRAME_MS, 1, "tick does not exceed the default frame interval");
+    assert_eq(ANUENUE_TICK_MS < 2147483647, 1, "tick is inside poll(2)'s int32 timeout");
+
+    test_group("v1.3.0 -i / --interval bounds");
+    # The clamp is a correctness bound, not a taste one: every value at
+    # or below it must survive sleep_ms's int32 truncation unchanged.
+    assert_eq(ANUENUE_MAX_INTERVAL_MS > 0, 1, "interval clamp is positive");
+    assert_eq(ANUENUE_MAX_INTERVAL_MS < 2147483647, 1, "clamp is inside int32 positive range");
+    # Truncating the clamp to 32 bits must be a no-op — that is the
+    # whole point of choosing it.
+    assert_eq(ANUENUE_MAX_INTERVAL_MS % 4294967296, ANUENUE_MAX_INTERVAL_MS,
+              "clamp survives a 32-bit truncation unchanged");
+    # The two values that motivated the bound really do misbehave.
+    assert_eq(4294967296 % 4294967296, 0, "2^32 ms truncates to 0 (busy loop) — the reason for the clamp");
+    assert_eq(2147483648 > 2147483647, 1, "2^31 ms exceeds int32 max (becomes negative = blocks forever)");
+    # The default must sit inside the clamp or the default is unusable.
+    assert_eq(ANUENUE_FRAME_MS <= ANUENUE_MAX_INTERVAL_MS, 1, "default interval is within the clamp");
+    assert_eq(ANUENUE_FRAME_MS > 0, 1, "default interval is positive");
+
+    test_group("v1.3.0 B-01 — signal mask constant");
+    # _open_exit_signalfd blocks exactly these three and, on a failed
+    # signalfd(2), must unblock exactly these three. The rollback is
+    # verified end-to-end (including mutation-proof) by
+    # scripts/signal-check.sh via tests/probes/sigmask-probe.cyr —
+    # it needs a forced fd exhaustion, which a unit test cannot do.
+    # What is pinned here is the constant that both halves share.
+    assert_eq(TTY_SIGMASK_EXIT, 16387, "exit sigmask is 0x4003 = HUP(1) | INT(2) | TERM(15)");
+    assert_eq(TTY_SIGMASK_EXIT & 1, 1, "SIGHUP bit set");
+    assert_eq(TTY_SIGMASK_EXIT & 2, 2, "SIGINT bit set");
+    assert_eq(TTY_SIGMASK_EXIT & 16384, 16384, "SIGTERM bit set");
+    # SFD_NONBLOCK is what makes _signal_pending a probe rather than a
+    # block; if this ever became 0 the frame loop would stall on read.
+    assert_eq(ANUENUE_SFD_NONBLOCK, 2048, "SFD_NONBLOCK = O_NONBLOCK = 2048 on x86_64/aarch64 Linux");
 
     return assert_summary();
 }

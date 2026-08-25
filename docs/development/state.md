@@ -5,6 +5,49 @@
 
 ## Version
 
+**1.3.0** — **in progress.** The animation slot from
+[roadmap.md § v1.3.0](roadmap.md#v130--animation-slot).
+
+*Landed:* `-i` / `--interval <ms>` frame-interval override, and the
+re-measurement of the 2026-05-22 audit's INFO 8 + 9 — which turned out
+to be a **real defect**, not the accepted non-issue three audits had
+recorded.
+
+*Three defects the new flag exposed*, all fixed in-slot:
+**B-01 (MEDIUM)** `_open_exit_signalfd` leaked its `SIG_BLOCK` when
+`signalfd(2)` failed, leaving HUP/INT/TERM blocked with no fd to drain
+them — Ctrl-C inert, `kill` inert, hangup inert, only SIGKILL working
+(the same defect darshana fixed at v0.9.3; anuenue's hand-rolled copy
+predates it). **B-02 (MEDIUM)** the frame loop slept a whole interval
+before checking for signals, so `-i 3600000` made the process
+unresponsive to SIGTERM for an hour — `timeout(1)` could not kill it.
+**B-03 (LOW)** `--duration` overshot by up to one interval, same cause.
+`_frame_wait` now slices the wait at `ANUENUE_TICK_MS` (16 ms), so
+signal latency and deadline accuracy no longer depend on `-i`.
+
+*Why the interval is clamped:* `sleep_ms` is `poll(NULL, 0, ms)` and
+poll(2)'s timeout is a 32-bit **int**, so a large i64 truncates
+**non-monotonically** — `2147483648` → −2³¹ → blocks forever;
+`4294967296` → 0 → busy loop; `i64::MAX` → −1 → blocks forever. A big
+`-i` therefore gives a hung terminal or a spin, never a slow
+animation. Clamped at 3 600 000 ms, warned when clamped.
+
+*Why INFO 8 + 9 went unmeasured for three minors:* the obvious test —
+run the CLI under `prlimit --nofile=3` — **cannot work**, because
+`args_init()` opens `/proc/self/cmdline` to read argv, so under that
+limit the binary never parses a flag and never reaches animation.
+`tests/probes/sigmask-probe.cyr` sidesteps it: no `args_init`, no file
+reads, and it observes the mask through
+`sigprocmask(SIG_BLOCK, <empty>, &oldset)` — a pure query needing no
+descriptor. Mutation-proven.
+
+*New gate:* `scripts/signal-check.sh` (12 checks, CI-wired).
+**364/364** unit assertions (was 349). Binary 809 984 → **814 448 B**.
+
+*Still open in the slot:* PTY-backed animation test; fuzz harness over
+`_color_override_from_str` and `anuenue_log_parse`; populating
+`docs/architecture/`.
+
 **1.2.2** — cut 2026-08-25. **P(-1) audit sweep + the size cap is gone.**
 
 Full audit / refactor / hardening / optimization / security pass over
@@ -156,7 +199,7 @@ scaffold. The public API contract (flag set, exit codes, capability
 surface, output shape) is frozen for the v1.x line.
 
 8 of 10 v1.0 acceptance criteria met at tag (see
-[roadmap.md § v1.0 Criteria](roadmap.md#v10-criteria)); **Dogfooded**
+[roadmap.md § v1.0 acceptance scorecard](roadmap.md#v10-acceptance-scorecard)); **Dogfooded**
 and **Downstream gate** are deferred to post-1.0 organic adoption.
 Both block on external consumer wiring — `agnoshi` MOTD pipeline
 composition or `iam`'s default login splash are the anticipated
@@ -405,7 +448,7 @@ It's the M5 ratchet — every minor cut from here forward re-runs
 it.
 
 Next slot is **v1.0.0 — GA tag** per
-[roadmap.md § v1.0.0](roadmap.md#v100--ga). Surface frozen at
+[roadmap.md § Shipped](roadmap.md#shipped). Surface frozen at
 v0.8.0; capability baseline recorded by the M8 audit;
 documentation set complete. The remaining v1.0 acceptance items
 (*Dogfooded* + *Downstream gate*) need at least one external
@@ -442,8 +485,9 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.2.2)**: **809 984 bytes** (~791 KB), +464 B over v1.2.1 — the
-  audit fixes. Tracked every release; **not capped** — see the policy note.
+- **Size (1.3.0, in progress)**: **814 448 bytes** (~795 KB), +4 464 B over
+  v1.2.2 — the `-i` flag, `_frame_wait`, and the signalfd rollback. Tracked
+  every release; **not capped** — see the policy note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -472,7 +516,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests
@@ -522,46 +566,50 @@ Anticipated at v0.7+:
 
 ## Carry-Forward
 
-Pre-1.0 carry-forwards all retired at the GA cut. The list below
-captures what's open *for the v1.x line*.
+**Sequencing moved to [`roadmap.md`](roadmap.md) at v1.2.2.** That file now
+holds every open item, arranged into the v1.3.0 slot, the v1.x arc, and what
+is explicitly declined — and every entry there traces to a specific deferral in
+the code, an ADR, or an audit report. This section keeps only what is *state*
+rather than plan: the cadences that run every cut, and one lesson worth not
+re-learning.
 
-- **Dogfooded + Downstream gate (v1.0 acceptance — deferred).**
-  The two acceptance items left open at GA. Both block on
-  external consumer wiring (`agnoshi` MOTD chain, `iam` login
-  splash). Track until the first integration lands; close as
-  retroactive acceptance once a consumer is green against v1.x
-  for at least one minor cycle.
-- **Sandhi cadence within v1.x.** darshana / sakshi / agnostik
-  bump-cycles continue to follow the proposal → swap →
-  goldens-unchanged → cap re-evaluated pattern. The darshana
-  0.5.1 → 0.5.2 → 0.5.3 sequence (M1 / M4 / M6 closeout) is the
-  reference. Re-evaluate pin lag at each minor cut.
-- **Anuenue's audit doc cadence.** Re-run the audit at every minor
-  cut within v1.x; record findings as a delta vs the previous
-  report. Latest: [`docs/audit/2026-08-25-audit.md`](../audit/2026-08-25-audit.md)
+- **Cadences.** Audit at every minor cut (delta vs the previous report),
+  sandhi bumps on the proposal → swap → goldens-unchanged pattern, perf ratchet
+  head-to-head against a rebuilt prior binary, and binary size tracked rather
+  than capped. Details in
+  [roadmap.md § Ongoing cadence](roadmap.md#ongoing-cadence--not-milestones).
+  Latest audit: [`docs/audit/2026-08-25-audit.md`](../audit/2026-08-25-audit.md)
   (v1.2.2 P-1 sweep — 9 findings, all fixed in-cut, zero HIGH+ open).
   Baseline: [`docs/audit/2026-05-22-audit.md`](../audit/2026-05-22-audit.md).
-- **One accepted INFO finding was re-characterised at v1.2.2 and
-  turned out to be a real defect.** The 2026-05-22 audit recorded
-  "large `-d` graceful-exit boundary at ~292 years" as an accepted
-  INFO. Re-measuring in the v1.2.2 sweep showed the behaviour was
-  the **inverse** of that description: `duration_secs * 1000000000`
-  overflows i64 above ~9.22e9 seconds, and at `i64::MAX` the product
-  is congruent to exactly −1e9, so the deadline landed one second in
-  the *past* and the animation exited after a **single frame**. Not
-  a graceful boundary — an immediate exit. Fixed as A-02.
 
-  The lesson for future cadence: an accepted INFO finding is a
-  hypothesis about behaviour, not a measurement of it. Re-measure
-  accepted items rather than carrying the prior description forward.
-  The remaining two INFO items from 2026-05-22 (signalfd lifecycle on
-  animation exit, signal mask not restored after animation
-  completion) stay accepted **and have not been re-measured** — they
-  are the first candidates for the next sweep.
+- **An accepted INFO finding is a hypothesis about behaviour, not a measurement
+  of it.** The 2026-05-22 audit recorded "large `-d` graceful-exit boundary at
+  ~292 years" as an accepted INFO, and this file carried that description
+  forward for three minors. Re-measuring at v1.2.2 showed the behaviour was the
+  **inverse**: `duration_secs * 1000000000` overflows i64 above ~9.22e9 seconds,
+  and at `i64::MAX` the product is congruent to exactly −1e9 — so the deadline
+  landed one second in the *past* and the animation exited after a **single
+  frame**. Not a graceful boundary; an immediate exit. Fixed as A-02.
+
+  Nobody introduced a regression. The original characterisation was simply never
+  measured, and three audits' worth of documentation repeated it. The two
+  remaining INFO items from that report (signalfd lifecycle on animation exit,
+  signal mask not restored after completion) are **also unmeasured**, which is
+  why they are scheduled work in
+  [roadmap.md § v1.3.0](roadmap.md#v130--animation-slot) rather than a footnote
+  here.
 
 ## Next
 
-The v1.0 GA tag is the project's first stable-API release. The
-next slot is **post-v1.0 maintenance + organic consumer
-adoption** — see [roadmap.md § v1.0.0 — GA](roadmap.md#v100--ga)
-for the framing.
+**v1.3.0 — the animation slot.** Everything currently actionable clusters on
+one surface: animation is the least exercised path in the tree — the only code
+that touches signals, the only code with input caps, and the only code no test
+drives through a real terminal. The slot carries the `-i` / `--interval` flag,
+a PTY-backed animation test, re-measurement of the two unverified INFO findings
+above, a fuzz harness over the two parsers that now reject rather than fall
+back, and the first entries in the empty `docs/architecture/`.
+
+See [roadmap.md § v1.3.0](roadmap.md#v130--animation-slot) for the items and
+their gates, and [§ v1.x](roadmap.md#v1x--later-minors) for what waits behind
+them — including the two v1.0 acceptance items that block on external consumer
+wiring rather than on anything anuenue can write.

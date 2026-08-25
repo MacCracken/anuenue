@@ -4,6 +4,123 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-25 (animation slot)
+
+**In progress.** The v1.3.0 slot from
+[`roadmap.md`](docs/development/roadmap.md). Animation was picked as the theme
+because every open deferral clustered there — it is the least exercised path in
+the tree: the only code that touches signals, the only code with input caps, and
+the only code no test drives through a real terminal.
+
+That turned out to be the right read. Adding one flag surfaced **three latent
+defects**, two of which could leave a terminal unkillable.
+
+### Added
+
+- **`-i` / `--interval <ms>` — frame-interval override.** `ANUENUE_FRAME_MS` has
+  been documented as "mutable so a future `-i` flag could override" since M4;
+  this is that flag. `-i 33` animates at ~30 fps instead of the default ~60.
+
+  Bounded at both ends, for different reasons. **Low** is a usage error: 0 is a
+  busy-loop that pins a core and a negative value reaches `poll(2)` as an
+  infinite timeout. **High** is clamped, and that bound is a correctness
+  requirement rather than taste — see below.
+
+- **`scripts/signal-check.sh`** — 12 checks over animation signal semantics and
+  frame pacing, wired into CI. Covers what `animate-smoke.sh` structurally
+  cannot: the process signal mask, and whether the frame loop stays responsive
+  when the interval is user-supplied.
+
+- **`tests/probes/sigmask-probe.cyr`** — a standalone probe that observes the
+  process signal mask under a forced `signalfd(2)` failure. Not a `.tcyr`,
+  because it must run as its own binary under `prlimit --nofile=3`.
+
+- **15 new unit assertions** (349 → 364) pinning the tick and interval bounds,
+  including assertions that the two motivating values really do misbehave, so
+  nobody "simplifies" the clamp away.
+
+### Fixed
+
+- **B-01 (MEDIUM) — `_open_exit_signalfd` leaked its `SIG_BLOCK` when
+  `signalfd(2)` failed.** The acquire order is block-then-open. If the open
+  failed, the function returned early with SIGHUP/SIGINT/SIGTERM **still blocked
+  and no fd to drain them** — so for the rest of the process Ctrl-C was inert,
+  `kill` was inert, terminal hangup was inert, and only SIGKILL worked. The
+  caller is documented to degrade gracefully on `-1`, and "gracefully" has to
+  mean the signals still work.
+
+  This is the same defect darshana fixed in its own `tty_open_signalfd` at
+  v0.9.3. anuenue rolls its own — it needs a *non-blocking* fd, where darshana's
+  helper is sized for an epoll-driven consumer — and the copy predates that fix.
+
+  **This closes INFO 8 and 9 from the [2026-05-22 audit](docs/audit/2026-05-22-audit.md).**
+  Both were accepted on the reasoning "the process exits before the mask
+  matters", and both sat unmeasured for three minors. The reason they were never
+  measured is itself worth recording: the obvious test — run the CLI under
+  `prlimit --nofile=3` — **cannot work**, because `args_init()` opens
+  `/proc/self/cmdline` to read argv, so under that limit the real binary never
+  parses a flag and never reaches animation at all. The probe sidesteps it by
+  calling no `args_init` and reading no file, and observes the mask through
+  `sigprocmask(SIG_BLOCK, <empty set>, &oldset)` — a pure query needing no
+  descriptor.
+
+  Mutation-proven: deleting the rollback makes the probe report
+  `exit_bits_blocked=16387` with `fd=-1`.
+
+- **B-02 (MEDIUM) — a long `--interval` made the process unkillable.** The frame
+  loop slept the entire interval in one `sleep_ms` call and checked for signals
+  afterwards. With `ANUENUE_FRAME_MS` fixed at 16 that window was invisible;
+  `-i` makes it user-supplied. Because the exit signals are *blocked* for the
+  duration of the animation, a long sleep does not merely delay the reaction —
+  the default disposition never fires either. Measured with `-i 3600000`:
+  `timeout(1)` could not kill the process at all.
+
+  `_frame_wait` now sleeps in slices of at most `ANUENUE_TICK_MS` (16 ms),
+  checking the signalfd and the deadline between slices. Total sleep per frame
+  is unchanged, so the visible frame rate is identical — only the granularity at
+  which the loop looks up. Verified: with `-i 3600000` the process now ends
+  3007 ms after a 3 s SIGTERM, same as with `-i 16`.
+
+- **B-03 (LOW) — `--duration` overshot by up to one interval.** Same root cause.
+  `-i 3600000 -d 1` asked for one second and would have taken an hour. Now
+  exits in 1 s at every interval from 16 ms to an hour.
+
+- **A silent signalfd fallback.** When `signalfd(2)` fails, animation degrades to
+  no-signal handling — legitimate, but it was silent, so a terminal left
+  cursorless after Ctrl-C had no explanation anywhere. Now a `SK_WARN` record
+  carrying the errno. Same discoverability lesson as A-05.
+
+### Why the interval clamp is a correctness bound
+
+`sleep_ms(ms)` is `poll(NULL, 0, ms)` on Linux and macOS, and `poll(2)`'s
+timeout argument is a 32-bit **int**. An i64 millisecond count is truncated on
+the way in, and the result is not merely imprecise — it is **non-monotonic**.
+Measured on this toolchain:
+
+| `sleep_ms(ms)` | Truncates to | Behaviour |
+|---|---|---|
+| `2147483647` | `2147483647` | blocks ~24.8 days (honest) |
+| `2147483648` | `-2147483648` | **blocks forever** |
+| `4294967296` | `0` | **returns instantly** (busy loop) |
+| `4294967396` | `100` | sleeps 100 ms |
+| `9223372036854775807` | `-1` | **blocks forever** |
+
+So a large `-i` does not give a slow animation. Depending on which side of a
+power of two it lands, it gives either a hung terminal or a busy-loop rendering
+as fast as the CPU allows — both the opposite of "wait longer between frames".
+Same defect class as A-02, reached through different arithmetic.
+
+`ANUENUE_MAX_INTERVAL_MS = 3600000` (one hour per frame) is far inside int32's
+positive range and already past useful, so anything above it is a typo rather
+than an intent. Values above are clamped and warned about, matching `-d`.
+
+### Still open in this slot
+
+PTY-backed animation test; fuzz harness over `_color_override_from_str` and
+`anuenue_log_parse`; populating `docs/architecture/`. See
+[`roadmap.md` § v1.3.0](docs/development/roadmap.md#v130--animation-slot).
+
+
 ## [1.2.2] — 2026-08-25 (P-1 audit sweep)
 
 A full **P(-1) audit / refactor / hardening / optimization / security sweep**
@@ -132,6 +249,53 @@ fallback where an error belonged. A-09 is the compound interest on one of them.
 - **`--color` override constants converted from five initialized globals to an
   `AnuenueColorOverride` enum**, per the CLAUDE.md convention. Values unchanged;
   `BAD` is additive.
+
+### Documentation — roadmap reorganised
+
+- **[`docs/development/roadmap.md`](docs/development/roadmap.md) rebuilt around
+  work arcs instead of a finished milestone plan.** It had been the pre-GA M0–M8
+  sequencing document and was three minors stale: the dependency map still read
+  darshana `0.5.3` / sakshi `2.2.5` / agnostik `1.2.2` / Cyrius `6.0.1` with no
+  cmdit row at all, "Current focus" still said v1.0.0 GA, the shipped table
+  stopped at v1.0.0, and it promised an ADR 0003 that shipped at v0.8.0.
+
+  Now: completed milestones collapse into a **Shipped** index, and everything
+  above the fold is forward work — a **v1.3.0** slot, a **v1.x** arc, **v2.0**
+  reserved, plus **explicitly declined** and **upstream, not ours** sections so
+  closed questions are not re-raised as findings.
+
+  **v1.3.0 is the animation slot.** Everything currently actionable clusters
+  there, which is not a coincidence: animation is the least exercised path in
+  the tree — the only code that touches signals, the only code with input caps,
+  and the only code no test drives through a real terminal. It carries the
+  `-i` / `--interval` flag, a PTY-backed animation test, re-measurement of two
+  unverified INFO findings, a fuzz harness over the two parsers that now reject
+  rather than fall back, and the first entries in the empty
+  `docs/architecture/`.
+
+- **Every deferral in the codebase now traces to the roadmap, or was retired.**
+  A sweep for deferral language across `src/`, `tests/`, `fuzz/` and `scripts/`
+  returned 11 hits. Two were live deferrals and are now scheduled with
+  cross-references in both directions; the rest were prose. Three were stale and
+  are fixed:
+
+  - **`src/hsv.cyr` and `tests/anuenue.tcyr` both called `-F` a "future flag".**
+    It shipped at M2 / v0.3.0. Worse, the framing understated the code: the
+    comments treated negative phase as hypothetical when `-s` and `-F` take
+    arbitrary i64 from argv and are summed into `ANUENUE_PHASE_START`, so
+    `-F -1` reaches the normalizer directly — and the result indexes
+    `_PHASE_ESC_TABLE`. That normalization is a bounds guarantee, not a nicety,
+    and now says so.
+  - **`tests/anuenue.bcyr` promised that "M5 (perf pass) will add a per-byte
+    aggregate inside this file".** M5 shipped at v0.6.0 and did not — it shipped
+    `scripts/perf-bench.sh` instead, which has been the ratchet ever since. The
+    comment had outlived the milestone it was waiting on by six releases.
+
+- **`state.md`'s Carry-Forward section stops duplicating the roadmap.** It keeps
+  only what is state rather than plan: the cadences that run every cut, and the
+  v1.2.2 lesson that an accepted INFO finding is a hypothesis about behaviour
+  rather than a measurement of it — the reason the two remaining 2026-05-22 INFO
+  items are scheduled work rather than a footnote.
 
 ### Added
 
