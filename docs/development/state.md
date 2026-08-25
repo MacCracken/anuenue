@@ -5,7 +5,39 @@
 
 ## Version
 
-**1.3.0** — **in progress.** The animation slot from
+**1.3.1** — cut 2026-08-25. **PTY-backed animation.** The one item
+carried out of the v1.3.0 slot, on its own cut because everything else
+in that slot was reachable from a pipe and this is not.
+
+`scripts/pty-check.sh` (14 checks, CI-wired, skip-clean without
+`script(1)` or `/dev/ptmx`) drives anuenue through a real
+pseudo-terminal. **The colour auto-detection chain had never been
+exercised by any test**: on a pipe, `anuenue_detect_color_mode` exits
+at "stdout is not a TTY" and everything below — `COLORTERM`, the
+`TERM` heuristics, the 16-colour fallback — is unreachable, and every
+existing animation test passes `--color=24bit` to route around it. The
+harness covers seven exits of that function under a TTY, asserting
+both the resolved mode **and the reason** (v1.2.1's observability is
+what makes the branch identifiable). It also covers MONO byte-exactness
+on a colour-capable terminal, cursor-lifecycle ordering, and
+SIGINT-during-animation — the success path the signalfd was written
+for, whose failure mode (B-01) and latency (B-02) were covered at
+v1.3.0.
+
+**No new defects.** That is a result, not a null one: "the
+auto-detection chain is correct" had been an assumption for eight
+minors rather than a measurement.
+
+Two harness facts worth keeping: `pgrep -x`, not `-f` — `script(1)`'s
+argv contains the anuenue command line, so `-f` signals the wrapper
+and the test hangs; and `script(1)` does not propagate `TERM`, so each
+detection case sets it inside the command.
+
+Also corrected an over-promise in the roadmap: an earlier draft said a
+PTY would let terminal state be *read back*. It does not —
+`script(1)` transcribes bytes and does not emulate a terminal.
+
+**1.3.0** — cut 2026-08-25. The animation slot from
 [roadmap.md § v1.3.0](roadmap.md#v130--animation-slot).
 
 *Landed:* `-i` / `--interval <ms>` frame-interval override, and the
@@ -44,9 +76,13 @@ descriptor. Mutation-proven.
 *New gate:* `scripts/signal-check.sh` (12 checks, CI-wired).
 **364/364** unit assertions (was 349). Binary 809 984 → **814 448 B**.
 
-*Still open in the slot:* PTY-backed animation test; fuzz harness over
-`_color_override_from_str` and `anuenue_log_parse`; populating
-`docs/architecture/`.
+*Also in the slot:* `fuzz/flag-value-parsers.fcyr` — the sixth harness
+and the first to fuzz strings rather than integers (**+96 091
+assertions**; fuzz total 1 354 581 → **1 450 672**), covering totality,
+one-byte-mutation exactness, name totality over arbitrary i64, and
+`parse(name(p)) == p`. And `docs/architecture/` populated with six
+notes, each recording something the v1.2.2 audit or this slot had to
+discover. The PTY test moved to v1.3.1.
 
 **1.2.2** — cut 2026-08-25. **P(-1) audit sweep + the size cap is gone.**
 
@@ -485,9 +521,9 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.3.0, in progress)**: **814 448 bytes** (~795 KB), +4 464 B over
-  v1.2.2 — the `-i` flag, `_frame_wait`, and the signalfd rollback. Tracked
-  every release; **not capped** — see the policy note.
+- **Size (1.3.1)**: **814 448 bytes** (~795 KB) — unchanged from v1.3.0;
+  v1.3.1 is test and documentation only, no `src/` change. Tracked every
+  release; **not capped** — see the policy note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -516,7 +552,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests

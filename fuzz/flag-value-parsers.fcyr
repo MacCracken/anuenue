@@ -1,0 +1,291 @@
+# anuenue fuzz — the two flag-value parsers that REJECT.
+#
+# Targets:
+#   _color_override_from_str(s)  — `--color <mode>`      (src/color.cyr)
+#   anuenue_log_parse(s)         — `--log-level <level>` (src/observe.cyr)
+#   anuenue_log_parse_name(p)    — the inverse
+#   anuenue_color_reason_name(r) — used only by the logger
+#   anuenue_color_mode_name(m)   — used only by the logger
+#
+# WHY THESE TWO, AND WHY NOW
+#
+# Both parsers used to fall back on an unrecognised value; both now
+# return a BAD sentinel that main.cyr turns into a usage error
+# (`--log-level` at v1.2.1, `--color` at v1.2.2 / audit A-04).
+#
+# That swap changed the failure mode. A falling-back parser is total
+# by construction — every input maps to the default. A REJECTING
+# parser has to get two things right instead of one: recognise every
+# value it claims to accept, and reject everything else. A-09 is the
+# proof that the first half can rot silently — `--color=mono` was
+# documented from M6 and had no branch in the parser for four months,
+# and the fallback hid it from the example suite CI runs on every push.
+#
+# So the invariants worth stressing are not "does it parse `256`".
+# They are:
+#
+#   1. TOTALITY — every input maps into the declared enum range, for
+#      arbitrary bytes, arbitrary length, and a null pointer. The
+#      result is compared against enum members and fed to a logger;
+#      a value outside the range silently means "auto" or indexes
+#      nothing.
+#   2. EXACTNESS — a one-byte mutation of an accepted value must be
+#      rejected. This is the regression a sloppy prefix or substring
+#      match would introduce, and it is invisible to a test that only
+#      checks the nine good values.
+#   3. NAME TOTALITY — every *_name() must return a non-null cstr for
+#      ANY i64, because the caller passes the result straight to
+#      strlen inside the logger. A 0 return is a null deref on a
+#      diagnostic path, which is the worst place for one.
+#   4. ROUND-TRIP — parse(name(p)) == p across the level scale, the
+#      same contract agnostik's F-018 holds its enums to.
+#
+# Layered LCG seed for deterministic re-runs (the sankoch pattern).
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+# Knuth MMIX LCG. Returns the high 8 bits — well-mixed; the low bits
+# of a 64-bit LCG are weakly random.
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_next_i64() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return _fuzz_state;
+}
+
+# Fill `buf` with `len` random NON-ZERO bytes and NUL-terminate.
+# Non-zero because a 0 byte would just truncate the string early and
+# waste the iteration — the interesting inputs are full-length ones.
+fn _fuzz_fill_str(buf, len) {
+    var i = 0;
+    while (i < len) {
+        var b = _fuzz_next();
+        if (b == 0) { b = 65; }
+        store8(buf + i, b);
+        i = i + 1;
+    }
+    store8(buf + len, 0);
+    return 0;
+}
+
+# Copy a NUL-terminated cstr into buf. Returns its length.
+fn _fuzz_copy_str(dst, src) {
+    var n = 0;
+    while (load8(src + n) != 0) {
+        store8(dst + n, load8(src + n));
+        n = n + 1;
+    }
+    store8(dst + n, 0);
+    return n;
+}
+
+# ---- 1. totality ---------------------------------------------------
+#
+# Random bytes must land inside the declared enum range. Outside it,
+# `main.cyr`'s `== ANUENUE_COLOR_OVERRIDE_BAD` test misses and the
+# value flows on as a colour mode nobody asked for.
+fn fuzz_color_override_total(seed) {
+    _fuzz_seed(seed);
+    var buf = alloc(72);
+    if (buf == 0) { return 0; }
+    var iters = 0;
+    while (iters < 2000) {
+        var len = _fuzz_next() % 64;
+        _fuzz_fill_str(buf, len);
+        var r = _color_override_from_str(buf);
+        assert(r >= ANUENUE_COLOR_OVERRIDE_AUTO, "_color_override_from_str returned below the enum");
+        assert(r <= ANUENUE_COLOR_OVERRIDE_BAD, "_color_override_from_str returned above the enum");
+        iters = iters + 1;
+    }
+    return 0;
+}
+
+fn fuzz_log_parse_total(seed) {
+    _fuzz_seed(seed);
+    var lbuf = alloc(72);
+    if (lbuf == 0) { return 0; }
+    var liters = 0;
+    while (liters < 2000) {
+        var llen = _fuzz_next() % 64;
+        _fuzz_fill_str(lbuf, llen);
+        var lr = anuenue_log_parse(lbuf);
+        assert(lr >= ANUENUE_LOG_P_OFF, "anuenue_log_parse returned below the enum");
+        assert(lr <= ANUENUE_LOG_P_BAD, "anuenue_log_parse returned above the enum");
+        # Every ACCEPTED value must map into sakshi's scale, because
+        # anuenue_observe_init hands `p - 1` straight to
+        # sakshi_set_level. BAD is the sole exception and maps to 6 —
+        # one above SK_TRACE — which is exactly why main.cyr has to
+        # reject it BEFORE calling observe_init. If BAD ever reached
+        # init it would set a level no record can exceed, silently
+        # turning every level into "on".
+        if (lr == ANUENUE_LOG_P_BAD) {
+            assert(lr - 1 > SK_TRACE, "BAD must NOT be a usable sakshi level (it is rejected upstream)");
+        } else {
+            assert(lr - 1 <= SK_TRACE, "an accepted log level maps above SK_TRACE");
+            assert(lr - 1 >= SK_FATAL - 1, "an accepted log level maps below the off sentinel");
+        }
+        liters = liters + 1;
+    }
+    return 0;
+}
+
+# ---- 2. exactness --------------------------------------------------
+#
+# Take an accepted value, flip exactly one byte, and require the
+# result to be BAD. A prefix match ("256x" -> 256), a substring match
+# ("xx16xx" -> 16) or a case-insensitive compare would all pass the
+# nine-good-values test and fail here.
+fn _fuzz_mutate_reject(known, expect_ok, is_color, seed) {
+    _fuzz_seed(seed);
+    var mbuf = alloc(72);
+    if (mbuf == 0) { return 0; }
+    var mlen = _fuzz_copy_str(mbuf, known);
+    if (mlen == 0) { return 0; }
+
+    # Sanity: unmutated, it must still parse to the expected value.
+    # This is the A-09 half — a value we claim to accept that quietly
+    # stopped being accepted.
+    if (is_color == 1) {
+        assert(_color_override_from_str(mbuf) == expect_ok, "an accepted --color value stopped parsing");
+    } else {
+        assert(anuenue_log_parse(mbuf) == expect_ok, "an accepted --log-level value stopped parsing");
+    }
+
+    var miters = 0;
+    while (miters < 200) {
+        var pos = _fuzz_next() % mlen;
+        var orig = load8(mbuf + pos);
+        var repl = _fuzz_next();
+        if (repl == 0) { repl = 90; }
+        if (repl == orig) { repl = orig + 1; }
+        if (repl > 255) { repl = 33; }
+        store8(mbuf + pos, repl);
+
+        if (is_color == 1) {
+            assert(_color_override_from_str(mbuf) == ANUENUE_COLOR_OVERRIDE_BAD,
+              "a one-byte mutation of a --color value was still accepted (prefix/substring match?)");
+        } else {
+            assert(anuenue_log_parse(mbuf) == ANUENUE_LOG_P_BAD,
+              "a one-byte mutation of a --log-level value was still accepted (prefix/substring match?)");
+        }
+
+        store8(mbuf + pos, orig);
+        miters = miters + 1;
+    }
+    return 0;
+}
+
+fn fuzz_exactness(seed) {
+    # All nine documented --color values, including `mono` (A-09).
+    _fuzz_mutate_reject("auto",      ANUENUE_COLOR_OVERRIDE_AUTO, 1, seed + 11);
+    _fuzz_mutate_reject("24bit",     ANUENUE_COLOR_OVERRIDE_TRUE, 1, seed + 22);
+    _fuzz_mutate_reject("truecolor", ANUENUE_COLOR_OVERRIDE_TRUE, 1, seed + 33);
+    _fuzz_mutate_reject("256",       ANUENUE_COLOR_OVERRIDE_256,  1, seed + 44);
+    _fuzz_mutate_reject("16",        ANUENUE_COLOR_OVERRIDE_16,   1, seed + 55);
+    _fuzz_mutate_reject("none",      ANUENUE_COLOR_OVERRIDE_NONE, 1, seed + 66);
+    _fuzz_mutate_reject("mono",      ANUENUE_COLOR_OVERRIDE_NONE, 1, seed + 77);
+    _fuzz_mutate_reject("off",       ANUENUE_COLOR_OVERRIDE_NONE, 1, seed + 88);
+    _fuzz_mutate_reject("never",     ANUENUE_COLOR_OVERRIDE_NONE, 1, seed + 99);
+
+    # All seven --log-level values.
+    _fuzz_mutate_reject("off",   ANUENUE_LOG_P_OFF,   0, seed + 111);
+    _fuzz_mutate_reject("fatal", ANUENUE_LOG_P_FATAL, 0, seed + 122);
+    _fuzz_mutate_reject("error", ANUENUE_LOG_P_ERROR, 0, seed + 133);
+    _fuzz_mutate_reject("warn",  ANUENUE_LOG_P_WARN,  0, seed + 144);
+    _fuzz_mutate_reject("info",  ANUENUE_LOG_P_INFO,  0, seed + 155);
+    _fuzz_mutate_reject("debug", ANUENUE_LOG_P_DEBUG, 0, seed + 166);
+    _fuzz_mutate_reject("trace", ANUENUE_LOG_P_TRACE, 0, seed + 177);
+    return 0;
+}
+
+# ---- 3. name totality ----------------------------------------------
+#
+# Every name function feeds strlen inside the logger. A 0 return is a
+# null deref on a diagnostic path — the one place a crash is least
+# excusable, because the user is already trying to debug something.
+fn fuzz_name_totality(seed) {
+    _fuzz_seed(seed);
+    var niters = 0;
+    while (niters < 1000) {
+        var v = _fuzz_next_i64();
+        assert(anuenue_log_parse_name(v) != 0,    "anuenue_log_parse_name returned null");
+        assert(anuenue_color_reason_name(v) != 0, "anuenue_color_reason_name returned null");
+        assert(anuenue_color_mode_name(v) != 0,   "anuenue_color_mode_name returned null");
+        # Non-null is not enough — strlen must terminate somewhere
+        # sane, or the logger writes runaway bytes to stderr.
+        assert(strlen(anuenue_log_parse_name(v)) < 64,    "log-parse name implausibly long");
+        assert(strlen(anuenue_color_reason_name(v)) < 64, "colour-reason name implausibly long");
+        assert(strlen(anuenue_color_mode_name(v)) < 64,   "colour-mode name implausibly long");
+        niters = niters + 1;
+    }
+    return 0;
+}
+
+# ---- 4. round-trip -------------------------------------------------
+#
+# parse(name(p)) == p across the whole level scale. Catches a name
+# table that drifts out of step with the parse table — the two are
+# written as separate if-chains and nothing else ties them together.
+fn fuzz_log_roundtrip() {
+    var p = ANUENUE_LOG_P_OFF;
+    while (p <= ANUENUE_LOG_P_TRACE) {
+        var nm = anuenue_log_parse_name(p);
+        assert(anuenue_log_parse(nm) == p, "anuenue_log_parse(name(p)) != p");
+        p = p + 1;
+    }
+    # BAD's name is deliberately NOT a parseable level — "invalid"
+    # must not round-trip into a real level.
+    assert(anuenue_log_parse(anuenue_log_parse_name(ANUENUE_LOG_P_BAD)) == ANUENUE_LOG_P_BAD,
+      "the BAD sentinel's name parses back to something other than BAD");
+    return 0;
+}
+
+# ---- 5. the two null / empty contracts ------------------------------
+#
+# Absent and empty are "flag not given" and must stay AUTO / BAD
+# respectively — they are NOT the same as an unrecognised value, and
+# main.cyr's usage-error branch depends on the difference.
+fn fuzz_null_and_empty() {
+    assert(_color_override_from_str(0) == ANUENUE_COLOR_OVERRIDE_AUTO,
+      "--color null pointer must mean AUTO (flag absent), not BAD");
+    assert(_color_override_from_str("") == ANUENUE_COLOR_OVERRIDE_AUTO,
+      "--color empty string must mean AUTO (flag absent), not BAD");
+    assert(anuenue_log_parse(0) == ANUENUE_LOG_P_BAD,
+      "--log-level null pointer must be BAD, and must not deref");
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    var seed = 1;
+    while (seed <= 5) {
+        fuzz_color_override_total(seed * 7919);
+        fuzz_log_parse_total(seed * 6271);
+        fuzz_exactness(seed * 5417);
+        fuzz_name_totality(seed * 4729);
+        seed = seed + 1;
+    }
+    fuzz_log_roundtrip();
+    fuzz_null_and_empty();
+
+    println("fuzz_flag_value_parsers: totality, exactness, name-totality and round-trip held");
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

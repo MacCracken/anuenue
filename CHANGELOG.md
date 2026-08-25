@@ -4,9 +4,64 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-08-25 (PTY-backed animation)
+
+The one item carried out of the v1.3.0 animation slot, on its own cut because it
+is a different kind of work: everything else in v1.3.0 was reachable from a
+pipe, and this is not.
+
+### Added
+
+- **`scripts/pty-check.sh`** — drives anuenue through a real pseudo-terminal via
+  `script(1)`. 14 checks, wired into CI, skip-clean when `script(1)` or
+  `/dev/ptmx` is unavailable.
+
+  **The colour auto-detection chain had never been exercised by CI.** On a pipe,
+  `anuenue_detect_color_mode` exits at "stdout is not a TTY" and everything
+  below that check — the `COLORTERM` test, the `TERM` heuristics, the 16-colour
+  fallback — is unreachable. Every existing animation test passes
+  `--color=24bit` specifically to route around it. So the branch that ships to
+  actual users, on actual terminals, was the one branch no test ran.
+
+  The harness now covers seven distinct exits of that function under a real TTY:
+  `TERM=xterm-256color` → 256, `TERM=xterm-direct` → 24bit,
+  `COLORTERM=truecolor` and `COLORTERM=24bit` → 24bit, `TERM=dumb` → the
+  16-colour fallback, `NO_COLOR` → MONO, and `--no-color` overriding a
+  colour-capable terminal. Each asserts both the resolved mode **and the
+  reason** — the v1.2.1 observability is what makes the branch identifiable
+  rather than merely inferred from output shape.
+
+  It also covers what a pipe makes trivially true and a TTY makes meaningful:
+  MONO passthrough on a colour-capable terminal is byte-identical to the input
+  (the M6 acceptance), the cursor lifecycle on clean exit asserted by *ordering*
+  against the end of the stream, and **SIGINT during animation while attached to
+  a terminal** — the case the signalfd was written for. Its failure mode (B-01)
+  and its latency (B-02) were covered at v1.3.0; this is the success path, and
+  it confirms the M4 acceptance criterion directly: cursor shown after the
+  signal, SGR reset before it.
+
+  Two harness details worth recording, because both cost time:
+
+  - **`pgrep -x`, not `pgrep -f`.** `script(1)`'s own argv contains the anuenue
+    command line, so `-f` matches the wrapper first and the signal goes to the
+    wrong process — the animation then never sees it and the test hangs.
+  - **`script(1)` does not propagate `TERM`** from the parent environment, so
+    each detection case sets it inside the command rather than around it.
+
+### Changed
+
+- **`docs/development/roadmap.md` — corrected an over-promise.** The v1.3.1
+  entry claimed that on a PTY "the terminal state itself can be read back". It
+  cannot: `script(1)` transcribes bytes, it does not emulate a terminal, so
+  there is no cursor-visibility to query. The harness asserts byte ordering and
+  process behaviour, which is what is actually observable, and both the script
+  header and the roadmap now say so. Reading real terminal state back would
+  need an emulator in the harness.
+
+
 ## [1.3.0] — 2026-08-25 (animation slot)
 
-**In progress.** The v1.3.0 slot from
+The v1.3.0 slot from
 [`roadmap.md`](docs/development/roadmap.md). Animation was picked as the theme
 because every open deferral clustered there — it is the least exercised path in
 the tree: the only code that touches signals, the only code with input caps, and
@@ -114,11 +169,66 @@ Same defect class as A-02, reached through different arithmetic.
 positive range and already past useful, so anything above it is a typo rather
 than an intent. Values above are clamped and warned about, matching `-d`.
 
-### Still open in this slot
+### Added — parser fuzzing
 
-PTY-backed animation test; fuzz harness over `_color_override_from_str` and
-`anuenue_log_parse`; populating `docs/architecture/`. See
-[`roadmap.md` § v1.3.0](docs/development/roadmap.md#v130--animation-slot).
+- **`fuzz/flag-value-parsers.fcyr`** — the sixth harness, and the first that
+  fuzzes **strings** rather than integers. **+96 091 assertions** (fuzz total
+  1 354 581 → **1 450 672**).
+
+  It targets the two parsers that now *reject* rather than fall back
+  (`--log-level` at v1.2.1, `--color` at v1.2.2 / A-04). That swap changed the
+  failure mode: a falling-back parser is total by construction, while a
+  rejecting one has to get two things right — recognise everything it claims to
+  accept, and reject everything else. A-09 proved the first half can rot
+  silently, so the harness checks four properties rather than "does it parse
+  `256`":
+
+  - **Totality** — arbitrary bytes, arbitrary length and a null pointer all land
+    inside the declared enum range. A value outside it slips past `main.cyr`'s
+    `== BAD` test and flows on as a colour mode nobody asked for.
+  - **Exactness** — flip one byte of an accepted value and it must be rejected.
+    A prefix match (`256x` → 256), a substring match (`xx16xx` → 16) or a
+    case-insensitive compare would all pass a nine-good-values test and fail
+    here.
+  - **Name totality** — every `*_name()` returns a non-null, plausibly-short
+    cstr for *any* i64, because the result goes straight to `strlen` inside the
+    logger. A null there is a deref on a diagnostic path — the worst place for
+    one, since the user is already debugging something.
+  - **Round-trip** — `parse(name(p)) == p` across the level scale, the contract
+    agnostik's F-018 holds its own enums to, plus the negative case: the `BAD`
+    sentinel's name must *not* parse back into a real level.
+
+  One assertion in the first draft was wrong and worth recording: it required
+  every parse result to map inside sakshi's scale, but `BAD` maps to 6 — one
+  above `SK_TRACE`. That is not a defect, it is precisely why `main.cyr` must
+  reject `BAD` *before* calling `anuenue_observe_init`; if it ever reached init
+  it would set a level no record can exceed, silently turning every level on.
+  The harness now asserts that asymmetry explicitly.
+
+### Added — architecture notes
+
+- **`docs/architecture/` populated with six notes.** The directory had said
+  "_Empty_" since v0.1.0 while CLAUDE.md listed it as a documentation path. Each
+  entry records something the v1.2.2 audit or this slot had to *discover* —
+  which is the bar, rather than restating what the code says:
+
+  | Note | Invariant |
+  |------|-----------|
+  | 001 | The line-buffer geometry is a proof, not three round numbers: `FLUSH_RESERVE` must cover the worst-case iteration, and the bounds check runs *after* the write. |
+  | 002 | Phase normalization is a bounds guarantee — the normalized value is an array index, and `-s` / `-F` / `-p` reach it with negative and wrapped i64 straight from argv. |
+  | 003 | The animation caps *drop* input rather than uncolouring it, because `_pretag_clusters` writes its sentinel at the stop offset. |
+  | 004 | `src/observe.cyr` must depend on nothing from anuenue: every other module calls `anuenue_fail`, and cyrius resolves constants in include order. |
+  | 005 | `sleep_ms` takes an i64 and hands it to `poll(2)`'s 32-bit `int`; the truncation is non-monotonic, so a large sleep hangs or spins rather than sleeping long. |
+  | 006 | Reading argv costs a file descriptor, so anuenue's CLI cannot be exercised under an fd limit — the reason two audit findings went unmeasured for three minors. |
+
+### Carried to v1.3.1
+
+The PTY-backed animation test moves to its own cut. Everything else in this slot
+was reachable from a pipe; that one is not, and it is the only way to test three
+behaviours that need a controlling terminal — `tty_isatty` taking the branch a
+pipe never takes, cursor restore being *readable back* rather than inferred from
+bytes, and SIGINT arriving as a real terminal signal. See
+[`roadmap.md` § v1.3.1](docs/development/roadmap.md#v131--pty-backed-animation).
 
 
 ## [1.2.2] — 2026-08-25 (P-1 audit sweep)

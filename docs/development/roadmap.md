@@ -5,6 +5,9 @@
 > [`state.md`](state.md); per-cut narrative lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md).
 >
+> Slot headings never carry status — a `> **Status:**` line sits under them
+> instead, so the anchors other documents link to stay stable as work lands.
+>
 > Reorganised at v1.2.2. The pre-GA milestone plan (M0–M8) is finished and
 > collapsed into [§ Shipped](#shipped); everything below the fold is forward
 > work only. **Every open item in this file traces to a specific deferral in the
@@ -23,9 +26,10 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.2.2.** The v1.x public API contract — flag set, exit codes, output shape,
-capability surface — has been frozen since GA and is unbroken. Two P(-1) audits
-have run against it with zero HIGH+ findings open.
+**v1.3.1.** The v1.x public API contract — exit codes, output shape, capability
+surface — has been frozen since GA and is unbroken; the flag set has only ever
+grown. Two P(-1) audits have run with zero HIGH+ findings open, and the v1.3.0
+animation slot closed three further defects the audits had not reached.
 
 The v1.0 acceptance scorecard closed **8 of 10** at GA. The two open items are
 adoption properties, not code, and are tracked in
@@ -35,31 +39,74 @@ adoption properties, not code, and are tracked in
 
 ## v1.3.0 — Animation slot
 
-Everything currently actionable clusters on one surface. Animation is the least
-exercised path in the tree: it is the only code that touches signals, the only
-code with input caps, and the only code no test drives through a real terminal.
+> **Status: complete.**
 
-| Item | Source of the deferral | Shape |
-|------|------------------------|-------|
-| ~~**`-i` / `--interval <ms>`**~~ **— DONE** | `src/animate.cyr` | Shipped. Rejects non-positive (usage error) and clamps above `ANUENUE_MAX_INTERVAL_MS`, because `sleep_ms` truncates to a 32-bit `int` and a large value lands on either "blocks forever" or "returns instantly". Surfaced **B-01/B-02/B-03** — see below. |
-| **PTY-backed animation test** | [2026-08-25 audit § Next audit](../audit/2026-08-25-audit.md) | `scripts/animate-smoke.sh` asserts the *structure* of the escape stream; nothing drives anuenue through a real terminal. darshana's `tests/pty.tcyr` is the reference implementation. Target: the cursor-restore paths on both clean exit and SIGINT. |
-| ~~**Re-measure audit INFO 8 + 9**~~ **— DONE, and they were a real defect** | [2026-05-22 audit](../audit/2026-05-22-audit.md) findings 8 and 9 | Measured via `tests/probes/sigmask-probe.cyr` under `prlimit --nofile=3`. **B-01**: `_open_exit_signalfd` leaked its `SIG_BLOCK` on a failed `signalfd(2)`, leaving HUP/INT/TERM blocked with no fd to drain them — Ctrl-C, `kill` and hangup all inert, only SIGKILL working. The same defect darshana fixed at v0.9.3; anuenue's hand-rolled copy predates it. Mutation-proven. Why it went unmeasured for three minors is recorded in the CHANGELOG: the obvious test cannot work, because `args_init()` needs a descriptor to read argv, so the CLI never reaches animation under an fd limit. |
-| **Fuzz `_color_override_from_str` + `anuenue_log_parse`** | [2026-08-25 audit § Next audit](../audit/2026-08-25-audit.md) | Both parsers now **reject** unknown input rather than falling back (A-04, and the v1.2.1 `--log-level` rule). A rejecting parser has a failure mode a falling-back one doesn't — asserting total behaviour over random byte strings is cheap and there are five existing harnesses to copy. |
-| **Populate `docs/architecture/`** | `docs/architecture/README.md` — Items section still reads "_Empty_" while CLAUDE.md lists it as a documentation path | The v1.2.2 audit surfaced several qualifying invariants: `_pretag_clusters` writes its sentinel at the *stop offset* (so the caps drop input rather than uncolouring it); `FLUSH_RESERVE = 32` and why; the phase-normalization contract that keeps `_PHASE_ESC_TABLE` indices in range; `src/observe.cyr` must depend on nothing from anuenue or the include order cycles. Each is "how the world is", not a decision — ADRs are the wrong home. |
+Animation was picked because every open deferral clustered there — the least
+exercised path in the tree: the only code that touches signals, the only code
+with input caps, and the only code no test drives through a real terminal.
 
-**Found while doing the above** — three defects the `-i` flag exposed, all fixed
-in-slot and all covered by `scripts/signal-check.sh`:
+That read paid off immediately. Adding one flag surfaced **three latent
+defects**, two of which could leave a terminal unkillable.
 
-- **B-01 (MEDIUM)** — `SIG_BLOCK` leaked on a failed `signalfd(2)`; process
-  left unkillable except by SIGKILL.
+| Item | Outcome |
+|------|---------|
+| **`-i` / `--interval <ms>`** | Shipped. Rejects non-positive (usage error), clamps above `ANUENUE_MAX_INTERVAL_MS` — see [architecture 005](../architecture/005-timing-primitives-truncate.md) for why that clamp is a correctness bound. |
+| **Re-measure audit INFO 8 + 9** | Done — and they were a **real defect**, not the accepted non-issue three audits recorded. See B-01. |
+| **Fuzz the two rejecting parsers** | `fuzz/flag-value-parsers.fcyr` — totality, one-byte-mutation exactness, name totality over arbitrary i64, and `parse(name(p)) == p` round-trip. **+96 091 assertions.** |
+| **Populate `docs/architecture/`** | Six notes, one per invariant the v1.2.2 audit and this slot had to discover. Index at [`docs/architecture/`](../architecture/README.md). |
+| ~~PTY-backed animation test~~ | **Moved to [v1.3.1](#v131--pty-backed-animation).** |
+
+**Found by doing the above** — three defects the `-i` flag exposed, all fixed
+in-slot, all covered by `scripts/signal-check.sh`:
+
+- **B-01 (MEDIUM)** — `_open_exit_signalfd` leaked its `SIG_BLOCK` when
+  `signalfd(2)` failed, leaving HUP/INT/TERM blocked with no fd to drain them:
+  Ctrl-C inert, `kill` inert, hangup inert, only SIGKILL working. The same
+  defect darshana fixed at v0.9.3; anuenue's hand-rolled copy predates it.
+  Mutation-proven via `tests/probes/sigmask-probe.cyr`.
 - **B-02 (MEDIUM)** — the frame loop slept a whole interval before checking for
-  signals, so a long `-i` made the process unresponsive to SIGTERM for that
-  whole interval. `_frame_wait` now slices the wait at `ANUENUE_TICK_MS`.
+  signals. With `-i 3600000` the process ignored SIGTERM for an hour and
+  `timeout(1)` could not kill it. `_frame_wait` now slices at
+  `ANUENUE_TICK_MS`.
 - **B-03 (LOW)** — `--duration` overshot by up to one interval, same cause.
 
-**Gate**: the usual — `cyrius audit` clean on all three gates, all six goldens
-byte-identical, perf within noise of v1.2.2's 46.64 ns/byte, and a P(-1) audit
-delta recorded per the cadence below.
+---
+
+## v1.3.1 — PTY-backed animation
+
+> **Status: complete.**
+
+The one item carried out of the v1.3.0 slot, on its own because it is a
+different kind of work: everything else in v1.3.0 was reachable from a pipe,
+and this is not.
+
+| Item | Outcome |
+|------|---------|
+| **Drive animation through a real pseudo-terminal** | Shipped as `scripts/pty-check.sh` — 14 checks via `script(1)`, CI-wired, skip-clean without `/dev/ptmx`. Covers seven exits of `anuenue_detect_color_mode` under a real TTY, MONO byte-exactness on a colour-capable terminal, cursor-lifecycle ordering, and SIGINT-during-animation. |
+
+**Why it is worth its own cut.** Three behaviours are only reachable with a
+controlling terminal, and all three are animation's exit path:
+
+1. **`tty_isatty` returns true**, so colour auto-detection takes the branch a
+   pipe never takes. Every existing animation test forces `--color=24bit` to
+   work around exactly this.
+2. **Cursor restore is checkable against the end of the stream**, and on the
+   path a terminal actually drives. `tty_cursor_hide` / `tty_cursor_show` and
+   the final `tty_sgr_reset` are asserted by ordering — show after hide, reset
+   before show — rather than by a grep count.
+   *(Corrected: an earlier draft of this entry said the terminal state itself
+   could be read back. It cannot — `script(1)` transcribes bytes, it does not
+   emulate a terminal, so there is no cursor-visibility to query. Reading real
+   terminal state back would need an emulator in the harness.)*
+3. **SIGINT arrives as a real terminal signal**, not a delivered one. The
+   signalfd path has now been tested for its *failure* mode (B-01) and its
+   *latency* (B-02); it has never been tested for the case it was written for.
+
+**Outcome**: no new defects. That is a meaningful result rather than a null one
+— the auto-detection chain had never been executed by any test, so "it was
+already correct" was an assumption until this cut, not a measurement. The
+harness skips clean without `script(1)` or `/dev/ptmx`, so a runner without a
+PTY warns rather than fails.
 
 ---
 
