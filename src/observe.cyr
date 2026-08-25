@@ -189,6 +189,9 @@ fn anuenue_span_enter(name): i64 {
     return 0;
 }
 
+# Close the innermost open span, emitting its elapsed time. Gated
+# identically to anuenue_span_enter — see that function for why both
+# gates are needed. Always returns 0.
 fn anuenue_span_exit(): i64 {
     if (ANUENUE_VERBOSE == 0) { return 0; }
     if (sakshi_get_level() < SK_DEBUG) { return 0; }
@@ -203,12 +206,21 @@ fn anuenue_span_exit(): i64 {
 # i64 value variant that formats through fmt_int_buf. Both return
 # early when logging is off so the strlen calls don't run either.
 
+# Emit one keyed record whose value is a null-terminated string.
+# Thin wrapper over sakshi_log_kv taking cstrs (anuenue's string
+# shape) instead of explicit byte counts. Returns 0 without calling
+# strlen when logging is off, so an off run pays nothing for the
+# argument expressions it would otherwise measure.
 fn anuenue_log_kv_str(level, msg, key, val): i64 {
     if (ANUENUE_VERBOSE == 0) { return 0; }
     sakshi_log_kv(level, msg, strlen(msg), key, strlen(key), val, strlen(val));
     return 0;
 }
 
+# Emit one keyed record whose value is an i64, formatted through
+# fmt_int_buf into a 24-byte stack scratch (19 digits + sign + NUL,
+# the documented requirement). Same off-path short-circuit as
+# anuenue_log_kv_str. Always returns 0.
 fn anuenue_log_kv_int(level, msg, key, n): i64 {
     if (ANUENUE_VERBOSE == 0) { return 0; }
     var nbuf[24];                            # fmt_int_buf needs 24 bytes: 19 digits + sign + NUL

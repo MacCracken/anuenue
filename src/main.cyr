@@ -55,7 +55,7 @@ fn print_usage(fs): i64 {
     _eprint("  anuenue [OPTIONS] TEXT...          # one-shot: rainbow TEXT and exit\n\n");
     _eprint("Options:\n");
     cmdit_help_flags(fs);                   # cmdit 1.1.0 table-only renderer — just the flag rows,
-                                            # so anuenue keeps its own intro / Usage / Examples framing
+    # so anuenue keeps its own intro / Usage / Examples framing
     _eprint("\nExamples:\n");
     _eprint("  anuenue AGNOS                                # one-shot rainbow (no pipe needed)\n");
     _eprint("  echo \"AGNOS\" | anuenue                       # one-shot rainbow tint\n");
@@ -128,6 +128,14 @@ fn anuenue_text_args(fs, npos): i64 {
     return anuenue_render_bytes(buf, pos);
 }
 
+# Entrypoint. Registers the flag surface, parses argv, resolves
+# verbosity and colour mode, then dispatches to exactly one of four
+# routes: positional-text (one-shot render of argv), passthrough
+# (MONO), animate (-a), or the streaming filter.
+#
+# Returns the process exit code: 0 on success, 1 on a runtime
+# failure, 2 on a usage error. Every failure path routes through
+# anuenue_fail so the kind, code and message are consistent.
 fn main(): i64 {
     alloc_init();
 
@@ -141,17 +149,17 @@ fn main(): i64 {
     var f_offset      = cmdit_int (fs,  70, "offset",      0, "additive phase offset (Ruby lolcat compat)");
     var f_animate     = cmdit_bool(fs,  97, "animate",     "animate: buffer input, scroll the rainbow");
     var f_duration    = cmdit_int (fs, 100, "duration",    ANUENUE_DEFAULT_DURATION_S,
-                                   "animation duration in seconds (0 = until SIGINT)");
+      "animation duration in seconds (0 = until SIGINT)");
     var f_speed       = cmdit_int (fs,  83, "speed",       ANUENUE_DEFAULT_SPEED,
-                                   "animation: phase advance per frame");
+      "animation: phase advance per frame");
     var f_no_color    = cmdit_bool(fs, 110, "no-color",    "disable colour (pass-through cat)");
     var f_force_color = cmdit_bool(fs,  67, "force-color", "emit colour even when stdout isn't a TTY");
     var f_color       = cmdit_str (fs,  99, "color",       "auto",
-                                   "color mode: auto / 24bit / 256 / 16 / none");
+      "color mode: auto / 24bit / 256 / 16 / none (aliases: truecolor, mono, off, never)");
     # v1.2.1 diagnostics. Both write to stderr only — see src/observe.cyr.
     var f_verbose     = cmdit_bool(fs, 118, "verbose",     "log to stderr at debug level (stdout unaffected)");
     var f_log_level   = cmdit_str (fs,   0, "log-level",   "off",
-                                   "stderr log level: off / fatal / error / warn / info / debug / trace");
+      "stderr log level: off / fatal / error / warn / info / debug / trace");
 
     var pr = cmdit_parse(fs);
     if (pr == CMDIT_RESULT_ERR) {
@@ -168,14 +176,14 @@ fn main(): i64 {
         if (err == CMDIT_ERR_UNKNOWN) {
             _eprint("anuenue: unknown flag\n");
         } else { if (err == CMDIT_ERR_MISSING_VALUE) {
-            _eprint("anuenue: flag missing value\n");
-        } else { if (err == CMDIT_ERR_BAD_INT) {
-            _eprint("anuenue: bad integer value\n");
-        } else { if (err == CMDIT_ERR_BUNDLED) {
-            _eprint("anuenue: bundled short flags not supported (use -x -y, not -xy)\n");
-        } else {
-            _eprint("anuenue: argument parse error\n");
-        } } } }
+                _eprint("anuenue: flag missing value\n");
+            } else { if (err == CMDIT_ERR_BAD_INT) {
+                    _eprint("anuenue: bad integer value\n");
+                } else { if (err == CMDIT_ERR_BUNDLED) {
+                        _eprint("anuenue: bundled short flags not supported (use -x -y, not -xy)\n");
+                    } else {
+                        _eprint("anuenue: argument parse error\n");
+                    } } } }
         print_usage(fs);
         return ANUENUE_EXIT_USAGE;
     }
@@ -197,7 +205,7 @@ fn main(): i64 {
     var lvl = anuenue_log_parse(cmdit_get_str(fs, f_log_level));
     if (lvl == ANUENUE_LOG_P_BAD) {
         return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
-                            "--log-level must be one of: off fatal error warn info debug trace");
+          "--log-level must be one of: off fatal error warn info debug trace");
     }
     anuenue_observe_init(cmdit_get_bool(fs, f_verbose), lvl);
     anuenue_span_enter("anuenue");
@@ -213,19 +221,36 @@ fn main(): i64 {
     anuenue_log_kv_int(SK_DEBUG, "config", "phase-step",  ANUENUE_PHASE_STEP);
     anuenue_log_kv_int(SK_DEBUG, "config", "phase-start", ANUENUE_PHASE_START);
 
+    # A-03 (2026-08-25 audit): a negative -d left `deadline_ns` at 0,
+    # which is the documented "run until SIGINT" sentinel — so
+    # `-d -1` silently meant "forever", an undocumented behaviour
+    # nobody asked for. Reject it; 0 remains the explicit way to say
+    # "until SIGINT". Checked unconditionally rather than only under
+    # -a so the error does not depend on flag order.
+    if (cmdit_get_int(fs, f_duration) < 0) {
+        return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
+          "--duration must be >= 0 (0 means run until SIGINT)");
+    }
+
     # M6: detect colour mode from flags + env + TTY, then dispatch.
     var color_override = _color_override_from_str(cmdit_get_str(fs, f_color));
+    # A-04: an unrecognised --color value is a usage error, not a
+    # silent fallback to auto. Same rule as --log-level.
+    if (color_override == ANUENUE_COLOR_OVERRIDE_BAD) {
+        return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
+          "--color must be one of: auto 24bit truecolor 256 16 none mono off never");
+    }
     ANUENUE_COLOR_MODE = anuenue_detect_color_mode(
-        cmdit_get_bool(fs, f_no_color),
-        cmdit_get_bool(fs, f_force_color),
-        color_override);
+      cmdit_get_bool(fs, f_no_color),
+      cmdit_get_bool(fs, f_force_color),
+      color_override);
     # The single highest-value verbose line: not just WHICH mode, but
     # WHY. v1.1.5's "rainbow collapsed to 16 colours on AGNOS" was a
     # wrong branch here that no output could distinguish from a right one.
     anuenue_log_kv_str(SK_DEBUG, "colour mode resolved", "mode",
-                       anuenue_color_mode_name(ANUENUE_COLOR_MODE));
+      anuenue_color_mode_name(ANUENUE_COLOR_MODE));
     anuenue_log_kv_str(SK_DEBUG, "colour mode resolved", "reason",
-                       anuenue_color_reason_name(ANUENUE_COLOR_REASON));
+      anuenue_color_reason_name(ANUENUE_COLOR_REASON));
 
     # Positional-text mode: any non-flag args → rainbow that text and
     # exit, never touching stdin. This is the `run /bin/anuenue AGNOS`
@@ -240,6 +265,13 @@ fn main(): i64 {
     var npos = cmdit_positional_count(fs);
 
     if (npos > 0) {
+        # Positional text wins over -a: the one-shot path renders once
+        # and returns, so -a has no effect here. Say so under -v rather
+        # than dropping the flag in silence (2026-08-25 audit, A-08).
+        if (cmdit_get_bool(fs, f_animate) == 1) {
+            anuenue_log_kv_str(SK_WARN, "-a ignored: positional TEXT renders once and exits",
+              "route", "positional-text");
+        }
         anuenue_log_kv_int(SK_DEBUG, "dispatch: positional text", "args", npos);
         rc = anuenue_text_args(fs, npos);
     } else {
@@ -254,7 +286,7 @@ fn main(): i64 {
             if (cmdit_get_bool(fs, f_animate) == 1) {
                 anuenue_log_kv_str(SK_DEBUG, "dispatch", "route", "animate");
                 rc = anuenue_animate(cmdit_get_int(fs, f_duration),
-                                     cmdit_get_int(fs, f_speed));
+                  cmdit_get_int(fs, f_speed));
             } else {
                 anuenue_log_kv_str(SK_DEBUG, "dispatch", "route", "filter");
                 rc = anuenue_filter();

@@ -232,8 +232,9 @@ through unchanged.
 | utf8 mixed       | 41.47   | within noise |
 
 - **1.0.0 DCE size**: **351 200 bytes** (±0 B vs v0.9.0 / v0.8.0).
-- The DCE cap (512 KB) gives ~161 KB headroom for future v1.x
-  sandhi-bump-driven growth.
+- The DCE cap (512 KB) gave ~161 KB headroom for future v1.x
+  sandhi-bump-driven growth. *(Historical: the cap was removed at
+  v1.2.2.)*
 
 ## v1.2.1 — Toolchain + dep refresh
 
@@ -272,8 +273,12 @@ host (clock reads plus unbuffered stderr writes) and nothing per byte.
 At default verbosity the cost is zero — the level check short-circuits
 before any formatting.
 
-- **1.2.1 binary**: **809 520 bytes** (~790 KB) — **over the 512 KB
-  cap by ~278 KB**, up from 389 648 B at v1.2.0 (+419 872, +108%).
+- **1.2.1 binary**: **809 520 bytes** (~790 KB), up from 389 648 B at
+  v1.2.0 (+419 872, +108%). The 512 KB cap this row originally
+  reported against was **removed at v1.2.2** — see
+  [`state.md` § Binary](development/state.md#binary) for why (short
+  version: the number now measures the first-party dep surface, not
+  anuenue, and DCE stopped removing anything).
   Decomposed: dep bump +135 240, toolchain bump +279 072, observability
   wiring +5 560. `agnostik` accounts for ~546 KB and `sakshi` for ~90 KB
   — both are *called* code as of v1.2.1, which is what this release
@@ -289,6 +294,34 @@ before any formatting.
   clock read on the reference host) that 6.4.62's did not.
   `hsv_rainbow` reads 8 ns and `tty_fg_rgb_buf` 52 ns under the new
   harness.
+
+## v1.2.2 — P(-1) audit sweep
+
+Nine findings fixed (2 MEDIUM, 5 LOW, 2 INFO), the `hsv_rainbow` sector
+table flattened from a nested else-if chain to early returns, and the
+512 KB binary cap removed. Measured head-to-head on one idle host, same
+fixture, `RUNS=11`, v1.2.1 binary vs v1.2.2 binary.
+
+| Corpus           | v1.2.1 | v1.2.2 | Δ |
+|------------------|-------:|-------:|--:|
+| ascii (no LF)    | 46.57  | **46.64** | +0.2% |
+| ascii (w/ LFs)   | 50.98  | **50.97** | −0.0% |
+| utf8 mixed       | 41.66  | **41.71** | +0.1% |
+
+Within run-to-run noise. None of the audit fixes touch the per-byte
+path: the allocation guard (A-01) is on a once-per-process lazy init,
+the duration clamp (A-02) is a single comparison before the frame loop,
+and the flag validations (A-03 / A-04) run once at startup.
+
+`hsv_rainbow` holds at **8 ns** across the A-07 refactor — flattening
+the six-sector chain into early returns cost nothing, which was the
+open question, since that function runs 1 530 times per process to
+build the escape table.
+
+- **1.2.2 binary**: **809 984 bytes**, +464 B over v1.2.1 — the audit
+  fixes. **The 512 KB cap is removed at this cut** and replaced with
+  track-and-attribute; see
+  [`state.md` § Binary](development/state.md#binary) for the reasoning.
 
 ## Trend
 
@@ -306,7 +339,8 @@ before any formatting.
 | **v1.0.0** | **45.71**        | 8                | 45                  | 351 200      | **GA** |
 | v1.1.3  | 46.59               | —                | —                   | 394 440      | Toolchain + dep refresh (figures from `state.md`; micros not recorded) |
 | v1.2.0  | 47.88‡              | —                | —                   | 389 648      | Library surface (`dist/anuenue.cyr`). Both figures re-measured at v1.2.1 from a rebuilt v1.2.0 binary; micros not recorded at the time |
-| **v1.2.1** | **46.63**‡       | 8§               | 52§                 | **809 520**  | **Toolchain 6.5.35 + dep refresh + observability; over the 512 KB cap** |
+| v1.2.1  | 46.57‡              | 8§               | 50§                 | 809 520      | Toolchain 6.5.35 + dep refresh + observability |
+| **v1.2.2** | **46.64**‡       | 8§               | 50§                 | **809 984**  | **P(-1) audit sweep; size cap removed** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.

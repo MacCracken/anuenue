@@ -456,8 +456,14 @@ fn main(): i64 {
     assert_eq(_color_override_from_str("none"),      ANUENUE_COLOR_OVERRIDE_NONE, "none → NONE");
     assert_eq(_color_override_from_str("off"),       ANUENUE_COLOR_OVERRIDE_NONE, "off → NONE");
     assert_eq(_color_override_from_str("never"),     ANUENUE_COLOR_OVERRIDE_NONE, "never → NONE");
-    # Unknown strings fall back to AUTO (don't silently force a mode the user didn't intend)
-    assert_eq(_color_override_from_str("bogus"),     ANUENUE_COLOR_OVERRIDE_AUTO, "unknown → AUTO");
+    # CHANGED at v1.2.2 (audit A-04). This assertion used to expect
+    # AUTO, on the reasoning that falling back "doesn't silently force
+    # a mode the user didn't intend". The audit found the opposite is
+    # true: AUTO *is* a mode, so `--color=trucolor` silently ran
+    # detection while the user believed they had forced truecolor, and
+    # nothing said otherwise. An unrecognised value is now a usage
+    # error — the same rule --log-level already followed.
+    assert_eq(_color_override_from_str("bogus"),     ANUENUE_COLOR_OVERRIDE_BAD, "unknown → BAD (usage error)");
 
     # Override → mode mapping
     assert_eq(_color_mode_from_override(ANUENUE_COLOR_OVERRIDE_TRUE), ANUENUE_COLOR_TRUE, "OVERRIDE_TRUE → TRUE");
@@ -874,6 +880,104 @@ fn main(): i64 {
     assert_eq(ANUENUE_EXIT_OK,    0, "exit OK    == 0");
     assert_eq(ANUENUE_EXIT_RUN,   1, "exit RUN   == 1");
     assert_eq(ANUENUE_EXIT_USAGE, 2, "exit USAGE == 2");
+
+    # ---- v1.2.2 — P-1 audit regressions ---------------------------
+    #
+    # One group per finding in docs/audit/2026-08-25-audit.md. Each
+    # asserts the FIXED behaviour, so a revert fails here rather than
+    # in the field.
+
+    test_group("v1.2.2 A-01 — cp_is_extending survives a failed table alloc");
+    # The table is lazily built on first use. Assert it initialises and
+    # that the classifier answers correctly on both sides of a range
+    # boundary — the binary search over the table is what the null
+    # deref would have corrupted.
+    assert_eq(_cp_ext_init(), 0, "_cp_ext_init succeeds and reports success");
+    assert_eq(_CP_EXT_TABLE == 0, 0, "table pointer is non-null after init");
+    assert_eq(_CP_EXT_COUNT, 21, "table records its range count");
+    # Re-entry must be a no-op, not a second allocation.
+    var aud_t1 = _CP_EXT_TABLE;
+    assert_eq(_cp_ext_init(), 0, "second _cp_ext_init is a no-op");
+    assert_eq(_CP_EXT_TABLE, aud_t1, "second init does not reallocate");
+    # Range boundaries the search must get right.
+    assert_eq(cp_is_extending(0x0300), 1, "0x0300 is extending (first range, lo)");
+    assert_eq(cp_is_extending(0x02FF), 0, "0x02FF is not (one below first range)");
+    assert_eq(cp_is_extending(0xE01EF), 1, "0xE01EF is extending (last range, hi)");
+    assert_eq(cp_is_extending(0xE01F0), 0, "0xE01F0 is not (one above last range)");
+    assert_eq(cp_is_extending(0x200D), 1, "ZWJ is extending");
+
+    test_group("v1.2.2 A-02 — animation duration cannot overflow to the past");
+    # deadline_ns = start_ns + dur * 1e9. At i64::MAX the product wraps
+    # to exactly -1e9, so the deadline landed one second BEFORE the
+    # start and `-a -d <huge>` exited after a single frame. The clamp
+    # is what keeps the multiply in range.
+    assert_eq(ANUENUE_MAX_DURATION_S > 0, 1, "clamp is positive");
+    # The clamped value times 1e9 must still be a positive i64.
+    var aud_ns = ANUENUE_MAX_DURATION_S * 1000000000;
+    assert_eq(aud_ns > 0, 1, "clamp * 1e9 does not overflow to negative");
+    assert_eq(aud_ns / 1000000000, ANUENUE_MAX_DURATION_S, "clamp * 1e9 round-trips (no wrap)");
+    # And it leaves headroom for the clock reading added on top —
+    # enough for an epoch-relative clock (~1.79e18 ns in 2026), not
+    # merely the boot-relative one the stdlib returns today.
+    assert_eq(aud_ns < 5000000000000000000, 1, "clamp * 1e9 stays under 5e18");
+    assert_eq(9223372036854775807 - aud_ns > 5000000000000000000, 1,
+              "clamp leaves >5e18 ns of headroom — safe under an epoch-based clock too");
+    # The unclamped value is exactly the trap: prove the wrap is real
+    # so nobody "simplifies" the clamp away.
+    assert_eq(9223372036854775807 * 1000000000 < 0, 1,
+              "i64::MAX * 1e9 really does wrap negative (the A-02 trap)");
+    # A sane duration is untouched by the clamp.
+    assert_eq(ANUENUE_DEFAULT_DURATION_S < ANUENUE_MAX_DURATION_S, 1,
+              "the default duration is well inside the clamp");
+
+    test_group("v1.2.2 A-04 — unknown --color value is rejected, not guessed");
+    assert_eq(_color_override_from_str("auto"),      ANUENUE_COLOR_OVERRIDE_AUTO, "auto parses");
+    assert_eq(_color_override_from_str("24bit"),     ANUENUE_COLOR_OVERRIDE_TRUE, "24bit parses");
+    assert_eq(_color_override_from_str("truecolor"), ANUENUE_COLOR_OVERRIDE_TRUE, "truecolor parses");
+    assert_eq(_color_override_from_str("256"),       ANUENUE_COLOR_OVERRIDE_256,  "256 parses");
+    assert_eq(_color_override_from_str("16"),        ANUENUE_COLOR_OVERRIDE_16,   "16 parses");
+    assert_eq(_color_override_from_str("none"),      ANUENUE_COLOR_OVERRIDE_NONE, "none parses");
+    assert_eq(_color_override_from_str("off"),       ANUENUE_COLOR_OVERRIDE_NONE, "off parses");
+    assert_eq(_color_override_from_str("never"),     ANUENUE_COLOR_OVERRIDE_NONE, "never parses");
+    # A-09: documented since M6, implemented at v1.2.2.
+    assert_eq(_color_override_from_str("mono"),      ANUENUE_COLOR_OVERRIDE_NONE, "mono parses (A-09)");
+    # The regression itself: a typo used to silently mean "auto".
+    assert_eq(_color_override_from_str("trucolor"),  ANUENUE_COLOR_OVERRIDE_BAD, "typo → BAD, not auto");
+    assert_eq(_color_override_from_str("24BIT"),     ANUENUE_COLOR_OVERRIDE_BAD, "parse is case-sensitive");
+    assert_eq(_color_override_from_str("yes"),       ANUENUE_COLOR_OVERRIDE_BAD, "unknown word → BAD");
+    assert_eq(_color_override_from_str("-1"),        ANUENUE_COLOR_OVERRIDE_BAD, "numeric junk → BAD");
+    # Absent / empty stay AUTO — that is "flag not given", not "bad value".
+    assert_eq(_color_override_from_str(0),           ANUENUE_COLOR_OVERRIDE_AUTO, "null → AUTO (flag absent)");
+    assert_eq(_color_override_from_str(""),          ANUENUE_COLOR_OVERRIDE_AUTO, "empty → AUTO (flag absent)");
+    # BAD must be distinct from every real mode or the check in main
+    # would collide with a legitimate value.
+    assert_eq(ANUENUE_COLOR_OVERRIDE_BAD == ANUENUE_COLOR_OVERRIDE_AUTO, 0, "BAD != AUTO");
+    assert_eq(ANUENUE_COLOR_OVERRIDE_BAD == ANUENUE_COLOR_OVERRIDE_NONE, 0, "BAD != NONE");
+
+    test_group("v1.2.2 A-05 — the animation caps are real limits, stated once");
+    # The caps drop input rather than merely leaving it uncoloured
+    # (_pretag_clusters writes its sentinel at the byte offset where it
+    # stopped). Pin both so a change to either is deliberate, and pin
+    # the truncation-detection condition the warning uses.
+    assert_eq(ANUENUE_ANIMATE_INPUT_MAX, 65536, "byte cap is 64 KB");
+    assert_eq(ANUENUE_ANIMATE_CLUSTER_MAX, 8192, "cluster cap is 8192");
+    # Feed exactly cap+1 clusters of ASCII and confirm the tag walk
+    # stops AT the cap — this is the condition `n_clusters >= cap`
+    # that triggers the warning.
+    var aud_n = ANUENUE_ANIMATE_CLUSTER_MAX + 16;
+    var aud_buf = alloc(aud_n);
+    var aud_ct = alloc((ANUENUE_ANIMATE_CLUSTER_MAX + 1) * 8);
+    assert_eq(aud_buf == 0, 0, "audit fixture buffer allocated");
+    assert_eq(aud_ct == 0, 0, "audit fixture cluster table allocated");
+    var aud_i = 0;
+    while (aud_i < aud_n) { store8(aud_buf + aud_i, 97); aud_i = aud_i + 1; }
+    var aud_c = _pretag_clusters(aud_buf, aud_n, aud_ct, ANUENUE_ANIMATE_CLUSTER_MAX);
+    assert_eq(aud_c, ANUENUE_ANIMATE_CLUSTER_MAX, "tag walk stops exactly at the cluster cap");
+    # The sentinel is the truncation point, NOT the input length — this
+    # is why the tail is dropped rather than rendered in one colour.
+    assert_eq(load64(aud_ct + aud_c * 8), ANUENUE_ANIMATE_CLUSTER_MAX,
+              "sentinel is the stop offset, so bytes past it are dropped");
+    assert_eq(load64(aud_ct + aud_c * 8) < aud_n, 1, "sentinel is short of the input length");
 
     return assert_summary();
 }

@@ -3,6 +3,10 @@
 
 include "lib/syscalls.cyr"
 
+# Top-level test entry referenced by cyrius.cyml [build].test.
+# The real assertions live in tests/anuenue.tcyr, which `cyrius test`
+# auto-discovers; this stub exists so the manifest's test entry
+# resolves to something that builds and exits clean. Returns 0.
 fn main() {
     return 0;
 }

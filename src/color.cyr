@@ -40,17 +40,24 @@ var ANUENUE_COLOR_MODE = 3;
 
 # ---- --color <mode> flag value enum -------------------------------
 # Decoded from the string argv value by `_color_override_from_str`.
-# 0 = auto (run detection); 1..4 force a specific mode.
-var ANUENUE_COLOR_OVERRIDE_AUTO = 0;
-var ANUENUE_COLOR_OVERRIDE_TRUE = 1;
-var ANUENUE_COLOR_OVERRIDE_256  = 2;
-var ANUENUE_COLOR_OVERRIDE_16   = 3;
-var ANUENUE_COLOR_OVERRIDE_NONE = 4;
+# 0 = auto (run detection); 1..4 force a specific mode; 5 = the value
+# did not parse.
+#
+# Converted from five initialized globals to an enum at v1.2.2, per the
+# CLAUDE.md convention ("Enum values for constants — don't consume
+# gvar_toks slots"). Values are unchanged; BAD is additive.
+enum AnuenueColorOverride {
+    ANUENUE_COLOR_OVERRIDE_AUTO = 0;
+    ANUENUE_COLOR_OVERRIDE_TRUE = 1;
+    ANUENUE_COLOR_OVERRIDE_256  = 2;
+    ANUENUE_COLOR_OVERRIDE_16   = 3;
+    ANUENUE_COLOR_OVERRIDE_NONE = 4;
+    ANUENUE_COLOR_OVERRIDE_BAD  = 5;
+}
 
-# Parse a `--color <s>` value to its override enum. Unknown strings
-# fall through to AUTO so a typo doesn't silently force a colour
-# mode the user didn't intend; main.cyr surfaces parse errors at
-# the flags layer rather than here.
+# Parse a `--color <s>` value to its override enum. An unrecognised
+# value returns BAD and main.cyr turns that into a usage error; see
+# the A-04 note on the fallthrough below.
 fn _color_override_from_str(s): i64 {
     if (s == 0) { return ANUENUE_COLOR_OVERRIDE_AUTO; }
     if (strlen(s) == 0) { return ANUENUE_COLOR_OVERRIDE_AUTO; }
@@ -62,7 +69,25 @@ fn _color_override_from_str(s): i64 {
     if (streq(s, "none"))      { return ANUENUE_COLOR_OVERRIDE_NONE; }
     if (streq(s, "off"))       { return ANUENUE_COLOR_OVERRIDE_NONE; }
     if (streq(s, "never"))     { return ANUENUE_COLOR_OVERRIDE_NONE; }
-    return ANUENUE_COLOR_OVERRIDE_AUTO;
+    # A-09 (2026-08-25 audit). `mono` has been documented as a valid
+    # value since M6 — docs/examples/06-no-color.sh runs it and the
+    # file header lists "--color=none / --color=mono" as the explicit
+    # override — but the parser never had a branch for it. It fell
+    # through to the AUTO default, so the example ran colour detection
+    # while claiming to demonstrate forced mono, and exited 0 either
+    # way. The A-04 fix is what surfaced it: with unknown values now
+    # rejected, the example failed and the four-year-old gap became
+    # visible. This is the argument against silent fallbacks in one
+    # bug — the fallback did not just hide user typos, it hid OUR
+    # broken documentation from OUR own example suite.
+    if (streq(s, "mono"))      { return ANUENUE_COLOR_OVERRIDE_NONE; }
+    # A-04 (2026-08-25 audit). Unrecognised values used to return AUTO,
+    # so `--color=trucolor` silently behaved as `--color=auto` and a
+    # user debugging "why is there no colour" had nothing to go on.
+    # That is the same silent-default failure v1.2.1 deliberately
+    # rejected for `--log-level`, and the two flags now agree: an
+    # unknown value is a usage error, not a guess.
+    return ANUENUE_COLOR_OVERRIDE_BAD;
 }
 
 # Convert override enum back to a color mode constant. Only called
@@ -164,6 +189,10 @@ enum AnuenueColorReason {
 # detect function, read by main.cyr's verbose logging.
 var ANUENUE_COLOR_REASON = ANUENUE_CR_UNSET;
 
+# Human-readable name for an AnuenueColorReason. Returns a static
+# cstr, never 0 — every enum value has a name and an out-of-range
+# value falls through to "unset", because the caller passes the
+# result straight to strlen inside the logger.
 fn anuenue_color_reason_name(r): i64 {
     if (r == ANUENUE_CR_FLAG_COLOR)   { return "--color override"; }
     if (r == ANUENUE_CR_FLAG_NOCOLOR) { return "--no-color flag"; }
@@ -177,6 +206,9 @@ fn anuenue_color_reason_name(r): i64 {
     return "unset";
 }
 
+# Human-readable name for an ANUENUE_COLOR_* mode, using the same
+# spelling the `--color` flag accepts (so a log line can be pasted
+# back as a flag value). Returns a static cstr, never 0.
 fn anuenue_color_mode_name(m): i64 {
     if (m == ANUENUE_COLOR_MONO) { return "none"; }
     if (m == ANUENUE_COLOR_16)   { return "16"; }

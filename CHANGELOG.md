@@ -4,6 +4,189 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-08-25 (P-1 audit sweep)
+
+A full **P(-1) audit / refactor / hardening / optimization / security sweep**
+over the whole source, plus the removal of the binary-size cap.
+
+**9 findings — 2 MEDIUM, 5 LOW, 2 INFO. All fixed in-cut, zero HIGH+ open.**
+Every fix carries a regression test that fails if the fix is reverted. Full
+write-up: [`docs/audit/2026-08-25-audit.md`](docs/audit/2026-08-25-audit.md).
+
+The method mattered more than any single bug. **A-01 was found by reading;
+A-02 through A-05 were found by *running*** — adversarial byte streams and
+adversarial argv against the real binary. Each of those four looks correct in
+isolation. Three of the nine are the same defect in different clothes: a silent
+fallback where an error belonged. A-09 is the compound interest on one of them.
+
+### Fixed
+
+- **A-01 (MEDIUM) — `_cp_ext_init` wrote 42 words through an unchecked
+  allocation** (`src/filter.cyr`). `lib/alloc.cyr` returns 0 on OOM rather than
+  aborting, so a failed allocation sent 42 `store64` calls to absolute addresses
+  `0x000`–`0x148`. `_phase_esc_init`, 200 lines above in the same file, already
+  checked — this call site simply never got the same treatment. Worse, the
+  failure was unobservable: `_cp_ext_init` returned success unconditionally and
+  `cp_is_extending` discarded the result, so had the null write not faulted the
+  binary search would have run against a null table. Same class cmdit's own
+  1.2.4 audit hardened, reaching anuenue through a different door.
+
+  MEDIUM rather than HIGH because the size is a compile-time constant (336 B),
+  so no input can drive the failure — it needs genuine heap exhaustion. Fixed by
+  checking, returning `-1`, and having `cp_is_extending` answer "not extending"
+  when the table is unavailable. That keeps **output byte-correct** and degrades
+  only cluster grouping, which is the right trade for a filter whose contract is
+  byte preservation.
+
+- **A-02 (MEDIUM) — a long `--duration` made the animation exit immediately.**
+  `deadline_ns = start_ns + duration_secs * 1000000000` overflows i64 above
+  ~9.22e9 seconds. At `i64::MAX` the product is congruent to *exactly* −1e9, so
+  the deadline landed one second **in the past** and
+  `anuenue -a -d 9223372036854775807` exited after a single frame — the precise
+  inverse of the request. Clamped to `ANUENUE_MAX_DURATION_S` (4e9 s, ~127
+  years) before converting. The bound sits well below the arithmetic maximum on
+  purpose: at the tightest valid clamp the constant would silently depend on
+  whether `clock_now_ns()` is boot-relative (it is today) or epoch-relative.
+
+- **A-03 (LOW) — a negative `--duration` silently meant "run forever."**
+  `if (duration_secs > 0)` left the deadline at 0, which is the *documented
+  sentinel* for "until SIGINT". Now a usage error; `0` remains the explicit way
+  to say it. Validated unconditionally so the error does not depend on flag order.
+
+- **A-04 (LOW) — an unrecognised `--color` value silently meant `auto`.**
+  `--color=trucolor` ran full colour detection while the user believed they had
+  forced truecolor, exit 0, nothing on stderr. The old comment defended this as
+  "a typo doesn't silently force a colour mode the user didn't intend" — but
+  **AUTO is a mode**; the fallback chose a different silent outcome rather than
+  avoiding one. v1.2.1 had already made this exact call the other way for
+  `--log-level`; the two flags now agree. New `ANUENUE_COLOR_OVERRIDE_BAD`
+  sentinel → usage error listing the accepted values. Null and empty still mean
+  AUTO — that is "flag absent", not "bad value".
+
+- **A-05 (LOW) — animation dropped input past its caps in silence.** The 64 KB
+  byte cap and 8 192 cluster cap are deliberate ("render what fit; don't OOM"),
+  but `_pretag_clusters` writes its sentinel at the byte offset where it
+  stopped, so text past the cap is **never rendered**, not merely rendered in one
+  colour. A 200 001-byte input animated as exactly 8 192 characters per frame
+  with nothing said on any fd. Both caps now warn via sakshi, so `-v` /
+  `--log-level=warn` explains the missing text. Caps themselves unchanged.
+
+- **A-06 (LOW) — animation's failure paths returned a bare `1`.** v1.2.1 routed
+  the filter and passthrough failures through `anuenue_fail` but missed
+  `anuenue_animate`: three allocation failures and the stdin read error still
+  produced no output on any descriptor. Routed through `anuenue_fail`; exit codes
+  unchanged. The animate path now also accumulates `ANUENUE_BYTES_IN`, so `-v`
+  reports byte counts for `-a` runs.
+
+- **A-09 (LOW) — `--color=mono` was documented for four months and never
+  implemented.** Surfaced *by fixing A-04*, not by the sweep: with unknown values
+  rejected, `docs/examples/06-no-color.sh` started failing — it runs
+  `--color=mono`, and its header lists it as a valid override. The parser had no
+  branch for it, so it fell through to AUTO and the example ran colour detection
+  while claiming to demonstrate forced mono, **exiting 0**.
+
+  This is the strongest argument in the audit for A-04's fix: the silent fallback
+  did not merely swallow user typos, **it hid our own broken documentation from
+  our own example suite**, which CI runs on every push. `mono` is now implemented
+  as a synonym for `none` — the documentation was right and the code was wrong.
+
+### Changed
+
+- **The 512 KB binary-size cap is removed.** It was set at v0.7.1 when the binary
+  was ~350 KB and essentially all of it was anuenue. That is no longer what the
+  number measures. Three things changed underneath it: the first-party dep
+  surface is the floor now (agnostik alone is ~546 KB, against ~2 400 lines of
+  anuenue source); `CYRIUS_DCE=1` stopped removing anything on 6.5.x, so "DCE
+  binary size" measures the whole link; and no CI step ever enforced the cap, so
+  its only real effect was to make every dep bump read as a regression.
+
+  Capping the total would mean a downstream pipe filter vetoing darshana,
+  sakshi, agnostik and cmdit's right to grow — backwards, since those crates
+  growing is the ecosystem working. **Replaced with: track the size every
+  release and attribute any step change** (toolchain? dep? our code?). A jump is
+  a fact to explain, not a threshold to fail. Recorded in CLAUDE.md and
+  `state.md`.
+
+- **A-07 (INFO) — `cyrius fmt` drift in four files, and the formatter's own fix
+  made one worse.** Applying it was mostly benign — `animate.cyr` and `main.cyr`
+  got *shallower* (max indent 38→16 and 44→24 columns). `hsv.cyr` was the
+  exception: `hsv_rainbow`'s six-sector colour table is a `} else { if (...) {`
+  chain, which the formatter indents one level deeper per arm, cascading sector 5
+  to **24 columns** and destroying the parallel alignment that is the entire
+  point of a lookup table. Restructured as a flat run of early returns instead —
+  reads as the table it is, is naturally format-stable, and drops the trailing
+  `} } } } }` pile. **Emitted bytes unchanged**: all six goldens byte-identical
+  and `hsv_rainbow` still benches at 8 ns. Worth noting because `hsv.cyr` is the
+  distlib module consumers include.
+
+- **A-08 (INFO) — eight public functions had no docstring.** Several were covered
+  by a shared block comment above a group, which the docs checker does not credit
+  — correctly, since a reader arriving at the second function in a group sees
+  nothing. Per-function docstrings added, each stating the return contract.
+
+- **`--color` accepts nine documented values** — `auto`, `24bit`, `truecolor`,
+  `256`, `16`, `none`, `mono`, `off`, `never`. Help text and the A-04 error
+  message now list all of them; `truecolor` / `off` / `never` worked before but
+  were undocumented, and `mono` was documented but did not work.
+
+- **`--color` override constants converted from five initialized globals to an
+  `AnuenueColorOverride` enum**, per the CLAUDE.md convention. Values unchanged;
+  `BAD` is additive.
+
+### Added
+
+- **`scripts/robustness-check.sh` — adversarial input and argv, wired into CI.**
+  The unit suite covers the parser and classifier functions in isolation; the
+  fuzz harnesses cover them under seeded random input. Neither runs the binary
+  against adversarial byte streams or adversarial argv, which is where four of
+  the nine findings lived. Eleven checks over four gates:
+
+  1. **UTF-8 carry across the 4096-byte read boundary** — a multi-byte sequence
+     split 1/3, 2/2 or 3/1 across the chunk boundary must produce byte-identical
+     output to the same input delivered one byte at a time (`dd bs=1`). 52
+     comparisons. This is the property `carry_len` exists for and nothing else
+     tested it end to end.
+  2. **Byte preservation under malformed UTF-8** — strip the SGR escapes back
+     out and the result must equal the input, byte for byte, across overlong
+     2/3/4-byte forms, UTF-16 surrogates, codepoints above U+10FFFF, the
+     `0xF5`–`0xFF` range, lone continuations, EOF truncation, embedded NULs and
+     all 256 byte values. 116 comparisons.
+  3. **Argv extremes** — every integer flag at both i64 extremes must terminate
+     with a documented exit code, never a signal, never a hang.
+  4. **One process-level regression per audit finding.**
+
+- **41 new unit assertions** (308 → 349) across four groups, one per finding with
+  a testable invariant.
+
+- **CI gates**: the robustness check joins lint, observability and distlib-drift.
+
+### Performance
+
+Unchanged. Head-to-head on one idle host, `RUNS=11`, v1.2.1 binary vs v1.2.2
+binary:
+
+| Corpus | v1.2.1 | v1.2.2 | Δ |
+|---|---:|---:|---:|
+| ascii (no LF) | 46.57 ns/byte | 46.64 ns/byte | +0.2% |
+| ascii (w/ LFs) | 50.98 ns/byte | 50.97 ns/byte | −0.0% |
+| utf8 mixed | 41.66 ns/byte | 41.71 ns/byte | +0.1% |
+
+Within run-to-run noise; all under the 60 ns/byte M5 acceptance. `hsv_rainbow`
+holds at 8 ns across the A-07 refactor — flattening the sector table cost
+nothing. Binary 809 520 → **809 984 B** (+464), the audit fixes.
+
+### Verified clean
+
+Recorded so the next audit knows what was covered: the capability surface (only
+`write`, `exit`, and `sigprocmask`/`signalfd` on the animation path — no `open`,
+`connect`, `fork`, `execve`, `socket`, and no `sys_system` anywhere, so command
+injection is structurally impossible); UTF-8 robustness across 60 corpus × mode
+combinations; chunk-boundary carry across 52; phase arithmetic under i64
+extremes (both normalizers correct negatives, so a wrapped phase cannot produce
+a negative table index); `FLUSH_RESERVE` geometry; stack buffers (largest is 128
+bytes); and the v0.8.0 M8 long-cluster fix, which still holds.
+
+
 ## [1.2.1] — 2026-08-25 (toolchain + deps + observability + CI repair)
 
 Maintenance cut with three threads: the toolchain/dep refresh, the **sakshi +

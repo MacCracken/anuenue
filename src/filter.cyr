@@ -121,15 +121,15 @@ fn _phase_esc_init(): i64 {
         if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_TRUE) {
             elen = tty_fg_rgb_buf(&ebuf, 0, r, g, b);
         } else { if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_256) {
-            elen = tty_fg_256_buf(&ebuf, 0, _rgb_to_256(r, g, b));
-        } else { if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_16) {
-            elen = tty_sgr_buf(&ebuf, 0, _rgb_to_16(r, g, b));
-        } else {
-            # MONO falls through with elen=0; the table won't be
-            # used (main.cyr dispatches to passthrough) but
-            # building it cleanly costs nothing.
-            elen = 0;
-        } } }
+                elen = tty_fg_256_buf(&ebuf, 0, _rgb_to_256(r, g, b));
+            } else { if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_16) {
+                    elen = tty_sgr_buf(&ebuf, 0, _rgb_to_16(r, g, b));
+                } else {
+                    # MONO falls through with elen=0; the table won't be
+                    # used (main.cyr dispatches to passthrough) but
+                    # building it cleanly costs nothing.
+                    elen = 0;
+                } } }
         var entry = _PHASE_ESC_TABLE + i * ANUENUE_ESC_TABLE_ENTRY_SIZE;
         store64(entry, elen);
         var k = 0;
@@ -229,18 +229,18 @@ fn utf8_decode(read_buf, i, seqlen) {
     if (seqlen == 1) { return load8(read_buf + i); }
     if (seqlen == 2) {
         return ((load8(read_buf + i) & 0x1F) << 6)
-             |  (load8(read_buf + i + 1) & 0x3F);
+        |  (load8(read_buf + i + 1) & 0x3F);
     }
     if (seqlen == 3) {
         return ((load8(read_buf + i) & 0x0F) << 12)
-             | ((load8(read_buf + i + 1) & 0x3F) << 6)
-             |  (load8(read_buf + i + 2) & 0x3F);
+        | ((load8(read_buf + i + 1) & 0x3F) << 6)
+        |  (load8(read_buf + i + 2) & 0x3F);
     }
     # seqlen == 4 (the only remaining valid case)
     return ((load8(read_buf + i) & 0x07) << 18)
-         | ((load8(read_buf + i + 1) & 0x3F) << 12)
-         | ((load8(read_buf + i + 2) & 0x3F) << 6)
-         |  (load8(read_buf + i + 3) & 0x3F);
+    | ((load8(read_buf + i + 1) & 0x3F) << 12)
+    | ((load8(read_buf + i + 2) & 0x3F) << 6)
+    |  (load8(read_buf + i + 3) & 0x3F);
 }
 
 # ---- grapheme cluster classification ------------------------------
@@ -304,6 +304,16 @@ fn _cp_ext_init(): i64 {
     # cover both ends of every range.
     var n = 21;
     _CP_EXT_TABLE = alloc(n * 16);
+    if (_CP_EXT_TABLE == 0) {
+        # A-01 (2026-08-25 audit). `alloc` returns 0 on OOM — it does
+        # not abort. Without this guard the 42 store64 calls below ran
+        # through a null `p`, writing to absolute addresses 0x000-0x148.
+        # `_phase_esc_init` 200 lines above already checked; this call
+        # site was the one that did not. Size here is a compile-time
+        # constant (336 B) so no input can drive it, but the failure
+        # mode is a null write, not a bad render.
+        return 0 - 1;
+    }
     var p = _CP_EXT_TABLE;
     store64(p +   0, 0x0300);   store64(p +   8, 0x036F);   # Combining Diacritical Marks
     store64(p +  16, 0x0483);   store64(p +  24, 0x0489);   # Cyrillic combining
@@ -330,8 +340,25 @@ fn _cp_ext_init(): i64 {
     return 0;
 }
 
+# Is `cp` an extending codepoint — one that joins the preceding
+# grapheme cluster rather than starting a new one?
+#
+# Returns 1 for extending, 0 otherwise. Covers the practical subset
+# documented in the range table above (combining marks, ZWJ,
+# variation selectors); see ADR 0003 for what is deliberately not
+# modelled and why. Lazily initialises the sorted range table on
+# first call and binary-searches it; returns 0 if that allocation
+# fails, which degrades cluster grouping without losing bytes.
 fn cp_is_extending(cp) {
-    if (_CP_EXT_TABLE == 0) { _cp_ext_init(); }
+    if (_CP_EXT_TABLE == 0) {
+        # A-01: if init cannot allocate, answer "not extending" rather
+        # than binary-searching a null table. Every caller treats a 0 as
+        # "starts a new cluster", so the rainbow keeps advancing and the
+        # output stays byte-correct — only the cluster grouping degrades.
+        # That is the right failure for a filter whose contract is byte
+        # preservation.
+        if (_cp_ext_init() != 0) { return 0; }
+    }
     # Cheap reject for the common cases — codepoints below the first
     # range or above the last skip the search entirely. Above-last
     # is the CJK / Latin-1 / hangul / most-of-Unicode case;
@@ -351,11 +378,11 @@ fn cp_is_extending(cp) {
         if (cp < entry_lo) {
             hi_idx = mid;
         } else { if (cp > entry_hi) {
-            lo_idx = mid + 1;
-        } else {
-            found = 1;
-            lo_idx = hi_idx;     # exit loop via the while-condition
-        } }
+                lo_idx = mid + 1;
+            } else {
+                found = 1;
+                lo_idx = hi_idx;     # exit loop via the while-condition
+            } }
     }
     return found;
 }

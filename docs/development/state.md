@@ -5,6 +5,54 @@
 
 ## Version
 
+**1.2.2** — cut 2026-08-25. **P(-1) audit sweep + the size cap is gone.**
+
+Full audit / refactor / hardening / optimization / security pass over
+the whole source: **9 findings — 2 MEDIUM, 5 LOW, 2 INFO, all fixed
+in-cut, zero HIGH+ open**. Write-up in
+[`docs/audit/2026-08-25-audit.md`](../audit/2026-08-25-audit.md).
+
+The two MEDIUMs: `_cp_ext_init` wrote 42 words through an **unchecked
+`alloc`** (null-pointer write on OOM; `_phase_esc_init` 200 lines above
+already checked — this site never got the same treatment), and
+`--duration` **overflowed to a deadline in the past**, so
+`-a -d <i64::MAX>` exited after one frame instead of running ~292 years.
+Three LOWs were the same defect in different clothes — a silent fallback
+where an error belonged (negative `-d` meaning "forever", unknown
+`--color` meaning "auto", animation caps dropping input in silence).
+A-09 is the compound interest: fixing the `--color` fallback made
+`docs/examples/06-no-color.sh` fail, revealing that `--color=mono` had
+been **documented since M6 and never implemented** — the fallback had
+been hiding our own broken documentation from our own CI-run example
+suite.
+
+Method note worth keeping: **A-01 was found by reading; A-02 through
+A-05 were found by running.** Each looks correct in isolation. The
+adversarial corpora that found them are now permanent as
+`scripts/robustness-check.sh` (11 checks, CI-wired): UTF-8 carry across
+the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1`), byte
+preservation under malformed UTF-8 (116 comparisons — overlongs,
+surrogates, >U+10FFFF, all 256 byte values), argv at both i64 extremes,
+and one process-level regression per finding.
+
+**The 512 KB binary cap is removed.** It was set at v0.7.1 when the
+binary was ~350 KB and essentially all of it was anuenue. The number no
+longer measures that: the first-party dep surface is the floor (agnostik
+alone is ~546 KB against ~2 400 lines of anuenue source), `CYRIUS_DCE=1`
+stopped removing anything on 6.5.x, and no CI step ever enforced it — so
+its only real effect was to make every dep bump read as a regression.
+Replaced with **track and attribute**; see [Binary](#binary).
+
+*Verification:* `cyrius audit` clean on all three gates (fmt / lint /
+docs — fmt and docs were both failing at the start of the sweep).
+**349/349** unit assertions across 46 groups (was 308/42), **1 354 581**
+fuzz assertions, six goldens byte-identical, animate-smoke 17,
+observe-check 22, robustness-check 11. Perf unchanged head-to-head
+(`RUNS=11`, idle host): ASCII no-LF 46.57 → **46.64 ns/byte**, w/ LFs
+50.98 → **50.97**, UTF-8 41.66 → **41.71** — all under the 60 ns/byte M5
+cap. `hsv_rainbow` holds at 8 ns across the A-07 sector-table refactor.
+Binary 809 520 → **809 984 B** (+464).
+
 **1.2.1** — cut 2026-08-25. **Toolchain + deps + observability + CI repair.**
 
 *Toolchain/deps:* cyrius pin `6.4.62` → `6.5.35` (`./lib/` re-synced via
@@ -62,8 +110,8 @@ return-expression position) would have shipped every error message
 empty; `anuenue_fail` converts explicitly with `str_new`. One untracked
 deferral in `src/filter.cyr` surfaced by the stricter 6.5.35 lint.
 
-**Binary breaches the 512 KB cap** — 389 648 → **809 520 B** (+419 872,
-+108%). See [Binary](#binary).
+**Binary** 389 648 → **809 520 B** (+419 872, +108%) — toolchain and
+dep surface, not anuenue code. See [Binary](#binary).
 
 **1.2.0** — cut 2026-07-14. **Library surface.** `dist/anuenue.cyr`
 distlib (`[lib] modules = ["src/hsv.cyr"]`) — the pure HSV phase model
@@ -394,53 +442,53 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.2.1)**: **809 520 bytes** (~790 KB). **Over the 512 KB cap
-  by ~278 KB.** Delta vs the v1.2.0 binary (389 648 B): **+419 872 B
-  (+108%)**. The filter is untouched; the growth is toolchain and dep
-  surface, plus 5 560 B of new observability code.
-- **Decomposition** (each measured with an invalidated lock in an
-  isolated worktree, so the tag actually resolves):
+- **Size (1.2.2)**: **809 984 bytes** (~791 KB), +464 B over v1.2.1 — the
+  audit fixes. Tracked every release; **not capped** — see the policy note.
+- **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
+  removed.**
 
-  | Step | Binary | Δ |
-  |------|-------:|--:|
-  | v1.2.0 — cycc 6.4.62 + old dep tags | 389 648 B | — |
-  | + dep bump only (cycc 6.4.62) | 524 888 B | +135 240 |
-  | + toolchain bump (cycc 6.5.35) | 803 960 B | +279 072 |
-  | + observability wiring (`src/observe.cyr`) | **809 520 B** | +5 560 |
+  The cap was set at v0.7.1 (raised 350 KB → 512 KB) when anuenue's
+  binary was ~350 KB and essentially all of it was anuenue. That is no
+  longer what the number measures. Three things changed underneath it:
 
-- **Attribution by dep** (at the 6.5.35 pin, remove-one-and-rebuild):
-  agnostik ~546 KB, sakshi ~90 KB. Both are **called code as of
-  v1.2.1** — this release is what gave them call sites (see
-  `src/observe.cyr`). They are the canonical first-party error/tracing
-  and Result/Error crates per first-party-standards; dropping them is
-  not on the table.
-- **DCE**: 6.5.35 NOPs unreachable functions in place rather than
-  eliminating them (see [Toolchain](#toolchain)), so `CYRIUS_DCE=1` no
-  longer shrinks the file and "DCE size" now measures the whole binary.
-  Part of why the step change reads so large.
-- **Cap discipline (v1.0.0+)**: **512 KB** — **breached at v1.2.1**.
-  The cap did its job: it fired on a real, unintended 2× step change.
-  **Open decision for the next cut**, deliberately not resolved here:
-  raise the cap with a written rationale (the likely answer — the floor
-  is now set by the first-party dep surface plus a DCE pass that no
-  longer strips), or find real reduction inside the toolchain/dep
-  surface. Record the size every release either way.
-- **Prior floors**: 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B.
+  1. **The first-party dep surface is the floor now, not anuenue.**
+     agnostik alone is ~546 KB of the binary. anuenue's own source is
+     ~2 400 lines. Capping the total means capping darshana, sakshi,
+     agnostik and cmdit's right to grow — which is backwards: those
+     crates growing is the ecosystem working, and a downstream pipe
+     filter is the wrong place to veto it.
+  2. **`CYRIUS_DCE=1` stopped removing anything.** From 6.5.x it NOPs
+     unreachable functions in place, so the DCE and non-DCE binaries
+     are byte-identical in size. "DCE binary size" no longer measures
+     dead-code elimination at all; it measures the whole link.
+  3. **The cap was never a real gate.** No CI step enforced it. It
+     lived only in this file, so its only actual effect was to make
+     every dep bump read as a regression in the release notes.
+
+  What replaces it: **record the size every release, and explain any
+  step change.** A jump is a fact to attribute (toolchain? dep? our
+  code?), not a threshold to fail. The decomposition tables below are
+  the format — they are what made the v1.2.1 jump legible, and no cap
+  was needed to produce them. If anuenue's *own* contribution ever
+  grows sharply, that is the signal worth acting on, and it is visible
+  in the per-step deltas without a global ceiling.
+- **Size history**: 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests
 
 | File | Status |
 |------|--------|
-| `tests/anuenue.tcyr` | **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
+| `tests/anuenue.tcyr` | **349 assertions across 46 groups** (v1.2.2: +41 across 4 groups, one per audit finding with a testable invariant — A-01 table init, A-02 clamp arithmetic incl. a pin that `i64::MAX * 1e9` really wraps, A-04 colour-value parsing incl. the BAD sentinel, A-05 cap behaviour incl. that the sentinel is the stop offset). v1.2.1 was **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
 | `tests/anuenue.bcyr` | 2 micro-benchmarks. At v1.2.1: `hsv_rainbow` **8 ns/call**, `tty_fg_rgb_buf` **52 ns/call** — **not comparable to pre-v1.2.1 figures**: 6.5.35's `bench` harness measures and subtracts a timer floor (1.347 µs per clock read on the reference host) that the 6.4.62 harness did not. Pre-M5 the filter loop called both per cluster; M5+ uses `_emit_phase_esc` (~10 ns/call) instead. The micros still measure the table-build path. |
 | `fuzz/*.fcyr` (v0.9.0+) | **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
 | `tests/golden/*.out` | **Six fixtures**. M2/M3: `agnos-rainbow-s100` (238 B), `cjk-mixed-s0` (125 B), `combining-s0` (155 B), `zwj-flag-s0` (135 B). **M6: `agnos-rainbow-256-s100.out` (160 B), `agnos-rainbow-16-s100.out` (82 B)**. All six byte-identical across the M5/M6/M8 cuts — proves the mode-aware phase cache matches runtime exactly and that the M8 fix is local to the long-cluster path. Plus three MONO equivalence checks in golden-check.sh (`NO_COLOR=1 anuenue` / `--no-color` / `--color=none` all byte-identical to input). |
 | `scripts/animate-smoke.sh` | M4 (v0.5.0). Animation structural guard. M6: invokes with `--color=24bit` so the TTY-detection in M6 doesn't drop the test into MONO. **M8 (v0.8.0) extension**: long-cluster section runs the historical attack (base + 16 000 combining acutes), asserts clean exit and full byte preservation (~976 000 combiner bytes over 61 frames) through the mid-cluster flushes. **v0.9.0 extensions**: `--color=256` + `--color=16` per-mode sections — each asserts clean exit, non-empty output, full cursor lifecycle, and the per-mode SGR shape (CSI 38;5;Nm for 256, CSI 9[1-7]m for 16; explicit no-leak check that truecolor 38;2;… doesn't appear under `--color=256`). |
+| `scripts/robustness-check.sh` | **NEW at v1.2.2** (P-1 audit). Adversarial byte streams and adversarial argv against the real binary — the surfaces the unit suite and the seeded fuzz harnesses do not reach, and where four of the nine audit findings lived. Eleven checks: UTF-8 carry across the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1` — the property `carry_len` exists for, previously untested end to end); byte preservation under malformed UTF-8 (116 comparisons across overlong 2/3/4-byte forms, UTF-16 surrogates, >U+10FFFF, the 0xF5–0xFF range, lone continuations, EOF truncation, embedded NULs, all 256 byte values); every integer flag at both i64 extremes terminating with a documented exit code; and one process-level regression per finding. Runs in CI. |
 | `scripts/observe-check.sh` | **NEW at v1.2.1.** The observability gate, and the enforcement point for pipe-purity under diagnostics. Four gates: (1) stdout byte-identical across 144 corpus × colour-mode × verbosity combinations — the property a unit test cannot express, and the one that matters because a byte leaked onto fd 1 corrupts every pipeline `-v` is enabled in; (2) stderr empty in every default-verbosity run, including for wholly invalid UTF-8; (3) `-v` carries the fields a bug report needs (version, phase step, colour mode, colour **reason**, route, byte count) and never reports `reason=unset`; (4) the forced read failure (stdin closed → EBADF) prints the agnostik kind, logs `code=1010`, and still exits 1. Runs in CI. |
 | `scripts/perf-bench.sh` | M5 (v0.6.0). End-to-end ASCII + UTF-8 per-byte overhead. M6: invokes with `--color=24bit` for the same reason. The M5 ratchet. Latest run at v1.2.1 (`RUNS=11`, idle host, final binary): ASCII no-LF **46.63 ns/byte**, ASCII w/ LFs **50.99**, UTF-8 mixed **41.77** — all under the 60 ns/byte cap. Measured head-to-head against a rebuilt v1.2.0 binary rather than against a historical figure. |
 
-Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring).
+Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring) → v1.2.2 **349** (+41, P-1 audit regressions).
 
 ## Dependencies
 
@@ -488,13 +536,28 @@ captures what's open *for the v1.x line*.
   goldens-unchanged → cap re-evaluated pattern. The darshana
   0.5.1 → 0.5.2 → 0.5.3 sequence (M1 / M4 / M6 closeout) is the
   reference. Re-evaluate pin lag at each minor cut.
-- **Anuenue's audit doc cadence.** Re-run the security audit at
-  every minor cut within v1.x; record findings as a delta vs
-  `docs/audit/2026-05-22-audit.md`. INFO findings from that
-  initial audit (signalfd lifecycle on animation exit, signal
-  mask not restored after animation completion, large `-d`
-  graceful-exit boundary at ~292 years) stay accepted unless a
-  consumer reports a concrete regression.
+- **Anuenue's audit doc cadence.** Re-run the audit at every minor
+  cut within v1.x; record findings as a delta vs the previous
+  report. Latest: [`docs/audit/2026-08-25-audit.md`](../audit/2026-08-25-audit.md)
+  (v1.2.2 P-1 sweep — 9 findings, all fixed in-cut, zero HIGH+ open).
+  Baseline: [`docs/audit/2026-05-22-audit.md`](../audit/2026-05-22-audit.md).
+- **One accepted INFO finding was re-characterised at v1.2.2 and
+  turned out to be a real defect.** The 2026-05-22 audit recorded
+  "large `-d` graceful-exit boundary at ~292 years" as an accepted
+  INFO. Re-measuring in the v1.2.2 sweep showed the behaviour was
+  the **inverse** of that description: `duration_secs * 1000000000`
+  overflows i64 above ~9.22e9 seconds, and at `i64::MAX` the product
+  is congruent to exactly −1e9, so the deadline landed one second in
+  the *past* and the animation exited after a **single frame**. Not
+  a graceful boundary — an immediate exit. Fixed as A-02.
+
+  The lesson for future cadence: an accepted INFO finding is a
+  hypothesis about behaviour, not a measurement of it. Re-measure
+  accepted items rather than carrying the prior description forward.
+  The remaining two INFO items from 2026-05-22 (signalfd lifecycle on
+  animation exit, signal mask not restored after animation
+  completion) stay accepted **and have not been re-measured** — they
+  are the first candidates for the next sweep.
 
 ## Next
 

@@ -127,6 +127,17 @@ jobs:
         # exit. ~1.35M assertions per run on the current corpus.
         run: cyrius fuzz
 
+      - name: Robustness gate (v1.2.2 audit)
+        # Adversarial byte streams and adversarial argv — the two
+        # surfaces the unit suite and the seeded fuzz harnesses do not
+        # reach, and where three of the 2026-08-25 audit findings lived.
+        # Covers UTF-8 carry across the 4096-byte read boundary,
+        # byte preservation under malformed input (overlongs,
+        # surrogates, all 256 byte values), i64 extremes on every
+        # integer flag, and one process-level regression per audit
+        # finding.
+        run: sh scripts/robustness-check.sh
+
       - name: Observability gate (v1.2.1)
         # The sakshi/agnostik wiring's load-bearing property is one a unit
         # test cannot express: enabling -v must not move a single byte of

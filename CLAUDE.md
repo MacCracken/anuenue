@@ -181,7 +181,8 @@ HSV→RGB math is inline in `src/hsv.cyr` (~30 lines incl. phase-wrap + 6-sector
 ## CI / Release
 
 - **Toolchain pin**: `cyrius = "X.Y.Z"` field in `cyrius.cyml [package]`. CI and release both read this; no hardcoded version strings in YAML.
-- **Dead code elimination**: every `cyrius build` in CI and release runs with `CYRIUS_DCE=1`. Binary size is a release metric — track it in `state.md`.
+- **Dead code elimination**: every `cyrius build` in CI and release runs with `CYRIUS_DCE=1`. Note that from cyrius 6.5.x this NOPs unreachable functions in place rather than removing them, so it no longer changes the output size — it is kept because it is the documented build mode and because CI and the release artifact must be built identically.
+- **Binary size is tracked, never capped.** Record it every release in `state.md` and attribute any step change (toolchain? dep? our code?). The 512 KB cap was removed at v1.2.2: the number now measures the first-party dep surface far more than it measures anuenue, and capping the total would mean vetoing darshana / sakshi / agnostik / cmdit's right to grow from downstream. A jump is a fact to explain, not a threshold to fail.
 - **Tag filter**: release workflow triggers on `tags: ['[0-9]*']` — semver-only.
 - **Version-verify gate**: release asserts `VERSION == cyrius.cyml version == git tag` before building.
 - **Workflow layout**:

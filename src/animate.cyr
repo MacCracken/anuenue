@@ -57,6 +57,29 @@ var ANUENUE_DEFAULT_DURATION_S = 5;
 # scrolling rainbow without strobing.
 var ANUENUE_DEFAULT_SPEED = 1;
 
+# Largest -d value that survives conversion to nanoseconds.
+#
+# A-02 (2026-08-25 audit): `deadline_ns = start_ns + duration_secs *
+# 1000000000` overflows i64 for duration_secs above ~9.22e9. At
+# i64::MAX the product wraps to exactly -1e9, so the deadline landed
+# ONE SECOND IN THE PAST and `anuenue -a -d 9223372036854775807`
+# exited after a single frame instead of running for ~292 years —
+# the precise opposite of what was asked for.
+#
+# 4e9 seconds is ~127 years. The bound is deliberately well under the
+# arithmetic maximum (~9.22e9 s) so the sum stays safe under EITHER
+# clock base: `clock_now_ns()` is CLOCK_MONOTONIC today (boot-relative,
+# ~1e14 ns on a day-old host, and uptime_ms * 1e6 on agnos), but a
+# future epoch-relative reading would be ~1.79e18 ns. 4e18 + 1.79e18 =
+# 5.79e18, still comfortably inside i64::MAX (9.22e18). Picking the
+# tightest arithmetically-valid clamp instead would have made this
+# constant silently depend on which clock the stdlib returns.
+#
+# Values above the bound are clamped rather than rejected: asking for
+# a duration past the heat death of the terminal session means "keep
+# going", and clamping honours that where overflowing inverted it.
+var ANUENUE_MAX_DURATION_S = 4000000000;
+
 # Signal-mask constants — these mirror lib/syscalls_linux_common.cyr's
 # but referenced from anuenue so future audits can grep here for
 # "what signals does anuenue actually mask". TTY_SIGMASK_EXIT
@@ -372,13 +395,22 @@ fn anuenue_animate(duration_secs, speed): i64 {
     var ctab        = alloc((ANUENUE_ANIMATE_CLUSTER_MAX + 1) * 8);
     var line_buf    = alloc(ANUENUE_LINE_BUF);
     if (in_buf == 0 || ctab == 0 || line_buf == 0) {
-        return 1;
+        # A-06 (2026-08-25 audit): v1.2.1 routed the filter and
+        # passthrough failures through anuenue_fail but missed the
+        # animate path, which kept returning a bare 1 with no message
+        # on any fd. Exit codes are unchanged; the failure is now named.
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "animation buffer allocation failed");
     }
     # M5 phase-cached escape table — shared with the filter path.
-    if (_phase_esc_init() != 0) { return 1; }
+    if (_phase_esc_init() != 0) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "phase escape table allocation failed");
+    }
 
     var n_bytes = _animate_slurp_stdin(in_buf, ANUENUE_ANIMATE_INPUT_MAX);
-    if (n_bytes < 0) { return 1; }
+    if (n_bytes < 0) {
+        return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
+    }
+    ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n_bytes;
     if (n_bytes == 0) {
         # No input to animate. Quietly exit 0 — same shape as
         # `cat /dev/null | anuenue` (which exits 0 from the filter
@@ -386,9 +418,26 @@ fn anuenue_animate(duration_secs, speed): i64 {
         return 0;
     }
 
+    # A-05 (2026-08-25 audit): both animation caps drop input rather
+    # than merely leaving it uncoloured — `_pretag_clusters` writes its
+    # sentinel at the byte offset where it stopped, so everything past
+    # that offset is never rendered. The caps are deliberate (M4:
+    # "render what fit; don't OOM"), but they were undiscoverable: a
+    # 200 KB file animated as its first 8 192 clusters with nothing
+    # said. Warn on both, so `-v` / `--log-level=warn` explains the
+    # missing text instead of leaving the user to guess.
+    if (n_bytes >= ANUENUE_ANIMATE_INPUT_MAX) {
+        anuenue_log_kv_int(SK_WARN, "animation input truncated at the byte cap; text beyond it is not rendered",
+          "byte-cap", ANUENUE_ANIMATE_INPUT_MAX);
+    }
+
     var n_clusters = _pretag_clusters(in_buf, n_bytes, ctab,
-                                      ANUENUE_ANIMATE_CLUSTER_MAX);
+      ANUENUE_ANIMATE_CLUSTER_MAX);
     if (n_clusters == 0) { return 0; }
+    if (n_clusters >= ANUENUE_ANIMATE_CLUSTER_MAX) {
+        anuenue_log_kv_int(SK_WARN, "animation input truncated at the cluster cap; text beyond it is not rendered",
+          "cluster-cap", ANUENUE_ANIMATE_CLUSTER_MAX);
+    }
 
     var n_lf = _count_lf_clusters(in_buf, ctab, n_clusters);
     var ends_lf = _input_ends_with_lf(in_buf, ctab, n_clusters);
@@ -411,8 +460,10 @@ fn anuenue_animate(duration_secs, speed): i64 {
     var phase_base = ANUENUE_PHASE_START;
     var start_ns = clock_now_ns();
     var deadline_ns = 0;
-    if (duration_secs > 0) {
-        deadline_ns = start_ns + duration_secs * 1000000000;
+    var dur = duration_secs;
+    if (dur > ANUENUE_MAX_DURATION_S) { dur = ANUENUE_MAX_DURATION_S; }
+    if (dur > 0) {
+        deadline_ns = start_ns + dur * 1000000000;
     }
 
     var first_frame = 1;

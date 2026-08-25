@@ -66,18 +66,23 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.2.1
+### Quality bar at v1.2.2
 
-- **308** unit assertions (`cyrius test`)
+- **349** unit assertions across 46 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **22** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
+- **11** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+  read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
+  values, overlongs, surrogates), argv at both i64 extremes
 - **1,354,581** fuzz assertions per run across 5 harnesses (`cyrius fuzz`)
-- **0** HIGH+ security audit findings open ([`docs/audit/2026-05-22-audit.md`](docs/audit/2026-05-22-audit.md))
-- **Binary 809,520 B** (~790 KB) — **over the 512 KB cap**; the cap decision is
-  open, see [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 46.63 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
+- **0** HIGH+ security audit findings open — latest P(-1) sweep
+  [`docs/audit/2026-08-25-audit.md`](docs/audit/2026-08-25-audit.md) (9 findings, all fixed in-cut)
+- **Binary** tracked every release, **not capped** — the first-party dep surface
+  sets the floor, and `CYRIUS_DCE=1` no longer removes anything on 6.5.x. See
+  [`state.md` § Binary](docs/development/state.md#binary)
+- **Perf**: 46.64 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
 - **0** `cyrius lint` warnings, 0 untracked deferrals
 
 ### Diagnostics
@@ -128,7 +133,7 @@ $ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build / run / develop
 - [`docs/guides/integrating-anuenue.md`](docs/guides/integrating-anuenue.md) — downstream-consumer integration manual
 - [`docs/examples/`](docs/examples/) — eight runnable shell examples covering the full flag surface
-- [`docs/audit/`](docs/audit/) — security audit reports (v1.0 baseline: 2026-05-22)
+- [`docs/audit/`](docs/audit/) — audit reports (v1.0 baseline 2026-05-22; latest P(-1) sweep 2026-08-25)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — per-byte overhead trend across releases
 - [`CHANGELOG.md`](CHANGELOG.md) — release log (Keep a Changelog format)
 
