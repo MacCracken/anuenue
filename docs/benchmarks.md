@@ -426,7 +426,9 @@ discarded 99.3% of the stream and exited 0.
 | v1.3.0  | —                   | —                | —                   | 814 448      | Animation slot: `-i`, `_frame_wait`, B-01/B-02/B-03. Perf not measured at the cut — see the process note above |
 | v1.3.1  | —                   | —                | —                   | 814 448      | PTY harness. Tests and docs only, no `src/` change |
 | v1.3.2  | 46.47‡              | 9§               | 50§                 | 814 448      | v1.3.x closeout: perf + audit delta discharged |
-| **v1.3.3** | **46.46**‡       | 8§               | 51§                 | **814 480**  | **P(-1) sweep: E-01 checked writes (1 HIGH fixed)** |
+| v1.3.3  | 46.46‡              | 8§               | 51§                 | 814 480      | P(-1) sweep: E-01 checked writes (1 HIGH fixed) |
+| v1.3.4  | 46.64‡              | 8§               | 51§                 | 814 488      | Allocation-failure probe; E-03 EPIPE fix |
+| **v1.3.5** | **46.90**‡       | 8§               | 51§                 | **814 488**  | **F-01: transient read errors are not failures** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.

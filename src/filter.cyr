@@ -496,7 +496,7 @@ fn anuenue_filter(): i64 {
 
     var go = 1;
     while (go == 1) {
-        var n_read = file_read(STDIN, read_buf + carry_len, ANUENUE_READ_CHUNK - carry_len);
+        var n_read = anuenue_read_some(read_buf + carry_len, ANUENUE_READ_CHUNK - carry_len);
         if (n_read < 0) {
             # Read error. Flush whatever's queued so partial output
             # isn't lost; exit non-zero.

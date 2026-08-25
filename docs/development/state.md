@@ -5,6 +5,42 @@
 
 ## Version
 
+**1.3.5** — cut 2026-08-26. **stdin failure surface.** The surface the
+v1.3.3 sweep ranked highest after the allocation probe — and the
+**mirror of E-01**: three audits had examined stdin exhaustively for
+*content* and never for *failure*. It had the mirror defect.
+
+**F-01 (MEDIUM)** — `file_read` is a bare `sys_read` and all three
+stdin call sites (filter, MONO passthrough, animation slurp) classed
+**any** negative return as fatal. But `EAGAIN` on a non-blocking stdin
+means "no data *yet*", not "broken" — a writer merely slower than the
+reader triggers it. Measured: feeding 6 500 bytes through a
+non-blocking pipe in 64-byte chunks, every path rendered **64 bytes**
+and exited 1 with "read from stdin failed" — 99% of a perfectly good
+stream discarded, reporting an I/O error that had not happened.
+
+MEDIUM rather than HIGH because it is *loud*: exit 1 with a message, so
+a script can detect it. E-01 was silent at exit 0, which is what put it
+a severity higher.
+
+Fixed with `anuenue_read_some`, deliberately symmetric to
+`anuenue_write_all` — **the two sides of a filter should not disagree
+about what counts as an error.** EAGAIN sleeps 1 ms and retries, no
+attempt cap (a writer that is *gone* closes the pipe, which is EOF).
+All three paths now render 6 500/6 500 at exit 0, and a real read
+failure still exits 1.
+
+⚠ The EINTR branch is **unproven**: anuenue installs no handlers and
+default-disposition signals do not interrupt a blocking read — verified
+by driving SIGSTOP/SIGCONT/SIGWINCH/SIGCHLD/SIGURG at a process blocked
+in `read`.
+
+Gate 6 in `robustness-check.sh`, mutation-proven: removing the retry
+fails all three path checks while the closed-stdin control still
+passes, so the gate distinguishes "retries transient errors" from
+"ignores errors". Perf flat (mixed signs across corpora), binary
+unchanged at **814 488 B**.
+
 **1.3.4** — cut 2026-08-26. **Allocation-failure probe + a CI fix.**
 
 **E-03 — CI failed on v1.3.3, and the bug was in the v1.3.3 fix.**
@@ -662,9 +698,8 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.3.4)**: **814 480 bytes** (~795 KB) — unchanged from v1.3.3;
-  v1.3.4 is test infrastructure only. Tracked every release; **not capped** —
-  see the policy note.
+- **Size (1.3.5)**: **814 488 bytes** (~795 KB) — unchanged from v1.3.4.
+  Tracked every release; **not capped** — see the policy note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -693,7 +728,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.3.4 = 814 480 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.5 = 814 488 B, 1.3.4 = 814 488 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests

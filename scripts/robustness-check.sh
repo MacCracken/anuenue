@@ -30,7 +30,9 @@
 #   4. One process-level regression per audit finding
 #      (A-02 / A-03 / A-04 / A-05 / A-09).
 #   5. Stdout write failures are reported rather than swallowed
-#      (E-01) — and EPIPE still behaves as SIGPIPE.
+#      (E-01) — and EPIPE still behaves as SIGPIPE (E-03).
+#   6. Transient READ errors are not failures (F-01) — a non-blocking
+#      stdin is backpressure, not a broken stream.
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -332,6 +334,89 @@ if [ -c /dev/full ]; then
     else
         bad "with SIGPIPE ignored, /dev/full gave rc=$rc without the message"
     fi
+fi
+
+# --- gate 6: transient read errors are not failures -----------------
+#
+# F-01 (2026-08-26 sweep). The mirror of gate 5. `file_read` is a bare
+# `sys_read` and all three stdin call sites classed any negative return
+# as fatal — but EAGAIN on a non-blocking stdin means "no data yet",
+# not "broken". Measured before the fix: a slow writer on a
+# non-blocking pipe made anuenue render 64 of 6 500 bytes and exit 1.
+#
+# Needs a real O_NONBLOCK pipe, so this runs through python rather than
+# the shell — `sh` has no way to set the flag on a descriptor.
+echo "[robustness] a non-blocking stdin is not a read failure"
+
+python3 - "$BIN" "$WORK" <<'PYEOF' > "$WORK/nb.out" 2>&1 || true
+import os, subprocess, sys, fcntl, time, re, signal
+BIN, WORK = sys.argv[1], sys.argv[2]
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+DATA = b"rainbow line\n" * 500
+
+def run(args, capture=True):
+    r, w = os.pipe()
+    fcntl.fcntl(r, fcntl.F_SETFL, os.O_NONBLOCK)      # anuenue's stdin
+    p = subprocess.Popen([BIN] + args, stdin=r,
+                         stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                         stderr=subprocess.PIPE)
+    os.close(r)
+    try:
+        for i in range(0, len(DATA), 64):
+            os.write(w, DATA[i:i + 64])
+            time.sleep(0.002)                          # slower than the reader
+    except OSError:
+        pass
+    try:
+        os.close(w)
+    except OSError:
+        pass
+    out, err = p.communicate()
+    n = len(re.sub(rb'\x1b\[[0-9;]*m', b'', out)) if capture and out else -1
+    return p.returncode, n, err
+
+rc, n, err = run(["--color=24bit"])
+print("FILTER", rc, n, len(DATA))
+rc, n, err = run(["--color=none"])
+print("PASSTHRU", rc, n, len(DATA))
+rc, n, err = run(["-a", "-d", "1", "--color=24bit"], capture=False)
+print("ANIMATE", rc)
+PYEOF
+
+_f=$(grep '^FILTER' "$WORK/nb.out" || echo "FILTER 99 0 1")
+set -- $_f
+if [ "$2" -eq 0 ] && [ "$3" -eq "$4" ]; then
+    ok "filter renders the whole stream from a non-blocking stdin ($3 bytes)"
+else
+    bad "filter on a non-blocking stdin: rc=$2, rendered $3 of $4"
+fi
+
+_p=$(grep '^PASSTHRU' "$WORK/nb.out" || echo "PASSTHRU 99 0 1")
+set -- $_p
+if [ "$2" -eq 0 ] && [ "$3" -eq "$4" ]; then
+    ok "passthrough renders the whole stream from a non-blocking stdin"
+else
+    bad "passthrough on a non-blocking stdin: rc=$2, rendered $3 of $4"
+fi
+
+_a=$(grep '^ANIMATE' "$WORK/nb.out" || echo "ANIMATE 99")
+set -- $_a
+if [ "$2" -eq 0 ]; then
+    ok "animation slurp survives a non-blocking stdin"
+else
+    bad "animation on a non-blocking stdin exited $2"
+fi
+
+# ...and a REAL read failure must still be reported, or the retry loop
+# has simply swallowed the error class it was meant to narrow.
+set +e
+"$BIN" --color=24bit 0<&- >/dev/null 2>"$WORK/rderr"
+rc=$?
+set -e
+if [ "$rc" -eq 1 ] && grep -q 'read from stdin failed' "$WORK/rderr"; then
+    ok "a real read failure (closed stdin) is still reported and exits 1"
+else
+    bad "closed stdin gave rc=$rc without the expected message"
 fi
 
 echo

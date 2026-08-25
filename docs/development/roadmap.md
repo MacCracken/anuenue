@@ -26,7 +26,7 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.3.4.** The v1.x public API contract — exit codes, output shape, capability
+**v1.3.5.** The v1.x public API contract — exit codes, output shape, capability
 surface — has been frozen since GA and is unbroken; the flag set has only ever
 grown. Two P(-1) audits have run with zero HIGH+ findings open, and the v1.3.0
 animation slot closed three further defects the audits had not reached. Four
@@ -163,13 +163,19 @@ for the next sweep, not scheduled work:
    zero-byte-write branch remain unproven, because neither is an allocation and
    neither is reachable from outside. They need fault injection at a different
    layer, not heap pressure.
-2. **stdin as a failure surface.** The read side is audited exhaustively for
-   *content* and only via a closed descriptor for *failure*. Partial reads,
-   `EINTR` mid-read, and a stdin that blocks forever are untested. Now the
-   highest-value unexamined surface — and the symmetric counterpart to E-01,
-   which found the same class of gap on the write side.
+2. ~~**stdin as a failure surface.**~~ **Done at v1.3.5** — F-01. What it did
+   *not* settle: the EINTR branch on both sides remains unproven, because
+   anuenue installs no handlers and default-disposition signals do not interrupt
+   a blocking read or write. Reaching it needs a parent that execs anuenue with
+   an inherited handler — a harness shape neither probe currently has.
 3. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
-   never resizes it; `rows_to_climb` assumes the block fits on screen.
+   never resizes it; `rows_to_climb` assumes the block fits on screen. Now the
+   highest-value unexamined surface.
+4. **A stdin that never closes.** Both sides now retry transient errors without
+   an attempt cap, which is correct backpressure but means a writer that stalls
+   forever hangs anuenue forever. That is what a blocking read would do anyway,
+   so it is a deliberate property rather than a defect — but nothing tests that
+   it degrades the way the design says.
 
 ---
 
@@ -192,6 +198,28 @@ the probe **segfault**, not merely fail an assertion. The guards are the only
 thing between a starved process and a null-pointer write.
 
 Test infrastructure only — no source change, binary unchanged.
+
+---
+
+## v1.3.5 — stdin failure surface
+
+> **Status: complete.**
+
+The mirror of E-01. Three audits had examined stdin exhaustively for *content*
+and never for *failure*, and it had the mirror defect: `file_read` is a bare
+`sys_read` and all three call sites classed any negative as fatal, so `EAGAIN`
+on a non-blocking stdin — "no data yet" — read as "broken stream".
+
+**F-01 (MEDIUM)**: 6 500 bytes fed through a non-blocking pipe rendered **64**,
+on every path, at exit 1. Fixed with `anuenue_read_some`, symmetric to
+`anuenue_write_all` — the two sides of a filter should not disagree about what
+counts as an error. Gate 6 in `robustness-check.sh`, mutation-proven.
+
+**Pattern worth keeping.** E-01, E-03 and F-01 are one defect in three places:
+a syscall wrapper that does not distinguish *transient* from *fatal*, and call
+sites that treat every negative return the same way. anuenue now has exactly two
+places where that judgement lives — `anuenue_write_all` and `anuenue_read_some`
+— and they agree with each other by construction.
 
 ---
 

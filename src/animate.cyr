@@ -127,7 +127,7 @@ fn _animate_slurp_stdin(buf, cap): i64 {
     while (go == 1) {
         var room = cap - total;
         if (room <= 0) { go = 0; continue; }
-        var n = file_read(STDIN, buf + total, room);
+        var n = anuenue_read_some(buf + total, room);
         if (n < 0) { return n; }
         if (n == 0) { go = 0; continue; }
         total = total + n;

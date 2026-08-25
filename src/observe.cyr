@@ -190,6 +190,52 @@ fn anuenue_write_all(buf, len): i64 {
     return 0;
 }
 
+# ---- anuenue_read_some ---------------------------------------------
+#
+# Read up to `len` bytes from stdin into `buf`. Returns the byte count
+# (> 0), 0 on clean EOF, or -1 on a real error.
+#
+# F-01 (2026-08-26 sweep). The read side is the mirror of E-01, and it
+# had the mirror defect: `file_read` is a bare `sys_read` and all three
+# stdin call sites classed **any** negative return as fatal. But two
+# negatives are transient and mean "not yet", not "broken":
+#
+#   EAGAIN (-11) stdin is O_NONBLOCK and no data has arrived. Measured
+#                before this fix: a slow writer on a non-blocking pipe
+#                made anuenue render 64 of 6 500 bytes and exit 1 with
+#                "read from stdin failed" — a spurious failure on a
+#                perfectly good stream. All three paths (filter,
+#                passthrough, animation slurp) did it.
+#   EINTR  (-4)  a signal interrupted the read before any byte arrived.
+#
+# The retry policy matches the write side deliberately: the two sides
+# of a filter should not disagree about what counts as an error. EAGAIN
+# sleeps 1 ms so the retry is not a spin, with no attempt cap — a
+# writer that is slow deserves to be waited for, and a writer that is
+# GONE closes the pipe, which is EOF (0), not EAGAIN.
+#
+# ⚠ The EINTR branch is **unproven**, in the cmdit 1.2.4 sense: anuenue
+# installs no signal handlers, and signals at their default disposition
+# do not interrupt a blocking read. Verified by driving SIGSTOP,
+# SIGCONT, SIGWINCH, SIGCHLD and SIGURG at a process blocked in read —
+# none produced EINTR. It is one comparison, it matches the write side,
+# and a future consumer that execs anuenue with an inherited handler
+# would reach it.
+fn anuenue_read_some(buf, len): i64 {
+    var go = 1;
+    while (go == 1) {
+        var n = file_read(STDIN, buf, len);
+        if (n >= 0) { return n; }
+        if (n == (0 - 4)) { continue; }          # EINTR — retry at once
+        if (n == (0 - 11)) {                      # EAGAIN — no data yet
+            sleep_ms(1);
+            continue;
+        }
+        return 0 - 1;
+    }
+    return 0 - 1;
+}
+
 # Report a failed stdout write and return the process exit code.
 # Separate from anuenue_write_all so the hot path stays a bare
 # comparison at each call site and the message lives in one place.

@@ -66,7 +66,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.3.4
+### Quality bar at v1.3.5
 
 - **384** unit assertions across 52 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
@@ -86,7 +86,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 - **Binary** tracked every release, **not capped** — the first-party dep surface
   sets the floor, and `CYRIUS_DCE=1` no longer removes anything on 6.5.x. See
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 46.46 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
+- **Perf**: 46.90 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
 - **0** `cyrius lint` warnings, 0 untracked deferrals
 
 ### Diagnostics

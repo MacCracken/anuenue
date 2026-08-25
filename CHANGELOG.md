@@ -4,6 +4,94 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.5] — 2026-08-26 (stdin failure surface)
+
+The surface the v1.3.3 sweep ranked highest after the allocation probe, and the
+**mirror of E-01**: three audits had examined stdin exhaustively for *content*
+and never for *failure*.
+
+It had the mirror defect.
+
+### Fixed — F-01 (MEDIUM): a non-blocking stdin was treated as a broken stream
+
+`lib/io.cyr`'s `file_read` is a bare `sys_read`, and all three stdin call sites
+— filter, MONO passthrough, animation slurp — classed **any** negative return as
+fatal:
+
+```
+if (n < 0) { return anuenue_fail(STIK_ERR_IO, "read from stdin failed"); }
+```
+
+But `EAGAIN` on a non-blocking stdin means "no data **yet**", not "broken". A
+writer merely slower than the reader triggers it.
+
+Measured before the fix, feeding 6 500 bytes through a non-blocking pipe in
+64-byte chunks:
+
+| Path | Rendered | Exit |
+|---|---:|---:|
+| filter (`--color=24bit`) | **64 / 6 500** | **1** |
+| passthrough (`--color=none`) | **64 / 6 500** | **1** |
+| animation slurp (`-a`) | — | **1** |
+
+anuenue read one chunk, hit EAGAIN, declared the stream broken and quit —
+discarding 99% of a perfectly good input and reporting an I/O error that had not
+happened.
+
+**Why MEDIUM and not HIGH, unlike E-01.** The data loss is comparable, but this
+one is *loud*: it exits 1 and says so, and a script can detect it. E-01 was
+silent with exit 0, which is what put it a severity higher. Both are ordinary
+configurations rather than adversarial ones.
+
+**Fix** — `anuenue_read_some` in `src/observe.cyr`, deliberately symmetric to
+`anuenue_write_all`: returns the byte count, 0 on clean EOF, `-1` on a real
+error, and retries the two transient errnos. EAGAIN sleeps 1 ms and retries with
+no attempt cap — a slow writer deserves to be waited for, and a writer that is
+*gone* closes the pipe, which is EOF, not EAGAIN. **The two sides of a filter
+should not disagree about what counts as an error.**
+
+Verified: all three paths now render 6 500/6 500 at exit 0, and a *real* read
+failure (closed stdin) still exits 1 with the message — so the retry narrowed
+the error class rather than swallowing it.
+
+⚠ **The EINTR branch is unproven**, in the cmdit 1.2.4 sense. anuenue installs
+no signal handlers, and signals at their default disposition do not interrupt a
+blocking read — verified by driving SIGSTOP, SIGCONT, SIGWINCH, SIGCHLD and
+SIGURG at a process blocked in `read`, none of which produced EINTR. It is one
+comparison, it matches the write side, and a consumer that execs anuenue with an
+inherited handler would reach it. Recorded rather than implied.
+
+### Added
+
+- **`scripts/robustness-check.sh` gate 6** — all three read paths driven from a
+  real `O_NONBLOCK` pipe with a deliberately slow writer, plus the closed-stdin
+  control. Runs through python because `sh` cannot set `O_NONBLOCK` on a
+  descriptor.
+
+  Mutation-proven: removing the EAGAIN retry fails all three path checks
+  (64/6500 each) while the closed-stdin control still passes — so the gate
+  distinguishes "retries transient errors" from "ignores errors", which a
+  weaker test would not.
+
+  No unit coverage for this one, deliberately: `anuenue_read_some` needs a real
+  descriptor in a known state, and a process-level gate driving an actual
+  non-blocking pipe is stronger evidence than anything reachable from `.tcyr`.
+
+### Performance
+
+Every `read(2)` now goes through a wrapper — roughly one extra call per 4 KiB,
+not per byte. Back-to-back, `RUNS=11`, pre-fix binary rebuilt from HEAD:
+
+| Corpus | v1.3.4 | v1.3.5 | Δ |
+|---|---:|---:|---:|
+| ascii (no LF) | 46.64 ns/byte | 46.90 ns/byte | +0.6% |
+| ascii (w/ LFs) | 51.19 ns/byte | 50.92 ns/byte | −0.5% |
+| utf8 mixed | 41.68 ns/byte | 41.76 ns/byte | +0.2% |
+
+Mixed signs across corpora — noise, not a cost. Binary unchanged at
+**814 488 B**. All six goldens byte-identical.
+
+
 ## [1.3.4] — 2026-08-26 (allocation-failure probe + CI fix)
 
 ### Fixed — E-03 (CI regression from v1.3.3)

@@ -315,7 +315,7 @@ fn anuenue_passthrough(): i64 {
     }
     var go = 1;
     while (go == 1) {
-        var n = file_read(STDIN, buf, ANUENUE_READ_CHUNK);
+        var n = anuenue_read_some(buf, ANUENUE_READ_CHUNK);
         if (n < 0) {
             return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
         }
