@@ -484,6 +484,16 @@ fn _frame_wait(sigfd, deadline_ns): i64 {
     while (remaining > 0) {
         var slice = remaining;
         if (slice > ANUENUE_TICK_MS) { slice = ANUENUE_TICK_MS; }
+        # Structural guard on the loop's only termination condition.
+        # `remaining` decreases by `slice` each pass, so a zero slice
+        # is an infinite spin — and unlike every other loop here, this
+        # one holds the process inside animation with the exit signals
+        # blocked. ANUENUE_TICK_MS is a module constant no public flag
+        # can reach and a unit test pins it positive, so this line is
+        # defence-in-depth with no failing test behind it: deleting it
+        # keeps the suite green. It is one comparison on a path that
+        # is about to sleep, against a failure mode that needs SIGKILL.
+        if (slice <= 0) { slice = 1; }
         sleep_ms(slice);
         remaining = remaining - slice;
 

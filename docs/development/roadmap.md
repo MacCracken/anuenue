@@ -26,10 +26,13 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.3.1.** The v1.x public API contract — exit codes, output shape, capability
+**v1.3.2.** The v1.x public API contract — exit codes, output shape, capability
 surface — has been frozen since GA and is unbroken; the flag set has only ever
 grown. Two P(-1) audits have run with zero HIGH+ findings open, and the v1.3.0
-animation slot closed three further defects the audits had not reached.
+animation slot closed three further defects the audits had not reached. Three
+audits have run in total, all closed with zero HIGH+ open, and **no
+accepted-but-unmeasured findings remain on the books** — the last two were
+re-measured at v1.3.0 and turned out to be a real defect (B-01).
 
 The v1.0 acceptance scorecard closed **8 of 10** at GA. The two open items are
 adoption properties, not code, and are tracked in
@@ -110,10 +113,41 @@ PTY warns rather than fails.
 
 ---
 
+## v1.3.2 — v1.3.x closeout
+
+> **Status: complete.**
+
+No remaining roadmap item was actionable, so this cut discharged what the arc
+*owed* instead: two gates v1.3.0 stated and never executed.
+
+| Item | Outcome |
+|------|---------|
+| **Perf across the arc** | Never measured after `_frame_wait` restructured the animation loop; `docs/benchmarks.md` had no v1.3.x row. Now recorded head-to-head vs a rebuilt v1.2.2 binary — filter path 46.22 → **46.61 ns/byte**, animation CPU 5.0 → **5.1 ms**, both within noise. Slicing at a long interval costs nothing: total CPU *falls* at `-i 200` because fewer frames render. |
+| **Audit delta over the v1.3.x source** | [`2026-08-25-v13x-delta.md`](../audit/2026-08-25-v13x-delta.md) — 1 finding (D-01, INFO, fixed), zero HIGH+ open. Plus the full CLAUDE.md closeout sweep: capability surface, allocation guards, dead code, unused constants, stack buffers, deferral language, doc links. |
+
+**D-01** — `_frame_wait`'s termination depended on `ANUENUE_TICK_MS` being
+positive, an invariant held by a unit test rather than by the code. A zero tick
+would spin forever inside animation with the exit signals blocked. Guarded
+structurally; recorded as **unproven**, since no public API can reach it.
+
+**The lesson worth keeping**: a gate that is *stated* and not *executed* reads
+identically to one that passed. v1.3.0 was marked complete with its perf gate
+unrun. That is the same failure the v1.2.2 sweep found in the 2026-05-22 audit's
+accepted INFO items — a claim carried forward as if it were a measurement.
+
+---
+
 ## v1.x — later minors
 
-Real, but not scheduled: each is either blocked on something outside the repo or
-waiting for a second data point.
+**Nothing here is actionable, and that is the honest state of the project rather
+than a gap to fill.** Every item below is blocked on a trigger anuenue cannot
+pull itself — a consumer landing, a second pipe-decorator wanting HSV, someone
+hitting a cap. There is no v1.4.0 slot open because there is no work that
+inventing one would contain.
+
+The next cut is therefore reactive: a bug a consumer finds, a dep bump worth
+taking, or the audit cadence at the next minor. If one of the triggers below
+fires, that item becomes the slot.
 
 ### Adoption — blocked on external consumers
 

@@ -4,6 +4,92 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-08-25 (v1.3.x closeout)
+
+**Closes the v1.3.x arc.** No remaining roadmap item was actionable — everything
+left in `v1.x` is blocked on an external trigger (a consumer landing, a second
+pipe-decorator wanting HSV) or explicitly declined. What *was* left were two
+gate obligations the arc incurred and never discharged.
+
+### Fixed — the two undischarged gates
+
+- **Perf was never measured after `_frame_wait` landed.** v1.3.0's gate called
+  for "perf within noise of v1.2.2's 46.64 ns/byte"; the slot was marked complete
+  without running it, and `docs/benchmarks.md` had **no v1.3.x row at all** —
+  even though v1.3.0 restructured the animation frame loop.
+
+  Now measured head-to-head, rebuilt v1.2.2 binary vs v1.3.2, `RUNS=11`, idle
+  host. Filter path (untouched by the arc): 46.22 → **46.61 ns/byte**, +0.8%,
+  and flat on the other two corpora. Animation path (the one restructured): mean
+  CPU over three 3-second runs, 5.0 ms → **5.1 ms**. Both within noise, as
+  default-path equivalence predicts — at the default 16 ms interval with a 16 ms
+  tick, `_frame_wait` performs exactly one slice, which is the same single
+  sleep + signal probe + deadline check the old loop did.
+
+  Also answered the question the slicing raised: **does a long interval cost
+  more?** A 200 ms interval slices into ~13 ticks per frame instead of 1, so
+  each frame pays 12 extra signal probes and 12 extra clock reads. Total CPU
+  *falls* anyway — 3.8 ms at `-i 16` vs 3.0 ms at `-i 200` — because a longer
+  interval means far fewer frames to render. Slicing is free; responsiveness is
+  not traded for anything.
+
+- **No audit covered the v1.3.x source.** The 2026-08-25 P(-1) sweep predates
+  every line of it. Delta recorded in
+  [`docs/audit/2026-08-25-v13x-delta.md`](docs/audit/2026-08-25-v13x-delta.md):
+  **1 finding, INFO, fixed in-cut, zero HIGH+ open.**
+
+  Recording the miss rather than quietly closing it, because it is the same
+  shape as the v1.2.2 lesson: **a gate that is stated and not executed reads
+  identically to one that passed.**
+
+### Fixed — D-01 (INFO)
+
+- **`_frame_wait`'s termination depended on a constant no code checked.** The
+  slicing loop's only exit is `remaining` decreasing by `slice`. If
+  `ANUENUE_TICK_MS` were ever `0`, `slice` clamps to `0`, `remaining` never
+  decreases, and the loop spins forever — *inside animation, with the exit
+  signals blocked*. A SIGKILL-only hang, the same failure class B-02 fixed from
+  the other direction.
+
+  Not reachable today: the tick is a module constant, no flag touches it, and a
+  unit test pins it positive. But the invariant was held by a **test**, not by
+  the code — and that test would still pass if the tick were later made
+  configurable the way `ANUENUE_FRAME_MS` was at v1.3.0. That is this codebase's
+  actual history: the frame interval sat as a fixed constant from M4 until a
+  flag reached it, and reaching it is what exposed three defects.
+
+  Fixed with a structural guard, `if (slice <= 0) { slice = 1; }`.
+
+  ⚠ **Recorded as unproven**, in the cmdit 1.2.4 style: no failing test stands
+  behind this line. No public API can drive the tick to zero, so deleting the
+  guard keeps the suite green. The source comment says so rather than implying
+  coverage it does not have.
+
+### Closeout pass
+
+Per CLAUDE.md § Closeout Pass, run over the arc's 178 net new `src/` lines:
+
+- **Capability surface unchanged.** Still `write(1)`, `exit`, plus
+  `sigprocmask` / `signalfd` on the animation path only. B-01's fix adds a
+  `SIG_UNBLOCK` *argument* to a call that already existed — not a new syscall.
+  No exec, network or filesystem sink.
+- **Allocation sites**: 10, all guarded, none added by the arc. (An automated
+  scan flagged three; all three are multi-variable allocations covered by a
+  combined `if (a == 0 || b == 0 || c == 0)` below — false positives, verified
+  individually rather than trusted.)
+- **Dead code**: zero uncalled functions. **Unused constants**: zero.
+- **Stack buffers**: none ≥ 1 KB; largest is still 128 bytes.
+- **Deferral language**: clean — the single hit is a correct historical citation
+  in `src/filter.cyr`'s header.
+- **Doc links**: every intra-doc link and anchor resolves.
+
+### Roadmap
+
+The v1.3.x arc is closed. Nothing in `v1.x` is actionable without an external
+trigger, so there is no v1.4.0 slot to open yet — the roadmap now says that
+plainly rather than inventing work to fill one.
+
+
 ## [1.3.1] — 2026-08-25 (PTY-backed animation)
 
 The one item carried out of the v1.3.0 animation slot, on its own cut because it

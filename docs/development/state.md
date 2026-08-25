@@ -5,6 +5,43 @@
 
 ## Version
 
+**1.3.2** — cut 2026-08-25. **v1.3.x closeout.**
+
+No remaining roadmap item was actionable, so this cut discharged what
+the arc *owed*: two gates v1.3.0 stated and never executed.
+
+**Perf, finally measured.** v1.3.0 restructured the animation frame
+loop into `_frame_wait` and was marked complete without running its own
+perf gate; `docs/benchmarks.md` had no v1.3.x row at all. Head-to-head
+against a rebuilt v1.2.2 binary (`RUNS=11`, idle host): filter path
+46.22 → **46.61 ns/byte** (+0.8%), animation CPU over three 3-second
+runs 5.0 → **5.1 ms**. Both within noise — at the default 16 ms
+interval with a 16 ms tick, `_frame_wait` does exactly one slice, the
+same single sleep + signal probe + deadline check as before. And the
+question slicing raised is answered: at `-i 200` each frame pays 12
+extra signal probes and 12 extra clock reads, yet total CPU **falls**
+(3.8 → 3.0 ms) because a longer interval renders far fewer frames.
+Slicing is free.
+
+**Audit delta** — [`2026-08-25-v13x-delta.md`](../audit/2026-08-25-v13x-delta.md).
+One finding, **D-01 (INFO)**: `_frame_wait`'s termination depended on
+`ANUENUE_TICK_MS` being positive, an invariant held by a unit test
+rather than by the code — a zero tick would spin forever inside
+animation with the exit signals blocked. Guarded structurally, and
+recorded as **unproven**: no public API can reach it, so deleting the
+guard keeps the suite green. Plus the full CLAUDE.md closeout sweep —
+capability surface unchanged, 10 allocation sites all guarded, zero
+dead functions, zero unused constants, no stack buffer ≥ 1 KB, no stale
+deferral language, every doc link resolving.
+
+*The lesson:* **a gate that is stated and not executed reads identically
+to one that passed.** Same shape as the v1.2.2 finding that the
+2026-05-22 audit's accepted INFO items were claims carried forward as if
+they were measurements.
+
+Binary **814 448 B**, unchanged from v1.3.0 — v1.3.1 was tests and docs,
+v1.3.2 is one guard line.
+
 **1.3.1** — cut 2026-08-25. **PTY-backed animation.** The one item
 carried out of the v1.3.0 slot, on its own cut because everything else
 in that slot was reachable from a pipe and this is not.
@@ -521,9 +558,9 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.3.1)**: **814 448 bytes** (~795 KB) — unchanged from v1.3.0;
-  v1.3.1 is test and documentation only, no `src/` change. Tracked every
-  release; **not capped** — see the policy note.
+- **Size (1.3.2)**: **814 448 bytes** (~795 KB) — unchanged across the whole
+  v1.3.x arc since v1.3.0: v1.3.1 was tests and docs, v1.3.2 is one guard line.
+  Tracked every release; **not capped** — see the policy note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -552,7 +589,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests

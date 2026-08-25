@@ -323,6 +323,54 @@ build the escape table.
   track-and-attribute; see
   [`state.md` § Binary](development/state.md#binary) for the reasoning.
 
+## v1.3.x — animation slot + PTY + closeout
+
+The arc that added `-i` / `--interval`, restructured the animation frame loop
+into `_frame_wait`, and fixed three signal-path defects (B-01/B-02/B-03).
+Measured at the v1.3.2 closeout, head-to-head on one idle host, `RUNS=11`,
+rebuilt v1.2.2 binary vs v1.3.2.
+
+**Filter path** — untouched by the arc:
+
+| Corpus           | v1.2.2 | v1.3.2 | Δ |
+|------------------|-------:|-------:|--:|
+| ascii (no LF)    | 46.22  | **46.61** | +0.8% |
+| ascii (w/ LFs)   | 50.58  | **50.88** | +0.6% |
+| utf8 mixed       | 41.37  | **41.41** | +0.1% |
+
+**Animation path** — the one that was restructured. Mean CPU over three
+3-second runs at the default 16 ms interval:
+
+| | user | sys | total |
+|---|---:|---:|---:|
+| v1.2.2 | 2.3 ms | 2.7 ms | 5.0 ms |
+| v1.3.2 | 2.7 ms | 2.3 ms | **5.1 ms** |
+
+Flat, as expected: at the default interval `_frame_wait` performs exactly one
+slice, which is the same single sleep + signal probe + deadline check the
+pre-v1.3.0 loop did.
+
+**Slicing at long intervals costs nothing.** A 200 ms interval slices into ~13
+ticks per frame instead of 1, so each frame pays 12 extra signal probes and 12
+extra clock reads — yet total CPU *falls*, because a longer interval means far
+fewer frames to render:
+
+| | user | sys | total |
+|---|---:|---:|---:|
+| `-i 16` | 1.1 ms | 2.8 ms | 3.8 ms |
+| `-i 200` | 0.4 ms | 2.6 ms | **3.0 ms** |
+| `-i 1000` | 1.3 ms | 1.8 ms | 3.2 ms |
+
+- **1.3.2 binary**: **814 448 bytes**, +4 464 B over v1.2.2 — the `-i` flag,
+  `_frame_wait`, and the signalfd rollback. Unchanged across v1.3.1 (tests and
+  docs only) and v1.3.2 (one guard line).
+
+> **Process note.** These numbers should have been recorded at v1.3.0, whose
+> gate called for "perf within noise of v1.2.2's 46.64 ns/byte". They were not —
+> the slot was marked complete without discharging that gate, and
+> `docs/benchmarks.md` had no v1.3.x row until the v1.3.2 closeout. See the
+> [v1.3.x audit delta](audit/2026-08-25-v13x-delta.md).
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -340,7 +388,10 @@ build the escape table.
 | v1.1.3  | 46.59               | —                | —                   | 394 440      | Toolchain + dep refresh (figures from `state.md`; micros not recorded) |
 | v1.2.0  | 47.88‡              | —                | —                   | 389 648      | Library surface (`dist/anuenue.cyr`). Both figures re-measured at v1.2.1 from a rebuilt v1.2.0 binary; micros not recorded at the time |
 | v1.2.1  | 46.57‡              | 8§               | 50§                 | 809 520      | Toolchain 6.5.35 + dep refresh + observability |
-| **v1.2.2** | **46.64**‡       | 8§               | 50§                 | **809 984**  | **P(-1) audit sweep; size cap removed** |
+| v1.2.2  | 46.22‡              | 8§               | 50§                 | 809 984      | P(-1) audit sweep; size cap removed |
+| v1.3.0  | —                   | —                | —                   | 814 448      | Animation slot: `-i`, `_frame_wait`, B-01/B-02/B-03. Perf not measured at the cut — see the process note above |
+| v1.3.1  | —                   | —                | —                   | 814 448      | PTY harness. Tests and docs only, no `src/` change |
+| **v1.3.2** | **46.61**‡       | 9§               | 50§                 | **814 448**  | **v1.3.x closeout: perf + audit delta discharged** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
