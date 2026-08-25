@@ -52,7 +52,7 @@ fn _uc_u24(s, off) {
 # (which casefold.cyr + normalize.cyr both already include) deletes
 # ~80 lines of dup and removes the synthetic naming asymmetry.
 #
-# Test-local copies in tests/tcyr/unicode_normconf.tcyr +
+# Test-local copies in tests/tcyr/text/unicode_normconf.tcyr +
 # unicode_casefold.tcyr (v5.8.52) intentionally retained — those are
 # test fixtures and isolation from stdlib internals is a feature, not
 # duplication-to-fix. If a future slot wants to fold those too, the

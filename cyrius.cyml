@@ -5,7 +5,7 @@ description = "anuenue — ānuenue (Hawaiian: rainbow). Stdin → stdout rainbo
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/anuenue"
 language = "cyrius"
-cyrius = "6.4.62"
+cyrius = "6.5.35"
 
 [build]
 entry = "src/main.cyr"
@@ -32,33 +32,48 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "b
 
 # CLI / argument parsing — cmdit (the sovereign getopt-long lib; the stdlib flags
 # parser productized + extended). Local sibling path + pinned tag, per AGNOS
-# dep-lockin discipline. cmdit 1.1.0 adds cmdit_help_flags, the table-only renderer
+# dep-lockin discipline. cmdit_help_flags (added 1.1.0) is the table-only renderer
 # anuenue's rich help (brand intro + Examples block) wraps around the flag list.
+# 1.2.4 is the P-1 audit cut: the completion-script program-name injection fix
+# plus three memory-safety/contract fixes. anuenue is not exposed to any of them
+# (it passes a literal prog name and never calls cmdit_completions), so the bump
+# is dist-bytes hygiene rather than a required fix.
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 path = "../cmdit"
-tag = "1.1.0"
+tag = "1.2.4"
 modules = ["dist/cmdit.cyr"]
 
 # AGNOS first-party deps — pinned tags per `feedback_dep_lockin_sandhi_unlock`.
 # darshana provides the ANSI escape primitives anuenue emits per character.
 # sakshi is the canonical error/tracing crate per first-party-standards.
 # agnostik provides the shared Result/Error shapes sakshi consumers use.
+#
+# darshana 1.0.0 is the API freeze — the 29 tty_*/tio_* fns and 37 constants are
+# now contract. The nine darshana symbols anuenue calls (tty_fg_rgb_buf /
+# tty_fg_256_buf / tty_sgr_buf / tty_sgr_reset_buf / tty_sgr_reset /
+# tty_cursor_up / _hide / _show / tty_isatty) are all inside the frozen surface.
+# The two 0.9.3 breaks are non-events here: the AGNOS_* -> _AGNOS_* privatization
+# touches symbols anuenue never named, and tty_sgr_reset_buf's new
+# -1-on-negative-pos return is unreachable from anuenue's call sites (every
+# `pos` is a non-negative accumulator). tty_open_signalfd's -errno -> -1 change
+# is likewise moot — src/animate.cyr deliberately rolls its own non-blocking
+# signalfd instead.
 
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
 path = "../darshana"
-tag = "0.9.0"
+tag = "1.0.0"
 modules = ["dist/darshana.cyr"]
 
 [deps.sakshi]
 git = "https://github.com/MacCracken/sakshi.git"
 path = "../sakshi"
-tag = "2.4.6"
+tag = "2.4.11"
 modules = ["dist/sakshi.cyr"]
 
 [deps.agnostik]
 git = "https://github.com/MacCracken/agnostik.git"
 path = "../agnostik"
-tag = "1.3.4"
+tag = "1.5.1"
 modules = ["dist/agnostik.cyr"]

@@ -272,14 +272,16 @@ fn utf8_decode(read_buf, i, seqlen) {
 # Things this DOESN'T fully model:
 #   - Hangul L/V/T/LV/LVT syllable composition (Korean)
 #   - Devanagari + other Brahmic vowel-mark sequences (the spacing
-#     marks need extra rules — we treat them as advancing for now)
+#     marks need extra rules — we treat them as advancing; see
+#     docs/adr/0003-grapheme-cluster-cycling.md "Consequences")
 #   - Tag sequences (subdivision flags)
 #
 # Misclassifying these errs on the side of "advance more often than
 # strictly correct" — never under-advances, so the rainbow stays
-# visible. ADR 0003 (M7) will record this trade-off; the doc rule
-# in CLAUDE.md is "UTF-8 robustness: invalid byte sequences must
-# not panic, must not over-read" — both honoured by this subset.
+# visible. ADR 0003 records this trade-off and the two visible
+# misses (Hangul L/V/T composition, Devanagari spacing marks); the
+# doc rule in CLAUDE.md is "UTF-8 robustness: invalid byte sequences
+# must not panic, must not over-read" — both honoured by this subset.
 #
 # v0.6.0 (M5 perf pass) flattens the original 21-range linear chain
 # into a sorted (lo, hi) table searched in O(log n). On UTF-8-heavy

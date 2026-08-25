@@ -4,6 +4,121 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-08-25 (toolchain + dep refresh)
+
+Maintenance cut — toolchain pin advance plus the first-party-dep sandhi refresh
+accumulated since v1.2.0, including **darshana's v1.0.0 API freeze**. No
+behavioural change: the old and new binaries are **byte-identical across 160
+output comparisons** (16 input corpora × 10 flag combinations, covering invalid
+UTF-8, truncated sequences, 200 KB of raw binary, a 5 000-combiner cluster, and
+all four colour modes) plus 16 exit-code comparisons, and the entire CLI surface
+— `--help`, every error path, every exit code — is unchanged apart from the
+version literal. All six golden fixtures byte-identical, three MONO checks hold,
+animate-smoke green in truecolor / 256 / 16 / long-cluster, **242/242** unit
+assertions and **1 354 581** fuzz assertions pass. The v1.x public API contract
+(flags / exit codes / output shape / capability surface) is unchanged.
+
+### Changed
+
+- **Cyrius toolchain pin `6.4.62` → `6.5.35`** (`cyrius.cyml [package].cyrius`).
+  `./lib/` re-synced via `cyrius lib sync --full` (108 stdlib files; four new
+  modules arrive — `async_macos`, `async_win`, `thread_macos`, `yantra`). Both
+  build-time warnings the old tree carried are gone: the `./lib/` shadow-drift
+  warning and the manifest-pin drift warning. The three
+  `lib/bayan.cyr` "assigning non-pointer to typed pointer" warnings are also
+  gone — fixed upstream.
+- **`[deps]` tags re-pinned to the versions actually vendored, then advanced to
+  current**: darshana `0.9.0` → **`1.0.0`**, cmdit `1.1.0` → **`1.2.4`**,
+  sakshi `2.4.6` → **`2.4.11`**, agnostik `1.3.4` → **`1.5.1`**.
+
+  The tags had drifted from the bytes: the committed bundles were already at
+  cmdit 1.2.2, sakshi 2.4.11 and agnostik 1.3.5 while the manifest still claimed
+  1.1.0 / 2.4.6 / 1.3.4. `path`-mode deps resolve by tag only when the lock
+  agrees, so the manifest had become documentation rather than a pin. Tags and
+  bytes now agree.
+- **darshana 1.0.0 is the API freeze.** The nine darshana symbols anuenue calls
+  (`tty_fg_rgb_buf`, `tty_fg_256_buf`, `tty_sgr_buf`, `tty_sgr_reset_buf`,
+  `tty_sgr_reset`, `tty_cursor_up`, `tty_cursor_hide`, `tty_cursor_show`,
+  `tty_isatty`) all sit inside the frozen 29-function surface. The two v0.9.3
+  breaks are non-events here: the `AGNOS_*` → `_AGNOS_*` privatization touches
+  symbols anuenue never named, and `tty_sgr_reset_buf`'s new `-1`-on-negative-`pos`
+  return is unreachable from anuenue — every `pos` at all fifteen call sites
+  (11 in `src/filter.cyr`, 4 in `src/animate.cyr`) is a non-negative accumulator. `tty_open_signalfd`'s `-errno` → `-1` change is
+  likewise moot: `src/animate.cyr` deliberately rolls its own *non-blocking*
+  signalfd instead of using darshana's blocking helper.
+- **cmdit 1.2.4 is the P-1 audit cut** (completion-script program-name injection
+  plus three memory-safety / contract fixes). anuenue is exposed to none of them
+  — it passes a literal prog name to `cmdit_new` and never calls
+  `cmdit_completions` — so the bump is dist-bytes hygiene rather than a required
+  fix. Verified rather than assumed: the CLI-surface diff above is byte-identical.
+- **`dist/anuenue.deps` is a new committed artifact.** The 6.5.x toolchain emits
+  a stdlib-leaf sidecar next to the distlib bundle and `cyrius distlib --check`
+  treats its absence as STALE, so it ships alongside `dist/anuenue.cyr`.
+
+### Fixed
+
+- **`src/filter.cyr` — untracked deferral surfaced by the 6.5.35 lint.** The
+  grapheme-cluster comment block said Devanagari spacing marks are treated as
+  advancing "for now" and that "ADR 0003 (M7) *will* record this trade-off" —
+  stale future tense since v0.8.0, when ADR 0003 shipped and did record it,
+  including both visible misses (Hangul L/V/T composition, Devanagari spacing
+  marks). The comment now cross-references
+  [`docs/adr/0003-grapheme-cluster-cycling.md`](docs/adr/0003-grapheme-cluster-cycling.md).
+  `cyrius lint` is clean again across all seven `src/*.cyr`: 0 warnings, 0
+  untracked deferrals.
+
+### Performance
+
+Unchanged within noise — measured head-to-head on one idle host, same fixture,
+`RUNS=11`, v1.2.0 binary vs v1.2.1 binary rather than against a historical figure:
+
+| Corpus | v1.2.0 | v1.2.1 | Δ |
+|---|---:|---:|---:|
+| ascii (no LF) | 47.88 ns/byte | **47.20 ns/byte** | −1.4% |
+| ascii (w/ LFs) | 52.01 ns/byte | **51.77 ns/byte** | −0.5% |
+| utf8 mixed | 42.45 ns/byte | **42.14 ns/byte** | −0.7% |
+
+All three stay under the 60 ns/byte M5 acceptance cap. The microbench moved
+(`hsv_rainbow` 18 → 8 ns, `tty_fg_rgb_buf` 95 → 52 ns) but is **not** comparable
+across this cut: 6.5.35's `bench` harness now measures and subtracts a timer
+floor (1.347 µs per clock read here), which the 6.4.62 harness did not.
+
+### Known issue — the DCE binary breaches the 512 KB cap
+
+**389 648 B → 803 960 B (+414 312, +106%)**, against the 512 KB cap discipline
+recorded in [`state.md`](docs/development/state.md). Nothing anuenue wrote caused
+it; the growth decomposes cleanly, each figure measured with an invalidated lock
+in an isolated worktree:
+
+| Step | Binary | Δ |
+|---|---:|---:|
+| v1.2.0 (cycc 6.4.62 + old dep tags) | 389 648 B | — |
+| + dep bump only (cycc 6.4.62) | 524 888 B | +135 240 |
+| + toolchain bump (cycc 6.5.35) | **803 960 B** | +279 072 |
+
+Attribution by dep, at the new pin:
+
+| Removed | Binary | Contribution |
+|---|---:|---:|
+| — (as shipped) | 803 960 B | — |
+| agnostik | 257 536 B | **546 424 B (68%)** |
+| sakshi | 714 072 B | 89 888 B (11%) |
+| both | **167 600 B** | 636 360 B (79%) |
+
+**anuenue names zero symbols from either.** They are declared because
+first-party-standards makes sakshi the canonical error/tracing crate and agnostik
+the shared Result/Error shapes it surfaces — but no anuenue source file
+references a `sakshi_*` or agnostik symbol, and dropping both puts the binary at
+167 600 B, comfortably inside the cap. Left in place: dropping a canonical dep is
+a standards decision, not a maintenance one. Recorded here so the cap breach is a
+choice rather than a surprise.
+
+Also note `CYRIUS_DCE=1` no longer changes the output size — 6.5.35 NOPs
+unreachable functions in place rather than eliminating them, so the DCE and
+non-DCE binaries are byte-for-byte the same size. The "DCE binary size" metric
+now measures the *whole* binary, which is part of why the step change is so
+large.
+
 ## [1.2.0] — 2026-07-14
 
 ### Added

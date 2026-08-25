@@ -235,9 +235,44 @@ through unchanged.
 - The DCE cap (512 KB) gives ~161 KB headroom for future v1.x
   sandhi-bump-driven growth.
 
+## v1.2.1 — Toolchain + dep refresh
+
+cyrius `6.4.62` → `6.5.35`; darshana `0.9.0` → `1.0.0`, cmdit `1.1.0` →
+`1.2.4`, sakshi `2.4.6` → `2.4.11`, agnostik `1.3.4` → `1.5.1`. One
+comment-only source change. Measured **head-to-head on one idle host**
+(same fixture, `RUNS=11`, v1.2.0 binary vs v1.2.1 binary) rather than
+against a historical figure — the two binaries are also byte-identical
+across 160 output comparisons.
+
+| Corpus           | v1.2.0 | v1.2.1 | Δ |
+|------------------|-------:|-------:|--:|
+| ascii (no LF)    | 47.88  | **47.20** | −1.4% |
+| ascii (w/ LFs)   | 52.01  | **51.77** | −0.5% |
+| utf8 mixed       | 42.45  | **42.14** | −0.7% |
+
+All three under the 60 ns/byte M5 acceptance. Differences are within
+run-to-run noise; nothing on the filter hot path changed.
+
+- **1.2.1 binary**: **803 960 bytes** (~785 KB) — **over the 512 KB
+  cap by ~273 KB**, up from 389 648 B at v1.2.0 (+414 312, +106%).
+  Decomposed: dep bump +135 240, toolchain bump +279 072. `agnostik`
+  alone accounts for 546 424 B (68%) and `sakshi` for 89 888 B (11%) —
+  neither is referenced by any anuenue source file. Full attribution and
+  the open decision: [`state.md` § Binary](development/state.md#binary).
+- **`CYRIUS_DCE=1` no longer shrinks the file.** 6.5.35 NOPs unreachable
+  functions in place instead of eliminating them, so the DCE and non-DCE
+  binaries are the same size. Rows below labelled "DCE size" for
+  ≤ v1.0.0 measured genuine elimination; the v1.2.1 figure is the whole
+  binary. They are not directly comparable.
+- **Micro-benchmarks are not comparable across this cut.** 6.5.35's
+  `bench` harness measures and subtracts a timer floor (1.347 µs per
+  clock read on the reference host) that 6.4.62's did not.
+  `hsv_rainbow` reads 8 ns and `tty_fg_rgb_buf` 52 ns under the new
+  harness.
+
 ## Trend
 
-| Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | DCE size (B) | Notes |
+| Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
 |---------|---------------------|------------------|---------------------|--------------|-------|
 | v0.2.0  | 53                  | 8                | 45                  | 304 368      | M1 baseline |
 | v0.3.0  | 53*                 | 8                | 45                  | 317 216      | M2 flags |
@@ -249,9 +284,21 @@ through unchanged.
 | v0.8.0  | ~46                 | 8                | 45                  | 351 200      | M7 docs + M8 audit |
 | v0.9.0  | ~46                 | 8                | 45                  | 351 200      | Quality slot (fuzz) |
 | **v1.0.0** | **45.71**        | 8                | 45                  | 351 200      | **GA** |
+| v1.1.3  | 46.59               | —                | —                   | 394 440      | Toolchain + dep refresh (figures from `state.md`; micros not recorded) |
+| v1.2.0  | 47.88‡              | —                | —                   | 389 648      | Library surface (`dist/anuenue.cyr`). Both figures re-measured at v1.2.1 from a rebuilt v1.2.0 binary; micros not recorded at the time |
+| **v1.2.1** | **47.20**‡       | 8§               | 52§                 | **803 960**  | **Toolchain 6.5.35 + dep refresh; over the 512 KB cap** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
+
+‡ v1.2.0 and v1.2.1 measured back-to-back on the same idle host at
+`RUNS=11`. Earlier rows come from their own cut hosts and carry that
+host's variance — compare the ‡ pair to each other, not to the rows
+above.
+
+§ v1.2.1 micro-benchmarks ran under 6.5.35's `bench` harness, which
+subtracts a measured timer floor the older harness did not. Not
+comparable to the rows above.
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

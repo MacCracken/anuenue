@@ -19,13 +19,13 @@ fn tls_native_client_build_hello(ctx, out, out_max): i64 {
     var epub = alloc(32);
     if (priv == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     if (epub == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
-    if (sys_getrandom(priv, 32, 0) != 32) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
+    if (_tn_rand_bytes(priv, 32) != 32) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
     x25519_base(priv, epub);
     store64(ctx + TLS_CTX_OFF_EPH_PRIV, priv);
     store64(ctx + TLS_CTX_OFF_EPH_PUB, epub);
     var crand = alloc(TLS_RANDOM_LEN);
     if (crand == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
-    if (sys_getrandom(crand, TLS_RANDOM_LEN, 0) != TLS_RANDOM_LEN) {
+    if (_tn_rand_bytes(crand, TLS_RANDOM_LEN) != TLS_RANDOM_LEN) {
         return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL);
     }
     store64(ctx + TLS_CTX_OFF_CLIENT_RANDOM, crand);
@@ -202,8 +202,8 @@ fn tls_native_client_open_handshake(ctx, record, record_len, out, out_max, out_c
     var iv = load64(ctx + TLS_CTX_OFF_SRV_HS_IV);
     if (key == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     return tls_native_record_open(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
-    ctx + TLS_CTX_OFF_SRV_SEQ, record, record_len,
-    out, out_max, out_ct);
+      ctx + TLS_CTX_OFF_SRV_SEQ, record, record_len,
+      out, out_max, out_ct);
 }
 
 # Client: receive + process the server's encrypted flight (.26):
@@ -221,8 +221,11 @@ fn tls_native_client_open_handshake(ctx, record, record_len, out, out_max, out_c
 # into a 96-byte buffer (each left-padded to 48) with sigil's _ecdsa_der_int_w.
 # `pk` is the 96-byte affine Qx||Qy. Returns 1 (valid) / 0 (invalid/malformed).
 fn _tn_ecdsa_p384_verify_der(pk, msg, msg_len, sig_der, sig_der_len): i64 {
-    var raw = alloc(96);
-    if (raw == 0) { return 0; }
+    # v6.2.25: stack-local r||s scratch (was a per-call global-bump alloc, hit per
+    # mTLS p384 client-CertificateVerify) — consumed by ecdsa_p384_verify before
+    # return. Mirrors the sigil ecdsa_p256_verify_der secret-var fix.
+    var rawbuf[96];
+    var raw = &rawbuf;
     memset(raw, 0, 96);
     var off = _ecdsa_der_int_w(sig_der, 2, sig_der_len, raw, 48);
     if (off < 0) { return 0; }
@@ -492,8 +495,8 @@ fn tls_native_client_seal_handshake(ctx, inner, inner_len, out, out_max): i64 {
     var iv = load64(ctx + TLS_CTX_OFF_CLI_HS_IV);
     if (key == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     return tls_native_record_seal(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
-    ctx + TLS_CTX_OFF_CLI_SEQ, TLS_CT_HANDSHAKE,
-    inner, inner_len, out, out_max);
+      ctx + TLS_CTX_OFF_CLI_SEQ, TLS_CT_HANDSHAKE,
+      inner, inner_len, out, out_max);
 }
 
 # Client: complete the handshake (.27). Verifies the server's Finished
@@ -691,7 +694,7 @@ fn _tn_seal_ct(ctx, ct, buf, len, out, out_max): i64 {
     }
     if (key == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     return tls_native_record_seal(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
-    ctx + seqoff, ct, buf, len, out, out_max);
+      ctx + seqoff, ct, buf, len, out, out_max);
 }
 
 # AEAD-seal `len` bytes of application data from `buf` into one protected
@@ -737,7 +740,7 @@ fn _tn_open_record(ctx, record, record_len, out, out_max, out_inner_ct): i64 {
     if (key == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     var oct = 0;
     var n = tls_native_record_open(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
-    ctx + seqoff, record, record_len, out, out_max, &oct);
+      ctx + seqoff, record, record_len, out, out_max, &oct);
     if (n < 0) { return n; }
     if (out_inner_ct != 0) { store64(out_inner_ct, oct); }
     if (oct == TLS_CT_ALERT) {
@@ -884,7 +887,7 @@ fn _tn_handle_post_handshake(ctx, msg, msg_len): i64 {
 fn tls_native_key_update_secret(sec, sec_len, hash_algo, out): i64 {
     var hlen = _tn_hash_len(hash_algo);
     return tls_native_hkdf_expand_label(sec, sec_len, "traffic upd", 11,
-    0, 0, hash_algo, out, hlen);
+      0, 0, hash_algo, out, hlen);
 }
 
 # Create a server-side context with the given certificate chain
@@ -990,9 +993,11 @@ fn _tn_load_cert(ctx): i64 {
     var cert_len = load64(ctx + TLS_CTX_OFF_CERT_LEN);
     if (cert == 0) { return TLS_ERR_INVALID_PARAM; }
     if (cert_len <= 0) { return TLS_ERR_INVALID_PARAM; }
-    var leaf = x509_cert_alloc();
+    # v6.2.25: parse the leaf into the per-connection arena (272 B/handshake leak
+    # otherwise). _tn_arena(ctx)==0 → global bump (byte-identical to a==0).
+    var leaf = x509_cert_alloc_into(_tn_arena(ctx));
     if (leaf == 0) { return TLS_ERR_OOM; }
-    if (x509_parse(cert, cert_len, leaf) != 1) { return TLS_ERR_CERT_INVALID; }
+    if (x509_parse_into(cert, cert_len, leaf, _tn_arena(ctx)) != 1) { return TLS_ERR_CERT_INVALID; }
     store64(ctx + TLS_CTX_OFF_LEAF_CERT, leaf);
     return TLS_OK;
 }
@@ -1256,7 +1261,7 @@ fn _tn_gen_ephemeral_x25519(ctx): i64 {
     if (priv == 0) { return TLS_ERR_OOM; }
     if (epub == 0) { return TLS_ERR_OOM; }
     if (dhe == 0) { return TLS_ERR_OOM; }
-    if (sys_getrandom(priv, 32, 0) != 32) { return TLS_ERR_INTERNAL; }
+    if (_tn_rand_bytes(priv, 32) != 32) { return TLS_ERR_INTERNAL; }
     x25519_base(priv, epub);
     x25519(priv, peer, dhe);
     store64(ctx + TLS_CTX_OFF_EPH_PRIV, priv);
@@ -1370,8 +1375,13 @@ fn tls_native_server_respond_hello(ctx, ch_msg, ch_len, out, out_max): i64 {
         store64(ctx + TLS_CTX_OFF_SENT_HRR, 1);
         return hlen;
     }
-    # ServerHello path. Init transcript for the negotiated cipher and
-    # feed the ClientHello in.
+    # ServerHello path. The server has now committed to TLS 1.3 (selected a
+    # 1.3 cipher + is sending a ServerHello, no fallback after this) — record the
+    # negotiated version so tls_native_get_version(srv) reports 0x0304 instead of
+    # 0, mirroring the client's parse_server_hello store + the 1.2 server path.
+    # CHANGELOG [6.4.21] (issue 2026-06-28-tls13-server-get-version-zero).
+    store64(ctx + TLS_CTX_OFF_VERSION, TLS_VERSION_1_3);
+    # Init transcript for the negotiated cipher and feed the ClientHello in.
     var cipher = load64(ctx + TLS_CTX_OFF_CIPHER);
     var ts = tls_native_transcript_init_in(load64(ctx + TLS_CTX_OFF_ALLOC), tls_native_cipher_hash_algo(cipher));
     if (ts == 0) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
@@ -1380,7 +1390,7 @@ fn tls_native_server_respond_hello(ctx, ch_msg, ch_len, out, out_max): i64 {
     # Server random + ephemeral keypair + ECDHE.
     var srand = _tn_alloc(ctx, TLS_RANDOM_LEN);
     if (srand == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
-    if (sys_getrandom(srand, TLS_RANDOM_LEN, 0) != TLS_RANDOM_LEN) {
+    if (_tn_rand_bytes(srand, TLS_RANDOM_LEN) != TLS_RANDOM_LEN) {
         return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL);
     }
     store64(ctx + TLS_CTX_OFF_SERVER_RANDOM, srand);
@@ -1744,9 +1754,10 @@ fn tls_native_server_recv_client_certificate(ctx, msg, msg_len): i64 {
     if (pos + 3 > blen) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
     var cert_len = _tn_be24_r(body + pos); pos = pos + 3;
     if (pos + cert_len > blen) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
-    var leaf = x509_cert_alloc();
+    # v6.2.25: parse the mTLS client leaf into the per-connection arena.
+    var leaf = x509_cert_alloc_into(_tn_arena(ctx));
     if (leaf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
-    if (x509_parse(body + pos, cert_len, leaf) != 1) {
+    if (x509_parse_into(body + pos, cert_len, leaf, _tn_arena(ctx)) != 1) {
         return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID);
     }
     store64(ctx + TLS_CTX_OFF_CLIENT_CERT, leaf);
@@ -1899,7 +1910,7 @@ fn _tn_ctx_stek(ctx): i64 {
     if (stek != 0) { return stek; }
     stek = _tn_alloc(ctx, 32);
     if (stek == 0) { return 0; }
-    if (sys_getrandom(stek, 32, 0) != 32) { return 0; }
+    if (_tn_rand_bytes(stek, 32) != 32) { return 0; }
     store64(ctx + TLS_CTX_OFF_STEK, stek);
     return stek;
 }
@@ -1908,7 +1919,7 @@ fn _tn_ctx_stek(ctx): i64 {
 # STEK: out = IV(12) ‖ tag(16) ‖ ciphertext. Returns the blob length.
 fn _tn_ticket_seal(stek, secret_in, secret_in_len, out): i64 {
     var iv = out;
-    if (sys_getrandom(iv, TLS_TICKET_IV_LEN, 0) != TLS_TICKET_IV_LEN) { return 0 - 1; }
+    if (_tn_rand_bytes(iv, TLS_TICKET_IV_LEN) != TLS_TICKET_IV_LEN) { return 0 - 1; }
     var tag = out + TLS_TICKET_IV_LEN;
     var ct = out + TLS_TICKET_OVERHEAD;
     aes_gcm_encrypt(stek, iv, 0, 0, secret_in, secret_in_len, ct, tag);
@@ -1959,8 +1970,8 @@ fn tls_native_server_new_session_ticket(ctx, out, out_max): i64 {
     # callers; on a platform whose getrandom is unavailable (Windows/AGNOS stub
     # → -1) the nonce/age_add would otherwise stay uninitialized = a predictable
     # ticket. Never emit a weak NewSessionTicket.
-    if (sys_getrandom(nonce, 8, 0) != 8) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
-    if (sys_getrandom(age_add, 4, 0) != 4) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
+    if (_tn_rand_bytes(nonce, 8) != 8) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
+    if (_tn_rand_bytes(age_add, 4) != 4) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
     var psk = _tn_alloc(ctx, TLS_MAX_DIGEST_LEN);
     if (psk == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     if (tls_native_hkdf_expand_label(rm, hlen, "resumption", 10, nonce, 8, hash_algo, psk, hlen) != TLS_OK) {
@@ -2066,7 +2077,7 @@ fn tls_native_record_seal(cipher, key, static_iv, seq8, inner_ct, inner, inner_l
     var ct_out = out + TLS_RECORD_HEADER_LEN;
     var tag_out = ct_out + inner_len + 1;
     var er = tls_native_aead_encrypt(cipher, key, &nonce, out, TLS_RECORD_HEADER_LEN,
-    pt, inner_len + 1, ct_out, tag_out);
+      pt, inner_len + 1, ct_out, tag_out);
     if (er != TLS_OK) { return er; }
     tls_native_seq_increment(seq8);
     return total;
@@ -2095,7 +2106,7 @@ fn tls_native_record_open(cipher, key, static_iv, seq8, record, record_len, out,
     var cipher_in = record + TLS_RECORD_HEADER_LEN;
     var tag_in = cipher_in + inner_ct_len;
     var dr = tls_native_aead_decrypt(cipher, key, &nonce, record, TLS_RECORD_HEADER_LEN,
-    cipher_in, inner_ct_len, tag_in, out);
+      cipher_in, inner_ct_len, tag_in, out);
     if (dr != TLS_OK) { return dr; }
     # Scan back over zero padding; the last non-zero byte is the type.
     var idx = inner_ct_len - 1;
@@ -2108,6 +2119,13 @@ fn tls_native_record_open(cipher, key, static_iv, seq8, record, record_len, out,
         }
     }
     if (idx < 0) { return TLS_ERR_BAD_RECORD; }
+    # `idx` is the recovered content length (inner content-type byte + zero
+    # padding stripped). Callers now pass out_max = TLS_RECORD_MAX_CIPHERTEXT so a
+    # full-size record's inner plaintext (content + type byte) fits, so re-assert
+    # the RFC 8446 §5.4 record-size limit here: content over 2^14 is a
+    # record_overflow, not silently delivered (the old undersized out_max used to
+    # enforce this implicitly by rejecting the whole record as BUFFER_FULL).
+    if (idx > TLS_RECORD_MAX_PLAINTEXT) { return TLS_ERR_RECORD_OVERFLOW; }
     store64(out_ct, load8(out + idx) & 0xFF);
     tls_native_seq_increment(seq8);
     return idx;

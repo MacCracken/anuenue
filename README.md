@@ -66,25 +66,28 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.0.0
+### Quality bar at v1.2.1
 
-- **245** unit assertions (`cyrius test`)
-- **10** golden fixtures + equivalence checks (`scripts/golden-check.sh`)
-- **18** animation structural assertions (`scripts/animate-smoke.sh`)
-- **1,354,580** fuzz assertions per run across 5 harnesses (`cyrius fuzz`)
+- **242** unit assertions (`cyrius test`)
+- **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
+- **17** animation structural assertions (`scripts/animate-smoke.sh`)
+- **1,354,581** fuzz assertions per run across 5 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open ([`docs/audit/2026-05-22-audit.md`](docs/audit/2026-05-22-audit.md))
-- **DCE binary 351,200 B** (~343 KB; cap = 512 KB)
-- **Perf**: 45–50 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
-- **0** `cyrius lint` warnings
+- **Binary 803,960 B** (~785 KB) — **over the 512 KB cap**; 68% of it is
+  `agnostik`, which anuenue references zero symbols from. See
+  [`state.md` § Binary](docs/development/state.md#binary)
+- **Perf**: 47.20 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
+- **0** `cyrius lint` warnings, 0 untracked deferrals
 
 ### Dependencies (pinned for v1.x)
 
 | Dep | Tag | Role |
 |-----|-----|------|
-| [`darshana`](https://github.com/MacCracken/darshana) | 0.5.3 | ANSI escape primitives |
-| [`sakshi`](https://github.com/MacCracken/sakshi) | 2.2.5 | Errors / tracing (first-party-standards-required) |
-| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.2.2 | Shared Result / Error shapes |
-| Cyrius toolchain | 6.0.1 | `cyrius.cyml [package].cyrius` |
+| [`darshana`](https://github.com/MacCracken/darshana) | 1.0.0 | ANSI escape primitives (frozen v1.0 API) |
+| [`cmdit`](https://github.com/MacCracken/cmdit) | 1.2.4 | CLI / argument parsing (getopt-long) |
+| [`sakshi`](https://github.com/MacCracken/sakshi) | 2.4.11 | Errors / tracing (first-party-standards-required) |
+| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.5.1 | Shared Result / Error shapes |
+| Cyrius toolchain | 6.5.35 | `cyrius.cyml [package].cyrius` |
 
 ## Documentation
 

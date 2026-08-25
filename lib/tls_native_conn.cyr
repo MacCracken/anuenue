@@ -357,6 +357,7 @@ fn tls_native_set_version_range(ctx, min_ver, max_ver): i64 {
 var _tn_tx_read = 0;    # fn-ptr: read(handle, buf, n)  → bytes (>0) / <=0 on EOF/err
 var _tn_tx_write = 0;   # fn-ptr: write(handle, buf, n) → bytes (>0) / <=0 on err
 var _tn_tx_now = 0;     # fn-ptr: now()                 → wall-clock Unix seconds (0=unknown)
+var _tn_tx_rand = 0;    # fn-ptr: rand(buf, n)          → bytes filled (==n on success); v6.2.28 entropy hook
 
 # Install a custom transport (any arg 0 = keep that built-in default). The
 # per-connection handle is supplied as the `sock_fd` arg to connect/accept
@@ -384,22 +385,68 @@ fn tls_native_set_transport(read_fn, write_fn, now_fn): i64 {
     return TLS_OK;
 }
 
-# CVE-18 (v6.1.36): wall-clock for cert-window validation. syscall(201, 0) is
-# time(2) on Linux; the backend ESYSXLAT-renumbers it per target (matches the
-# lib/tls.cyr wrapper's existing time source). v6.2.3: AGNOS has no time(2)
-# in its syscall surface — route to time_unix(#46, RTC-derived Unix seconds).
-# Returns 0 if the RTC is unreadable; sigil's _x509_in_window treats now==0 as
-# "skip the window check", so a dead RTC degrades to unchecked validity rather
-# than rejecting every cert. v6.2.4: a custom transport's now() (if installed)
-# takes precedence — the freestanding-TLS clock hook.
+# v6.2.28: install a custom entropy source — the last freestanding-TLS hook (the
+# transport vtable covers read/write/now; this covers randomness). SEPARATE from
+# tls_native_set_transport so the existing 3-arg signature + its lib/tls.cyr
+# callers + vidya examples stay stable. rand_fn(buf, n) must fill n bytes and
+# return n on success (the getrandom contract; the 11 handshake call sites check
+# `!= n`). A bare-metal kernel installs its CSPRNG here at init; default 0 routes
+# to the platform sys_getrandom. Set ONCE before connect/accept. Returns TLS_OK.
+fn tls_native_set_entropy(rand_fn): i64 {
+    _tn_tx_rand = rand_fn;
+    return TLS_OK;
+}
+
+# CVE-18 (v6.1.36): wall-clock for cert-window validation. Mirrors
+# lib/chrono.cyr's clock_epoch_secs — clock_gettime(CLOCK_REALTIME) (#228, which
+# the backend ESYSXLAT renumbers per target: a64-Linux 228→113, Darwin/Windows
+# rerouted). The earlier syscall(201,0)=time(2) was an x86-ONLY leak: 201 is NOT
+# in any ESYSXLAT table, so on aarch64 (and macOS arm64) svc x8=201 is listen(2),
+# returning a NEGATIVE errno that read as a pre-epoch "now" → every cert looked
+# not-yet-valid → CERT_INVALID. v6.2.3: AGNOS has no clock_gettime — route to
+# time_unix(#46, RTC-derived Unix seconds). Returns 0 if the RTC is unreadable;
+# sigil's _x509_in_window treats now==0 as "skip the window check", so a dead RTC
+# degrades to unchecked validity rather than rejecting every cert. v6.2.4: a
+# custom transport's now() (if installed) takes precedence — the freestanding-TLS
+# clock hook.
 fn _tn_now_unix(): i64 {
     if (_tn_tx_now != 0) { return fncall0(_tn_tx_now); }
     #ifdef CYRIUS_TARGET_AGNOS
     return sys_time_unix();
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
-    return syscall(201, 0);
+    var ts[16];
+    #ifdef CYRIUS_TARGET_MACOS
+    # Darwin CLOCK_REALTIME=0; syscall(228) reroutes to _clock_gettime_nsec_np,
+    # which RETURNS ns since epoch (does not fill the buffer) → /1e9 = seconds.
+    return syscall(228, 0, &ts) / 1000000000;
     #endif
+    #ifdef CYRIUS_TARGET_WIN
+    # Windows has no clock_gettime — GetSystemTimeAsFileTime (PE reroute 0xF01B)
+    # fills a FILETIME (100ns ticks since 1601-01-01 UTC); /1e7 then subtract the
+    # 1601→1970 gap (11644473600 s) for Unix epoch seconds.
+    syscall(0xF01B, &ts);
+    return load64(&ts) / 10000000 - 11644473600;
+    #endif
+    #ifndef CYRIUS_TARGET_MACOS
+    #ifndef CYRIUS_TARGET_WIN
+    syscall(228, 0, &ts);   # 0 = CLOCK_REALTIME
+    return load64(&ts);
+    #endif
+    #endif
+    #endif
+}
+
+# v6.2.28: the entropy leaf every TLS-handshake getrandom site funnels through.
+# A custom rand_fn (if installed) takes precedence — the freestanding-TLS entropy
+# hook; default 0 routes to the platform sys_getrandom wrapper (identical
+# signature on every target: linux_common/windows/agnos, with macOS getentropy
+# normalizing 0→len). Returns the byte count, exactly like sys_getrandom, so each
+# call site keeps its own `!= requested` failure check + failure-return shape.
+fn _tn_rand_bytes(buf, n): i64 {
+    var rf = _tn_tx_rand;
+    if (rf == 0) { rf = &sys_getrandom; }
+    return fncall3(rf, buf, n, 0);
 }
 
 # CVE-18 (v6.1.36): fail-closed peer verification, run by connect() BEFORE it
@@ -680,16 +727,46 @@ fn tls_native_write(ctx, buf, len): i64 {
 # instead of returning 0 (false EOF) on the first one. A standard TLS 1.3
 # server (OpenSSL/nginx) sends a NewSessionTicket immediately after the
 # handshake; before this, the first read collapsed to EOF before any data.
+# Partial-record delivery: one TLS record's plaintext is up to 16384 bytes; when
+# it exceeds the caller's `maxlen` this delivers `maxlen` now and HOLDS the
+# remainder in the ctx (TLS_CTX_OFF_READ_HOLD*), returning it on the next calls
+# before another record is decrypted. So a caller may read in sub-record chunks
+# (an h2 9-byte frame header, the tail of a bounded response buffer) and honors
+# the documented "up to maxlen" contract. The prior "whole record or
+# TLS_ERR_BUFFER_FULL" behavior both broke that contract and, on BUFFER_FULL,
+# discarded a record whose AEAD read sequence had already advanced — a silent
+# stream desync / data loss that broke large HTTP responses read in small chunks.
 fn tls_native_read(ctx, buf, maxlen): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
     if (load64(ctx + TLS_CTX_OFF_STATE) != TLS_STATE_CONNECTED) { return TLS_ERR_PROTOCOL; }
+    if (maxlen <= 0) { return TLS_ERR_INVALID_PARAM; }   # a 0 ask would look like EOF
+    # 1) Drain plaintext held from a prior over-length record before touching the
+    #    socket. LEN>0 is only ever set together with the buffer pointer, so
+    #    TLS_CTX_OFF_READ_HOLD is non-zero whenever there is anything to drain.
+    var hlen = load64(ctx + TLS_CTX_OFF_READ_HOLD_LEN);
+    var hoff = load64(ctx + TLS_CTX_OFF_READ_HOLD_OFF);
+    if (hlen > hoff) {
+        var hgive = hlen - hoff;
+        if (hgive > maxlen) { hgive = maxlen; }
+        memcpy(buf, load64(ctx + TLS_CTX_OFF_READ_HOLD) + hoff, hgive);
+        hoff = hoff + hgive;
+        if (hoff >= hlen) {
+            store64(ctx + TLS_CTX_OFF_READ_HOLD_LEN, 0);
+            store64(ctx + TLS_CTX_OFF_READ_HOLD_OFF, 0);
+        } else {
+            store64(ctx + TLS_CTX_OFF_READ_HOLD_OFF, hoff);
+        }
+        return hgive;
+    }
     var fd = load64(ctx + TLS_CTX_OFF_SOCK_FD);
     var cap = TLS_RECORD_MAX_CIPHERTEXT + TLS_RECORD_HEADER_LEN;
-    # One allocation holds the ciphertext [0..cap) AND a full-size plaintext
-    # scratch [cap..) — handshake records must decrypt into a max-size buffer
-    # (a large NewSessionTicket would trip TLS_ERR_BUFFER_FULL against a small
-    # caller `maxlen` and consume the AEAD sequence, wedging the connection).
-    var inbuf = _tn_alloc(ctx, cap + TLS_RECORD_MAX_PLAINTEXT);
+    # One allocation holds the ciphertext [0..cap) AND a decrypt scratch [cap..)
+    # for one record's TLSInnerPlaintext (`content ‖ inner_content_type ‖
+    # padding`, RFC 8446 §5.2). A MAX-size record decrypts to content(2^14) + the
+    # type byte = 2^14+1 — ABOVE TLS_RECORD_MAX_PLAINTEXT — and a padded record
+    # reaches the TLSCiphertext ceiling, so the scratch (and _tn_open_record's
+    # out_max) must be TLS_RECORD_MAX_CIPHERTEXT, not TLS_RECORD_MAX_PLAINTEXT.
+    var inbuf = _tn_alloc(ctx, cap + TLS_RECORD_MAX_CIPHERTEXT);
     if (inbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     var plain = inbuf + cap;
     var guard = 0;
@@ -698,16 +775,34 @@ fn tls_native_read(ctx, buf, maxlen): i64 {
         var rl = _tn_sock_read_record_skip_ccs(fd, inbuf, cap);
         if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
         var ict = 0;
-        var n = _tn_open_record(ctx, inbuf, rl, plain, TLS_RECORD_MAX_PLAINTEXT, &ict);
+        var n = _tn_open_record(ctx, inbuf, rl, plain, TLS_RECORD_MAX_CIPHERTEXT, &ict);
         if (n < 0) { return n; }
         if (ict == TLS_CT_APPLICATION_DATA) {
             # A 0-length application_data record is legal (RFC 8446 §5.1) and is
             # NOT end-of-stream — drain it and keep reading, so only a real
             # close_notify returns 0. Non-empty data is delivered to the caller.
             if (n > 0) {
-                if (n > maxlen) { return TLS_ERR_BUFFER_FULL; }
-                memcpy(buf, plain, n);
-                return n;
+                if (n <= maxlen) {
+                    memcpy(buf, plain, n);
+                    return n;
+                }
+                # Record longer than the caller's ask: the record is already
+                # decrypted and its AEAD sequence advanced, so stash the tail in
+                # the hold buffer (n <= TLS_RECORD_MAX_PLAINTEXT via the §5.4 guard
+                # in tls_native_record_open; maxlen >= 1, so rem <= 16383 fits the
+                # 16384-byte hold), then deliver the first `maxlen` bytes.
+                var hb = load64(ctx + TLS_CTX_OFF_READ_HOLD);
+                if (hb == 0) {
+                    hb = _tn_alloc(ctx, TLS_RECORD_MAX_PLAINTEXT);
+                    if (hb == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+                    store64(ctx + TLS_CTX_OFF_READ_HOLD, hb);
+                }
+                var rem = n - maxlen;
+                memcpy(hb, plain + maxlen, rem);
+                store64(ctx + TLS_CTX_OFF_READ_HOLD_LEN, rem);
+                store64(ctx + TLS_CTX_OFF_READ_HOLD_OFF, 0);
+                memcpy(buf, plain, maxlen);
+                return maxlen;
             }
         }
         if (ict == TLS_CT_ALERT) { return 0; }   # close_notify → EOF
