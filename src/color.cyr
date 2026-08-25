@@ -321,7 +321,7 @@ fn anuenue_passthrough(): i64 {
         }
         if (n == 0) { go = 0; continue; }
         ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n;
-        file_write(STDOUT, buf, n);
+        if (anuenue_write_all(buf, n) != 0) { return anuenue_write_failed(); }
     }
     return 0;
 }

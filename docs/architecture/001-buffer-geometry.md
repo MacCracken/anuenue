@@ -34,8 +34,16 @@ Worst case for one iteration:
 | LF | 1 | |
 | **Total** | **≤ 29** | fits in 32 |
 
-The longest escape actually emitted is truecolor: `\e[38;2;255;255;255m` = 19
-bytes, so the 24-byte allowance has slack too.
+The longest escape *actually* emitted is 17 bytes, not the 19 of a worst-case
+`\e[38;2;255;255;255m`. `hsv_rainbow` runs the cube edges at S=V=1, so one
+channel is always 0 and the widest form is `\e[38;2;255;254;0m`. Measured
+maxima across the 1 530-entry table: 16-colour **5**, 256 **11**, truecolor
+**17** — seven bytes of slack against the 24-byte allowance.
+
+*(Corrected at v1.3.3. An earlier draft of this note asserted 19 by arithmetic
+rather than measurement; the v1.3.3 sweep measured it. The bound still holds
+either way, but a note whose numbers are derived rather than observed is the
+kind this directory exists to replace.)*
 
 ## What breaks if you change one
 

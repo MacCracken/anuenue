@@ -87,6 +87,12 @@ var ANUENUE_FLUSH_RESERVE = 32;
 # 32-byte stride matches a cache line on the x86_64 hosts anuenue
 # targets — one entry fits in a single $L1 fill.
 var ANUENUE_ESC_TABLE_ENTRY_SIZE = 32;
+
+# Which ANUENUE_COLOR_MODE the current _PHASE_ESC_TABLE was built for.
+# The table's contents are mode-specific, so this is the cache key —
+# see the E-02 note in _phase_esc_init. Initialised to a value no real
+# mode uses so the first call always builds.
+var _PHASE_ESC_MODE = (0 - 1);
 var _PHASE_ESC_TABLE = 0;
 
 # Build the table. Idempotent: returns 0 if the table is already
@@ -106,9 +112,35 @@ var _PHASE_ESC_TABLE = 0;
 # (8-byte length + payload) stays the same shape; only the payload
 # contents differ between modes.
 fn _phase_esc_init(): i64 {
-    if (_PHASE_ESC_TABLE != 0) { return 0; }
-    _PHASE_ESC_TABLE = alloc(ANUENUE_PHASE_MOD * ANUENUE_ESC_TABLE_ENTRY_SIZE);
-    if (_PHASE_ESC_TABLE == 0) { return 0 - 1; }
+    # E-02 (2026-08-25 P-1 sweep). The cache used to be keyed on "has a
+    # table been built" alone:
+    #
+    #     if (_PHASE_ESC_TABLE != 0) { return 0; }
+    #
+    # But the table's CONTENTS are mode-specific — truecolor, 256 and
+    # 16 produce different escapes for the same phase. So a second call
+    # after ANUENUE_COLOR_MODE changed returned the stale table and
+    # every subsequent character rendered in the previous mode, with
+    # nothing to indicate it.
+    #
+    # Not reachable in the shipped binary: main.cyr resolves the colour
+    # mode before dispatching, and nothing changes it afterwards. It is
+    # a trap for the next caller rather than a live bug — and it caught
+    # the audit's own probe, which had to zero _PHASE_ESC_TABLE by hand
+    # between modes to get correct measurements. A cache that needs
+    # callers to know its internals is the wrong shape.
+    #
+    # Keyed on the mode now: same mode stays idempotent (the hot-path
+    # property the M5 perf pass depends on), a changed mode rebuilds in
+    # place without reallocating.
+    if (_PHASE_ESC_TABLE != 0) {
+        if (_PHASE_ESC_MODE == ANUENUE_COLOR_MODE) { return 0; }
+    }
+    if (_PHASE_ESC_TABLE == 0) {
+        _PHASE_ESC_TABLE = alloc(ANUENUE_PHASE_MOD * ANUENUE_ESC_TABLE_ENTRY_SIZE);
+        if (_PHASE_ESC_TABLE == 0) { return 0 - 1; }
+    }
+    _PHASE_ESC_MODE = ANUENUE_COLOR_MODE;
     var rgb[24];
     var ebuf[32];
     var i = 0;
@@ -470,7 +502,7 @@ fn anuenue_filter(): i64 {
             # isn't lost; exit non-zero.
             if (pos > 0) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
             }
             return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
         }
@@ -492,14 +524,14 @@ fn anuenue_filter(): i64 {
                 saw_any = 1;
                 if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                     pos = tty_sgr_reset_buf(line_buf, pos);
-                    file_write(STDOUT, line_buf, pos);
+                    if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                     pos = 0;
                 }
                 ci = ci + 1;
             }
             if (pos > 0) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
             }
             go = 0;
@@ -529,7 +561,7 @@ fn anuenue_filter(): i64 {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 store8(line_buf + pos, 10);
                 pos = pos + 1;
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
                 saw_any = 1;
                 prev_unpaired_ri = 0;
@@ -563,7 +595,7 @@ fn anuenue_filter(): i64 {
                 if (ascii_extending == 0) { prev_unpaired_ri = 0; }
                 if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                     pos = tty_sgr_reset_buf(line_buf, pos);
-                    file_write(STDOUT, line_buf, pos);
+                    if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                     pos = 0;
                 }
                 i = i + 1;
@@ -637,7 +669,7 @@ fn anuenue_filter(): i64 {
             # wouldn't fit (escape + 4-byte sequence + reset).
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
             }
 
@@ -699,7 +731,7 @@ fn anuenue_render_bytes(src, len): i64 {
             pos = tty_sgr_reset_buf(line_buf, pos);
             store8(line_buf + pos, 10);
             pos = pos + 1;
-            file_write(STDOUT, line_buf, pos);
+            if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
             pos = 0;
             saw_any = 1;
             prev_unpaired_ri = 0;
@@ -721,7 +753,7 @@ fn anuenue_render_bytes(src, len): i64 {
             if (ascii_extending == 0) { prev_unpaired_ri = 0; }
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
             }
             i = i + 1;
@@ -739,7 +771,7 @@ fn anuenue_render_bytes(src, len): i64 {
             prev_unpaired_ri = 0;
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
             }
             i = i + 1;
@@ -777,7 +809,7 @@ fn anuenue_render_bytes(src, len): i64 {
         }
         if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
             pos = tty_sgr_reset_buf(line_buf, pos);
-            file_write(STDOUT, line_buf, pos);
+            if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
             pos = 0;
         }
         i = i + seqlen;
@@ -785,7 +817,7 @@ fn anuenue_render_bytes(src, len): i64 {
 
     if (pos > 0) {                          # final reset + flush
         pos = tty_sgr_reset_buf(line_buf, pos);
-        file_write(STDOUT, line_buf, pos);
+        if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
         pos = 0;
     }
     return 0;

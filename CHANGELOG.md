@@ -4,6 +4,118 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-08-26 (P-1 audit sweep)
+
+Full P(-1) sweep. **2 findings — 1 HIGH, 1 INFO — both fixed in-cut, zero HIGH+
+open.** Report: [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md).
+
+**The HIGH is the first since the v0.8.0 M8 audit, and it had shipped in every
+release since v0.2.0.** Three prior audits missed it because all three worked
+the *input* side — malformed UTF-8, chunk boundaries, argv extremes, signals,
+terminal detection. This sweep opened by asking what no audit had ever looked at,
+and the answer was the **output** side: nobody had asked what happens when the
+write fails.
+
+### Fixed
+
+- **E-01 (HIGH) — every stdout write was unchecked; a failed write lost the
+  stream and reported success.** `lib/io.cyr`'s `file_write` is a bare
+  `sys_write` with no short-write loop, and anuenue discarded its return at all
+  **17** call sites plus two raw `syscall(1, 1, ...)` writes.
+
+  Two independent, measured consequences, both **exiting 0**:
+
+  | Scenario | Output lost | Exit code | `cat` |
+  |---|---:|---:|---|
+  | `anuenue < in > /dev/full` (ENOSPC) | **100%** | **0** | exits 1, says why |
+  | `anuenue < in >` non-blocking pipe, slow reader | **99.3%** | **0** | writes everything |
+
+  The second is the sharper one and is not contrived: any consumer that sets
+  `O_NONBLOCK` on the pipe it hands anuenue gets a partial write on the first
+  flush that fills the buffer, and anuenue drops the remainder and moves on.
+  Measured 1 000 000 bytes in, **7 290 out**, exit 0.
+
+  anuenue's entire contract is byte preservation — colour the stream without
+  altering it. Losing the stream while reporting success is the worst available
+  failure mode for that contract, it is silent on every descriptor, and the
+  triggers are ordinary (a full filesystem, a quota, a non-blocking consumer)
+  rather than adversarial.
+
+  Fixed with `anuenue_write_all` in `src/observe.cyr` — loops until every byte
+  lands, returns `-1` on failure, and every call site now exits 1 with
+  `anuenue: i/o error: write to stdout failed`. EINTR retries immediately;
+  EAGAIN sleeps 1 ms and retries, with **no attempt cap on purpose**: a consumer
+  that is alive but slow deserves backpressure, and one that is *gone* yields
+  EPIPE, which exits.
+
+  **`anuenue | head -1` still behaves as SIGPIPE** (exit 141, clean stderr) —
+  the default disposition kills the process before `write` returns, so the new
+  error path is never reached. Asserted, so a future change to signal handling
+  cannot quietly turn a normal truncated pipeline into an error.
+
+- **E-02 (INFO) — the escape-table cache was keyed on "built", not on which mode
+  built it.** The 1 530-entry phase→escape table is mode-specific, but the guard
+  was `if (_PHASE_ESC_TABLE != 0) { return 0; }`, so a call after
+  `ANUENUE_COLOR_MODE` changed returned the stale table and every character
+  rendered in the previous mode.
+
+  Not reachable in the shipped binary — `main.cyr` resolves the mode before
+  dispatching. It is recorded as a finding rather than a note because **it caught
+  this audit's own probe**: measuring per-mode escape lengths required zeroing
+  the table by hand, and the first run reported identical lengths for all three
+  modes. A cache that requires callers to know its internals is the wrong shape,
+  and the next caller will not have an audit watching. Now keyed on the mode;
+  same-mode calls stay idempotent, a changed mode rebuilds in place.
+
+- **`docs/architecture/001` asserted a byte count it had not measured.** It
+  claimed the longest emitted escape is 19 bytes
+  (`\e[38;2;255;255;255m`). That is the worst case for the *format*, not for
+  anuenue: `hsv_rainbow` runs the cube edges at S=V=1, so one channel is always
+  0 and the widest real form is `\e[38;2;255;254;0m` = **17 bytes**. Measured
+  maxima: 16-colour **5**, 256 **11**, truecolor **17**, against a 24-byte
+  budget. The bound held either way, but a note in `docs/architecture/` whose
+  numbers are derived rather than observed is the kind that directory exists to
+  replace.
+
+### Added
+
+- **`scripts/robustness-check.sh` gate 5** — every colour mode, the animation
+  path and the positional-text path each write to `/dev/full` and must exit 1
+  with the message; plus the EPIPE case.
+- **16 new unit assertions** (364 → 380) over the mode-keyed cache and the
+  escape-length budget. The budget check scans all 1 530 entries per mode but
+  asserts on the **aggregate** min/max — a per-entry loop would have added ~9 000
+  assertions and made the suite total incomparable across cuts without covering
+  anything more.
+
+### Performance
+
+The fix touches the hot path: 17 write sites gained a comparison and a call.
+Measured **back-to-back in one session** against a pre-fix binary rebuilt from
+the v1.3.2 tree, `RUNS=11` each:
+
+| Corpus | v1.3.2 | v1.3.3 | Δ |
+|---|---:|---:|---:|
+| ascii (no LF) | 46.47 ns/byte | 46.46 ns/byte | −0.0% |
+| ascii (w/ LFs) | 50.54 ns/byte | 50.91 ns/byte | +0.7% |
+| utf8 mixed | 41.52 ns/byte | 41.82 ns/byte | +0.7% |
+
+A repeated single-corpus pass separates the cost from host drift: +0.1% and
++0.6%. So the honest figure is **a real but small cost, around +0.5%** —
+consistently positive rather than lost in noise, which is what a per-*flush*
+comparison should cost. Well inside the 60 ns/byte M5 acceptance, and the trade
+is not close: half a percent of throughput against a defect that silently
+discarded 99.3% of the stream and exited 0.
+
+> An earlier draft of the audit reported −0.5%, from a baseline taken at the
+> start of the sweep and a post-fix run half an hour later. Those were not
+> comparable — a third run of the same binary read 47.13 ns/byte. Only the
+> back-to-back pairing measures the change rather than the machine.
+
+All six goldens byte-identical. `hsv_rainbow` 8 ns, `tty_fg_rgb_buf` 51 ns
+unchanged. Binary 814 448 → **814 480 B** (+32).
+
+
 ## [1.3.2] — 2026-08-25 (v1.3.x closeout)
 
 **Closes the v1.3.x arc.** No remaining roadmap item was actionable — everything

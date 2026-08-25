@@ -303,7 +303,7 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
             pos = tty_sgr_reset_buf(line_buf, pos);
             store8(line_buf + pos, 10);
             pos = pos + 1;
-            file_write(STDOUT, line_buf, pos);
+            if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
             pos = 0;
             phase = phase + ANUENUE_PHASE_STEP;
             i = i + 1;
@@ -330,7 +330,7 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
         while (k < clen) {
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
-                file_write(STDOUT, line_buf, pos);
+                if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
                 pos = 0;
                 pos = _emit_phase_esc(line_buf, pos, phase);
             }
@@ -341,7 +341,7 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
 
         if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
             pos = tty_sgr_reset_buf(line_buf, pos);
-            file_write(STDOUT, line_buf, pos);
+            if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
             pos = 0;
         }
 
@@ -358,7 +358,7 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
         pos = pos + 1;
     }
     if (pos > 0) {
-        file_write(STDOUT, line_buf, pos);
+        if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
     }
     return 0;
 }
@@ -601,7 +601,15 @@ fn anuenue_animate(duration_secs, speed): i64 {
         if (first_frame == 0) { tty_cursor_up(rows_to_climb); }
         first_frame = 0;
 
-        _render_frame(in_buf, ctab, n_clusters, phase_base, line_buf, ends_lf);
+        # E-01: a failed stdout write ends the animation, but the
+        # cursor has to come back first or we leave the terminal
+        # cursorless — the exact regression the M4 acceptance guards
+        # against, reached by a different route than SIGINT.
+        if (_render_frame(in_buf, ctab, n_clusters, phase_base, line_buf, ends_lf) != 0) {
+            tty_sgr_reset();
+            tty_cursor_show();
+            return anuenue_write_failed();
+        }
 
         if (_frame_wait(sigfd, deadline_ns) == 1) { go = 0; continue; }
 
@@ -616,7 +624,7 @@ fn anuenue_animate(duration_secs, speed): i64 {
     tty_sgr_reset();
     tty_cursor_show();
     if (ends_lf == 0) {
-        syscall(1, 1, "\n", 1);
+        if (anuenue_write_all("\n", 1) != 0) { return anuenue_write_failed(); }
     }
     return 0;
 }

@@ -371,6 +371,40 @@ fewer frames to render:
 > `docs/benchmarks.md` had no v1.3.x row until the v1.3.2 closeout. See the
 > [v1.3.x audit delta](audit/2026-08-25-v13x-delta.md).
 
+## v1.3.3 — P(-1) sweep (E-01 checked writes)
+
+The E-01 fix routes all 17 stdout writes through `anuenue_write_all`, so the
+hot path gained a comparison and a call per **flush** (once per line or per
+32 KB — not per byte). Measured back-to-back in one session against a pre-fix
+binary rebuilt from the v1.3.2 tree, `RUNS=11` each:
+
+| Corpus           | v1.3.2 | v1.3.3 | Δ |
+|------------------|-------:|-------:|--:|
+| ascii (no LF)    | 46.47  | **46.46** | −0.0% |
+| ascii (w/ LFs)   | 50.54  | **50.91** | +0.7% |
+| utf8 mixed       | 41.52  | **41.82** | +0.7% |
+
+A repeated single-corpus pass, to separate the cost from host drift:
+
+| Pass | v1.3.2 | v1.3.3 | Δ |
+|---|---:|---:|---:|
+| 1 | 46.74 | 46.80 | +0.1% |
+| 2 | 46.63 | 46.91 | +0.6% |
+
+**A real but small cost, around +0.5%** — consistently positive across passes
+rather than lost in noise. Well inside the 60 ns/byte M5 acceptance, and not a
+close trade: half a percent of throughput against a defect that silently
+discarded 99.3% of the stream and exited 0.
+
+- **1.3.3 binary**: **814 480 bytes**, +32 B over v1.3.2.
+
+> **Method note.** An earlier draft reported −0.5%, from a baseline taken at the
+> start of the sweep and a post-fix run half an hour later. Those two numbers
+> were not comparable — a third run of the *same* binary read 47.13 ns/byte.
+> Only a back-to-back pairing measures the change rather than the machine. This
+> is the same discipline the v1.2.2 and v1.3.2 cuts adopted, applied here after
+> nearly getting it wrong.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -391,7 +425,8 @@ fewer frames to render:
 | v1.2.2  | 46.22‡              | 8§               | 50§                 | 809 984      | P(-1) audit sweep; size cap removed |
 | v1.3.0  | —                   | —                | —                   | 814 448      | Animation slot: `-i`, `_frame_wait`, B-01/B-02/B-03. Perf not measured at the cut — see the process note above |
 | v1.3.1  | —                   | —                | —                   | 814 448      | PTY harness. Tests and docs only, no `src/` change |
-| **v1.3.2** | **46.61**‡       | 9§               | 50§                 | **814 448**  | **v1.3.x closeout: perf + audit delta discharged** |
+| v1.3.2  | 46.47‡              | 9§               | 50§                 | 814 448      | v1.3.x closeout: perf + audit delta discharged |
+| **v1.3.3** | **46.46**‡       | 8§               | 51§                 | **814 480**  | **P(-1) sweep: E-01 checked writes (1 HIGH fixed)** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.

@@ -29,6 +29,8 @@
 #
 #   4. One process-level regression per audit finding
 #      (A-02 / A-03 / A-04 / A-05 / A-09).
+#   5. Stdout write failures are reported rather than swallowed
+#      (E-01) — and EPIPE still behaves as SIGPIPE.
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -230,6 +232,67 @@ if grep -q 'truncated' "$WORK/t.err"; then
     ok "A-05: over-cap animation input warns that text was dropped"
 else
     bad "A-05: 200 KB animation input was truncated silently"
+fi
+
+# --- gate 5: the write path must not lose bytes in silence ---------
+#
+# E-01 (2026-08-25 P-1 sweep). `file_write` is a bare `sys_write` with
+# no short-write loop, and every stdout write discarded its return.
+# Measured before the fix: `> /dev/full` lost 100% of the output and
+# `> <nonblocking pipe>` lost 99.3%, both with exit 0. For a filter
+# whose contract is byte preservation, that is the worst available
+# failure mode.
+echo "[robustness] stdout write failures are reported, not swallowed"
+
+if [ ! -c /dev/full ]; then
+    echo "  SKIP: /dev/full unavailable — cannot force a write failure"
+else
+    D=0
+    for m in "--color=24bit" "--color=256" "--color=16" "--color=none"; do
+        set +e
+        "$BIN" "$m" < "$WORK/mal/all-256.in" > /dev/full 2>"$WORK/full.err"
+        rc=$?
+        set -e
+        if [ "$rc" -ne 1 ]; then
+            bad "write to /dev/full with $m exited $rc, expected 1"; D=$((D + 1))
+        elif ! grep -q 'write to stdout failed' "$WORK/full.err"; then
+            bad "write to /dev/full with $m exited 1 but said nothing"; D=$((D + 1))
+        fi
+    done
+    [ "$D" -eq 0 ] && ok "every colour mode reports a failed write and exits 1"
+
+    # The animation and positional-text paths write through different
+    # call sites and were equally silent.
+    set +e
+    timeout 20 "$BIN" -a -d 1 --color=24bit < "$WORK/mal/nul-embedded.in" > /dev/full 2>"$WORK/f2.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 1 ] && grep -q 'write to stdout failed' "$WORK/f2.err"; then
+        ok "animation reports a failed write and exits 1"
+    else
+        bad "animation to /dev/full: rc=$rc, message missing"
+    fi
+
+    set +e
+    "$BIN" --color=24bit AGNOS > /dev/full 2>"$WORK/f3.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 1 ] && grep -q 'write to stdout failed' "$WORK/f3.err"; then
+        ok "positional-text mode reports a failed write and exits 1"
+    else
+        bad "positional text to /dev/full: rc=$rc, message missing"
+    fi
+fi
+
+# EPIPE must remain SIGPIPE — the fix must not turn a normal
+# `anuenue | head -1` into a confusing error.
+set +e
+"$BIN" --color=24bit < "$WORK/mal/all-256.in" 2>"$WORK/pipe.err" | head -c 1 >/dev/null
+set -e
+if [ -s "$WORK/pipe.err" ]; then
+    bad "a truncated downstream produced stderr output: $(head -1 "$WORK/pipe.err")"
+else
+    ok "a truncated downstream (head) stays silent — SIGPIPE, not an error path"
 fi
 
 echo

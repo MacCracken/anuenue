@@ -38,7 +38,9 @@ include "src/version_str.cyr"
 # scripts/version-bump.sh regenerates it on every bump; ci.yml's
 # "Version consistency" step asserts the drift gate.
 fn print_version(): i64 {
-    syscall(1, 1, _VERSION_STR_ANUENUE, _VERSION_LEN_ANUENUE);
+    if (anuenue_write_all(_VERSION_STR_ANUENUE, _VERSION_LEN_ANUENUE) != 0) {
+        return anuenue_write_failed();
+    }
     return 0;
 }
 
@@ -123,7 +125,7 @@ fn anuenue_text_args(fs, npos): i64 {
     pos = pos + 1;
 
     if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_MONO) {
-        file_write(STDOUT, buf, pos);
+        if (anuenue_write_all(buf, pos) != 0) { return anuenue_write_failed(); }
         return ANUENUE_EXIT_OK;
     }
     return anuenue_render_bytes(buf, pos);

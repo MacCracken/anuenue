@@ -1027,6 +1027,63 @@ fn main(): i64 {
     # block; if this ever became 0 the frame loop would stall on read.
     assert_eq(ANUENUE_SFD_NONBLOCK, 2048, "SFD_NONBLOCK = O_NONBLOCK = 2048 on x86_64/aarch64 Linux");
 
+    # ---- v1.3.3 — P-1 sweep regressions ---------------------------
+
+    test_group("v1.3.3 E-02 — the escape cache is keyed on colour mode");
+    # The table's CONTENTS are mode-specific, so a cache keyed only on
+    # "has a table been built" hands back stale escapes after a mode
+    # change. Rebuild per mode and assert the escape lengths differ —
+    # measured maxima are 16-colour 5, 256 11, truecolor 17.
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_16;
+    assert_eq(_phase_esc_init(), 0, "init succeeds for 16-colour");
+    var esc_16 = load64(_PHASE_ESC_TABLE + 100 * ANUENUE_ESC_TABLE_ENTRY_SIZE);
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_256;
+    assert_eq(_phase_esc_init(), 0, "init succeeds after switching to 256");
+    var esc_256 = load64(_PHASE_ESC_TABLE + 100 * ANUENUE_ESC_TABLE_ENTRY_SIZE);
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
+    assert_eq(_phase_esc_init(), 0, "init succeeds after switching to truecolor");
+    var esc_true = load64(_PHASE_ESC_TABLE + 100 * ANUENUE_ESC_TABLE_ENTRY_SIZE);
+    # The regression: before the fix all three read identically, because
+    # the second and third calls returned the first mode's table.
+    assert_eq(esc_16 == esc_256, 0, "16-colour and 256 escapes differ in length");
+    assert_eq(esc_256 == esc_true, 0, "256 and truecolor escapes differ in length");
+    # Same mode twice must still be idempotent — that is the hot-path
+    # property the M5 perf pass depends on.
+    var tbl_before = _PHASE_ESC_TABLE;
+    assert_eq(_phase_esc_init(), 0, "re-init in the same mode succeeds");
+    assert_eq(_PHASE_ESC_TABLE, tbl_before, "re-init in the same mode does not reallocate");
+
+    test_group("v1.3.3 E-02 — every escape fits its table entry");
+    # The payload region is ENTRY_SIZE - 8 (the length prefix). An
+    # escape longer than that would run into the next entry.
+    var esc_budget = ANUENUE_ESC_TABLE_ENTRY_SIZE - 8;
+    var esc_mode = ANUENUE_COLOR_16;
+    while (esc_mode <= ANUENUE_COLOR_TRUE) {
+        ANUENUE_COLOR_MODE = esc_mode;
+        _phase_esc_init();
+        # Scan every one of the 1 530 entries but assert on the
+        # AGGREGATE — asserting per entry would add ~9 000 assertions
+        # per run and make the suite total incomparable across cuts
+        # without covering anything the min/max does not.
+        var esc_i = 0;
+        var esc_max = 0;
+        var esc_min = ANUENUE_ESC_TABLE_ENTRY_SIZE;
+        while (esc_i < ANUENUE_PHASE_MOD) {
+            var esc_e = load64(_PHASE_ESC_TABLE + esc_i * ANUENUE_ESC_TABLE_ENTRY_SIZE);
+            if (esc_e > esc_max) { esc_max = esc_e; }
+            if (esc_e < esc_min) { esc_min = esc_e; }
+            esc_i = esc_i + 1;
+        }
+        assert_eq(esc_min >= 0, 1, "no entry has a negative escape length");
+        assert_eq(esc_max <= esc_budget, 1, "the longest escape fits the entry payload");
+        # Non-empty for every real colour mode, or the rainbow is blank.
+        assert_eq(esc_min > 0, 1, "every phase in this mode produces a non-empty escape");
+        esc_mode = esc_mode + 1;
+    }
+    # Restore the module default so later groups are unaffected.
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
+    _phase_esc_init();
+
     return assert_summary();
 }
 

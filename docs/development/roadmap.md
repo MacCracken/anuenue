@@ -26,10 +26,10 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.3.2.** The v1.x public API contract — exit codes, output shape, capability
+**v1.3.3.** The v1.x public API contract — exit codes, output shape, capability
 surface — has been frozen since GA and is unbroken; the flag set has only ever
 grown. Two P(-1) audits have run with zero HIGH+ findings open, and the v1.3.0
-animation slot closed three further defects the audits had not reached. Three
+animation slot closed three further defects the audits had not reached. Four
 audits have run in total, all closed with zero HIGH+ open, and **no
 accepted-but-unmeasured findings remain on the books** — the last two were
 re-measured at v1.3.0 and turned out to be a real defect (B-01).
@@ -134,6 +134,40 @@ structurally; recorded as **unproven**, since no public API can reach it.
 identically to one that passed. v1.3.0 was marked complete with its perf gate
 unrun. That is the same failure the v1.2.2 sweep found in the 2026-05-22 audit's
 accepted INFO items — a claim carried forward as if it were a measurement.
+
+---
+
+## v1.3.3 — P(-1) audit sweep
+
+> **Status: complete.**
+
+Full sweep, [`2026-08-26-audit.md`](../audit/2026-08-26-audit.md). **1 HIGH +
+1 INFO, both fixed, zero HIGH+ open.**
+
+**E-01 (HIGH)** — every stdout write was unchecked. `> /dev/full` lost 100% of
+the output at exit 0; a non-blocking stdout with a slow reader lost 99.3%.
+Shipped in every release since v0.2.0.
+
+**The method note is the durable output of this cut.** Three prior audits missed
+E-01 because all three worked the *input* side — malformed UTF-8, chunk
+boundaries, argv extremes, signals, terminal detection. This sweep opened by
+asking what no audit had ever examined, and the answer was the output side.
+**Pick the audit surface by asking what has never been looked at, not by
+re-running what worked last time.**
+
+Unaudited surfaces remaining, in rough order of value — these are the candidates
+for the next sweep, not scheduled work:
+
+1. **Allocation failure as a reachable state.** A-01 (v1.2.2), D-01 (v1.3.2) and
+   E-01's zero-byte branch are all "unproven guard" findings for the same
+   reason: nothing can drive `alloc` to return 0 from outside. A probe that
+   exhausts the bump allocator would convert several defence-in-depth guards
+   into tested ones. `tests/probes/` is the pattern.
+2. **stdin as a failure surface.** The read side is audited exhaustively for
+   *content* and only via a closed descriptor for *failure*. Partial reads,
+   `EINTR` mid-read, and a stdin that blocks forever are untested.
+3. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
+   never resizes it; `rows_to_climb` assumes the block fits on screen.
 
 ---
 

@@ -104,6 +104,71 @@ fn _eprint(s): i64 {
     return 0;
 }
 
+# ---- anuenue_write_all ---------------------------------------------
+#
+# Write `len` bytes from `buf` to stdout, completely. Returns 0 on
+# success, -1 if the stream could not be written.
+#
+# E-01 (2026-08-25 P-1 sweep). This exists because `file_write` is a
+# bare `sys_write` — it does not loop on a partial write — and every
+# one of anuenue's seventeen stdout writes discarded its return value.
+# Two independent, measured consequences, both of which reported
+# SUCCESS:
+#
+#   anuenue < in > /dev/full          -> 100%  of output lost, exit 0
+#   anuenue < in > <nonblocking pipe> ->  99.3% of output lost, exit 0
+#
+# For a filter whose entire contract is "colour the stream without
+# altering it", losing the stream and exiting 0 is the worst available
+# failure mode. `cat > /dev/full` exits 1 and says why; anuenue is the
+# AGNOS-side lolcat and has to hold the same line.
+#
+# Lives in observe.cyr because src/color.cyr's passthrough needs it and
+# color.cyr is included before filter.cyr — observe.cyr is the only
+# module every other one can reach (architecture note 004). It also
+# sits naturally beside `_eprint` and `anuenue_fail`: this file owns
+# the I/O that can fail and must be reported.
+#
+# Retry policy — the two transient errnos are retried, everything else
+# is fatal:
+#
+#   EINTR  (-4)  a signal interrupted the write before any byte moved.
+#                Retry immediately.
+#   EAGAIN (-11) stdout is O_NONBLOCK and the consumer has not drained
+#                it. anuenue does not own that flag — a caller set it —
+#                and the correct response to backpressure is to wait,
+#                exactly as a blocking write would. Sleep 1 ms so the
+#                retry is not a spin. There is no attempt cap on
+#                purpose: a consumer that is alive but slow deserves
+#                backpressure, and a consumer that is GONE yields
+#                EPIPE, not EAGAIN, which exits below.
+fn anuenue_write_all(buf, len): i64 {
+    var off = 0;
+    while (off < len) {
+        var n = file_write(STDOUT, buf + off, len - off);
+        if (n > 0) {
+            off = off + n;
+            continue;
+        }
+        if (n == (0 - 4)) { continue; }          # EINTR — retry at once
+        if (n == (0 - 11)) {                      # EAGAIN — backpressure
+            sleep_ms(1);
+            continue;
+        }
+        # n == 0 for a non-zero length would mean no progress and no
+        # error; treat it as fatal rather than looping forever.
+        return 0 - 1;
+    }
+    return 0;
+}
+
+# Report a failed stdout write and return the process exit code.
+# Separate from anuenue_write_all so the hot path stays a bare
+# comparison at each call site and the message lives in one place.
+fn anuenue_write_failed(): i64 {
+    return anuenue_fail(STIK_ERR_IO, "write to stdout failed");
+}
+
 # ---- anuenue_log_parse --------------------------------------------
 #
 # Map a --log-level string to an AnuenueLogParse value. Exact match,

@@ -5,6 +5,47 @@
 
 ## Version
 
+**1.3.3** — cut 2026-08-26. **P(-1) audit sweep.** 2 findings —
+**1 HIGH**, 1 INFO — both fixed in-cut, zero HIGH+ open.
+[`docs/audit/2026-08-26-audit.md`](../audit/2026-08-26-audit.md).
+
+**E-01 (HIGH)** — every stdout write was unchecked. `file_write` is a
+bare `sys_write` with no short-write loop, and anuenue discarded its
+return at all 17 call sites plus two raw syscalls. Measured:
+`> /dev/full` lost **100%** of the output at exit 0; a non-blocking
+stdout with a slow reader lost **99.3%** (1 000 000 bytes in, 7 290
+out) at exit 0. For a filter whose contract is byte preservation, that
+is the worst available failure mode — silent, with a success code.
+**Shipped in every release since v0.2.0.** Fixed with
+`anuenue_write_all`: loops until every byte lands, EINTR retries,
+EAGAIN sleeps 1 ms and retries (no attempt cap — a live-but-slow
+consumer deserves backpressure, a gone one yields EPIPE), everything
+else exits 1 with a named error. `anuenue | head -1` still behaves as
+SIGPIPE, asserted.
+
+**E-02 (INFO)** — the escape-table cache was keyed on "built" rather
+than on which mode built it, so a mode change silently returned stale
+escapes. Unreachable in the shipped binary, but it caught this audit's
+own probe. Now mode-keyed.
+
+**Why three audits missed the HIGH:** all three worked the *input*
+side. This sweep opened by asking what no audit had ever examined, and
+the answer was the output side. Recorded as method in the report —
+**pick the surface by asking what has never been looked at**, not by
+re-running what worked last time.
+
+Also corrected `docs/architecture/001`, which asserted a 19-byte
+maximum escape by arithmetic. Measured maxima are 16-colour **5**,
+256 **11**, truecolor **17** — `hsv_rainbow` runs the cube edges at
+S=V=1 so one channel is always 0.
+
+*Verification:* **380/380** unit assertions (was 364), 6 fuzz
+harnesses, six goldens byte-identical, all seven gate scripts green.
+Perf measured back-to-back against a rebuilt v1.3.2 binary: a real but
+small **+0.5%** cost from the per-flush check — well inside the
+60 ns/byte cap, and not a close trade against silent 99.3% data loss.
+Binary 814 448 → **814 480 B**.
+
 **1.3.2** — cut 2026-08-25. **v1.3.x closeout.**
 
 No remaining roadmap item was actionable, so this cut discharged what
@@ -558,9 +599,9 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.3.2)**: **814 448 bytes** (~795 KB) — unchanged across the whole
-  v1.3.x arc since v1.3.0: v1.3.1 was tests and docs, v1.3.2 is one guard line.
-  Tracked every release; **not capped** — see the policy note.
+- **Size (1.3.3)**: **814 480 bytes** (~795 KB), +32 B over v1.3.2 — the
+  checked-write wrapper. Tracked every release; **not capped** — see the policy
+  note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -589,7 +630,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests
