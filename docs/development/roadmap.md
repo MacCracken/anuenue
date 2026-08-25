@@ -26,7 +26,7 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.3.3.** The v1.x public API contract — exit codes, output shape, capability
+**v1.3.4.** The v1.x public API contract — exit codes, output shape, capability
 surface — has been frozen since GA and is unbroken; the flag set has only ever
 grown. Two P(-1) audits have run with zero HIGH+ findings open, and the v1.3.0
 animation slot closed three further defects the audits had not reached. Four
@@ -158,16 +158,40 @@ re-running what worked last time.**
 Unaudited surfaces remaining, in rough order of value — these are the candidates
 for the next sweep, not scheduled work:
 
-1. **Allocation failure as a reachable state.** A-01 (v1.2.2), D-01 (v1.3.2) and
-   E-01's zero-byte branch are all "unproven guard" findings for the same
-   reason: nothing can drive `alloc` to return 0 from outside. A probe that
-   exhausts the bump allocator would convert several defence-in-depth guards
-   into tested ones. `tests/probes/` is the pattern.
+1. ~~**Allocation failure as a reachable state.**~~ **Done at v1.3.4** — see
+   above. Note what it did *not* cover: `D-01`'s zero-tick guard and `E-01`'s
+   zero-byte-write branch remain unproven, because neither is an allocation and
+   neither is reachable from outside. They need fault injection at a different
+   layer, not heap pressure.
 2. **stdin as a failure surface.** The read side is audited exhaustively for
    *content* and only via a closed descriptor for *failure*. Partial reads,
-   `EINTR` mid-read, and a stdin that blocks forever are untested.
+   `EINTR` mid-read, and a stdin that blocks forever are untested. Now the
+   highest-value unexamined surface — and the symmetric counterpart to E-01,
+   which found the same class of gap on the write side.
 3. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
    never resizes it; `rows_to_climb` assumes the block fits on screen.
+
+---
+
+## v1.3.4 — allocation-failure probe
+
+> **Status: complete.**
+
+The item the v1.3.3 sweep ranked first among unaudited surfaces. Three audits in
+a row had recorded guards they could not test — A-01 (v1.2.2), E-01 (v1.3.3),
+and the eight other guarded `alloc` call sites — because nothing could drive
+`alloc` to return 0 from outside the process.
+
+`tests/probes/allocfail-probe.cyr` + `scripts/allocfail-check.sh`: 15 checks
+against a genuinely exhausted heap under `prlimit --as=400MiB`, one chunk's
+headroom over `lib/alloc.cyr`'s 256 MiB `_LINUX_CHUNK`. CI-wired, skip-clean
+without `prlimit(1)`.
+
+**Mutation-proven, and more sharply than usual**: deleting either guard makes
+the probe **segfault**, not merely fail an assertion. The guards are the only
+thing between a starved process and a null-pointer write.
+
+Test infrastructure only — no source change, binary unchanged.
 
 ---
 

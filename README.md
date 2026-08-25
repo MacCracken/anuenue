@@ -66,7 +66,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.3.3
+### Quality bar at v1.3.4
 
 - **380** unit assertions across 51 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
@@ -79,8 +79,10 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 - **1,450,672** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open — four audits, latest
   [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md)
-- **14** PTY checks + **12** signal/pacing checks (`scripts/pty-check.sh`,
-  `scripts/signal-check.sh`)
+- **14** PTY checks + **12** signal/pacing checks + **15** allocation-failure
+  checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
+  `scripts/allocfail-check.sh` — the last runs every guarded `alloc` site under
+  a genuinely exhausted heap)
 - **Binary** tracked every release, **not capped** — the first-party dep surface
   sets the floor, and `CYRIUS_DCE=1` no longer removes anything on 6.5.x. See
   [`state.md` § Binary](docs/development/state.md#binary)

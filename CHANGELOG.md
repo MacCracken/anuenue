@@ -4,6 +4,78 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.4] — 2026-08-26 (allocation-failure probe)
+
+Closes the standing **"unproven guard"** gap — the item the v1.3.3 sweep ranked
+first among unaudited surfaces.
+
+Three audits in a row recorded findings they could not test:
+
+| Finding | Guard | Status before this cut |
+|---|---|---|
+| A-01 (v1.2.2) | `_cp_ext_init`'s `alloc` check | correct by inspection, tested by nothing |
+| E-01 (v1.3.3) | `anuenue_fail`'s own `str_new` fallback | same |
+| — | the other eight guarded `alloc` call sites | same |
+
+All for one reason: **nothing could drive `alloc` to return 0 from outside the
+process**, so deleting any of those guards left the whole suite green. A guard
+with no failing test behind it is a comment that happens to compile.
+
+### Added
+
+- **`tests/probes/allocfail-probe.cyr` + `scripts/allocfail-check.sh`** — 15
+  checks against a genuinely exhausted heap, wired into CI, skip-clean without
+  `prlimit(1)`.
+
+  **The mechanism.** `lib/alloc.cyr` bump-allocates over 256 MiB mmap'd chunks
+  and returns 0 only when a fresh chunk cannot be mapped. That needs two things
+  at once: the *first* chunk must succeed — `alloc_init` calls `exit(1)` if it
+  fails, taking the whole process before any guard runs — and the *second* must
+  fail. `prlimit --as=400MiB` is exactly that window: one chunk's headroom over
+  `_LINUX_CHUNK`. The probe then drains the first chunk, after which every
+  allocation in the process returns 0, however small.
+
+  **Mutation-proven, and the result is stronger than usual.** Deleting A-01's
+  guard or E-01's `str_new` fallback does not make the probe fail an assertion —
+  it makes the probe **segfault (exit 139)**. That is the correct signature: the
+  guards are the only thing between a starved process and a null-pointer write,
+  and the gate script names that case explicitly when it sees it.
+
+  What is now tested rather than asserted:
+
+  - `_cp_ext_init` reports failure instead of writing 42 words through null, and
+    `cp_is_extending` degrades to "not extending" — so **output stays
+    byte-correct** under memory pressure and only cluster grouping suffers,
+    which is the documented trade.
+  - `_phase_esc_init` reports failure and leaves its table null.
+  - `anuenue_fail` still returns the right exit code (1 / 2 by kind) with **no
+    heap at all**, falling back to a bare stderr write when it cannot build the
+    agnostik `Str`. A reporter that allocated could never report an OOM.
+  - All four driver entry points — filter, render-bytes, passthrough, animate —
+    fail at the allocation and return exit 1 rather than proceeding with a null
+    buffer.
+
+  **The probe may not allocate after the drain, even to report.** Its output
+  goes through `strlen` + `write`, and the first draft got this wrong in an
+  instructive way: it passed hardcoded byte counts to `syscall(1, 1, ...)` and
+  truncated its own section headers mid-word, because the banners contain
+  em-dashes and an em-dash is three UTF-8 bytes. That is precisely the mistake
+  `_eprint`'s docstring in `src/observe.cyr` was written to prevent. Fixed with
+  a local `pout` that uses `strlen`, and the reason is recorded in the probe.
+
+### Notes
+
+`tests/probes/` now holds two standalone probes, and they exist for the same
+structural reason: **anuenue's CLI cannot be driven under a resource limit at
+all**, because `args_init()` reads `/proc/self/cmdline` and a constrained
+process never parses a flag ([architecture note 006](docs/architecture/006-argv-costs-a-file-descriptor.md)).
+Anything that needs to test behaviour under `prlimit` needs a binary that
+hard-codes its inputs. That is now a pattern rather than a one-off.
+
+No source change: this cut is test infrastructure only. Binary unchanged at
+**814 480 B**.
+
+
 ## [1.3.3] — 2026-08-26 (P-1 audit sweep)
 
 Full P(-1) sweep. **2 findings — 1 HIGH, 1 INFO — both fixed in-cut, zero HIGH+

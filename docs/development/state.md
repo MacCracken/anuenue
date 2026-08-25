@@ -5,6 +5,43 @@
 
 ## Version
 
+**1.3.4** — cut 2026-08-26. **Allocation-failure probe.** Closes the
+standing "unproven guard" gap — the surface the v1.3.3 sweep ranked
+first.
+
+Three audits in a row recorded guards they could not test (A-01 at
+v1.2.2, E-01 at v1.3.3, plus eight other `alloc` call sites), all for
+one reason: nothing could drive `alloc` to return 0 from outside the
+process, so deleting any of them left the suite green.
+
+`tests/probes/allocfail-probe.cyr` + `scripts/allocfail-check.sh` — 15
+checks against a genuinely exhausted heap. The mechanism needs a narrow
+window: `lib/alloc.cyr` returns 0 only when a *fresh* 256 MiB chunk
+cannot be mapped, and `alloc_init` calls `exit(1)` if the *first* one
+fails — so `prlimit --as=400MiB` is exactly one chunk's headroom, first
+maps, second cannot. The probe drains the first chunk, after which
+every allocation returns 0 however small.
+
+**Mutation-proven more sharply than usual:** deleting A-01's guard or
+E-01's `str_new` fallback makes the probe **segfault (139)**, not fail
+an assertion. The gate script names that case explicitly.
+
+Now tested rather than asserted: `_cp_ext_init` reports failure instead
+of writing 42 words through null and `cp_is_extending` degrades so
+**output stays byte-correct**; `_phase_esc_init` reports failure;
+`anuenue_fail` returns the right exit code with **no heap at all**
+(a reporter that allocated could never report an OOM); and all four
+driver entry points fail at the allocation rather than proceeding with
+a null buffer.
+
+`tests/probes/` is now a pattern rather than a one-off — both probes
+exist because anuenue's CLI cannot be driven under a resource limit at
+all, since `args_init()` reads `/proc/self/cmdline`
+([architecture 006](../architecture/006-argv-costs-a-file-descriptor.md)).
+
+Test infrastructure only; no source change. Binary unchanged at
+**814 480 B**.
+
 **1.3.3** — cut 2026-08-26. **P(-1) audit sweep.** 2 findings —
 **1 HIGH**, 1 INFO — both fixed in-cut, zero HIGH+ open.
 [`docs/audit/2026-08-26-audit.md`](../audit/2026-08-26-audit.md).
@@ -599,9 +636,9 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.3.3)**: **814 480 bytes** (~795 KB), +32 B over v1.3.2 — the
-  checked-write wrapper. Tracked every release; **not capped** — see the policy
-  note.
+- **Size (1.3.4)**: **814 480 bytes** (~795 KB) — unchanged from v1.3.3;
+  v1.3.4 is test infrastructure only. Tracked every release; **not capped** —
+  see the policy note.
 - **Size policy (v1.2.2+): track, do not cap. The 512 KB cap is
   removed.**
 
@@ -630,7 +667,7 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
+- **Size history**: 1.3.4 = 814 480 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 onward measure the whole binary (see point 2 above) and are not directly comparable to the earlier rows.
 - **Output path**: `build/anuenue`
 
 ## Tests

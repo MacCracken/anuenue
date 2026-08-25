@@ -127,6 +127,21 @@ jobs:
         # exit. ~1.35M assertions per run on the current corpus.
         run: cyrius fuzz
 
+      - name: Allocation-failure gate (v1.3.4)
+        # Runs every guarded alloc call site under a genuinely exhausted
+        # heap, via `prlimit --as=400MiB` — one chunk's headroom over
+        # lib/alloc.cyr's 256 MiB _LINUX_CHUNK, so the first chunk maps
+        # (alloc_init would otherwise exit(1) and take the process with
+        # it) and the second cannot.
+        #
+        # Closes the "unproven guard" gap three audits recorded in a row
+        # (A-01 v1.2.2, E-01 v1.3.3, plus eight other call sites): all
+        # were correct by inspection and tested by nothing, because
+        # nothing could drive alloc to return 0. Mutation-proven —
+        # deleting either guard makes the probe SEGFAULT, not merely
+        # fail. Skips clean without prlimit(1).
+        run: sh scripts/allocfail-check.sh
+
       - name: PTY gate (v1.3.1)
         # Drives anuenue through a real pseudo-terminal via script(1).
         # Every other test runs it on a pipe, where colour detection

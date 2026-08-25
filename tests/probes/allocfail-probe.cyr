@@ -1,0 +1,160 @@
+# tests/probes/allocfail-probe.cyr — every allocation guard, under a
+# heap that really is exhausted (v1.3.4).
+#
+# WHY THIS EXISTS
+#
+# Three audits produced "unproven guard" findings for the same reason:
+# nothing could drive `alloc` to return 0 from outside the process, so
+# the guards were correct by inspection and untested by anything.
+#
+#   A-01 (v1.2.2) — `_cp_ext_init` wrote 42 words through an unchecked
+#                   alloc. Guarded; the guard had no test.
+#   E-01 (v1.3.3) — `anuenue_fail`'s own `str_new` can fail, so the
+#                   error reporter needed a fallback that does not
+#                   allocate. Also untested.
+#   Plus the eight other `alloc` call sites, each guarded on faith.
+#
+# This probe removes the faith.
+#
+# HOW THE HEAP IS EXHAUSTED
+#
+# `lib/alloc.cyr` is a bump allocator over 256 MiB mmap'd chunks.
+# `alloc(size)` mmaps a fresh chunk when the current one cannot fit the
+# request, and returns 0 only when that mmap fails. So exhaustion needs
+# two things at once:
+#
+#   1. the FIRST chunk must succeed, or `alloc_init` calls exit(1) and
+#      nothing downstream runs at all; and
+#   2. the SECOND chunk must fail.
+#
+# `prlimit --as=400MiB` gives exactly that: 256 MiB for the first chunk
+# fits, a second 256 MiB does not. The drain loop below then consumes
+# the first chunk until a request needs a new one — after which every
+# allocation in the process returns 0, however small.
+#
+# WHY A SEPARATE BINARY, AGAIN
+#
+# Same reason as sigmask-probe.cyr: the CLI cannot be driven under a
+# resource limit, because `args_init()` reads /proc/self/cmdline and a
+# starved process never parses a flag (architecture note 006). This
+# probe calls no args_init and reads no file.
+#
+# Nothing here may allocate after the drain — not even to report. The
+# checks print through `syscall(1, 1, ...)` and `fmt_int` (stack
+# scratch), and `_eprint` is strlen + write. That constraint is the
+# point: a reporter that allocates cannot report an allocation failure.
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+var _probe_fail = 0;
+
+# Write a NUL-terminated string to stdout using runtime strlen.
+#
+# Not a convenience: several of the banners below carry em-dashes, and
+# an em-dash is three UTF-8 bytes. The first draft of this probe passed
+# hardcoded byte counts to syscall(1, 1, ...) and truncated its own
+# section headers mid-word — the precise mistake `_eprint`'s docstring
+# in src/observe.cyr was written to prevent. strlen costs nothing here
+# and cannot allocate, which is the constraint this file runs under.
+fn pout(s): i64 {
+    syscall(1, 1, s, strlen(s));
+    return 0;
+}
+
+# Print one result. No allocation, by construction.
+fn chk(name, cond): i64 {
+    if (cond == 1) {
+        pout("  ok: ");
+    } else {
+        pout("  FAIL: ");
+        _probe_fail = _probe_fail + 1;
+    }
+    pout(name);
+    pout("\n");
+    return 0;
+}
+
+# Consume the first chunk until a request needs a chunk that cannot be
+# mapped. Returns the number of MiB absorbed, for the record.
+fn drain_heap(): i64 {
+    var n = 0;
+    var go = 1;
+    while (go == 1) {
+        var p = alloc(1048576);
+        if (p == 0) { go = 0; continue; }
+        n = n + 1;
+    }
+    return n;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # Drain FIRST. Both lazy tables (_CP_EXT_TABLE, _PHASE_ESC_TABLE)
+    # must still be unbuilt when the guards are exercised, or their
+    # early-return-if-built paths hide the allocation entirely.
+    pout("[allocfail] draining the heap\n");
+    var mib = drain_heap();
+    pout("  drained "); fmt_int(mib); pout(" MiB\n");
+
+    # Gate 0 — the premise. If allocation still works, every check
+    # below is vacuous and would "pass" for the wrong reason.
+    chk("heap is exhausted: alloc(64) returns 0", alloc(64) == 0);
+    chk("heap is exhausted: alloc(1) returns 0", alloc(1) == 0);
+
+    pout("[allocfail] A-01 — extending-codepoint table\n");
+    # The guard added at v1.2.2. Unguarded, this wrote 42 store64s
+    # through a null pointer.
+    chk("_cp_ext_init reports failure instead of writing through null",
+        _cp_ext_init() == (0 - 1));
+    chk("_CP_EXT_TABLE is still null after the failed init",
+        _CP_EXT_TABLE == 0);
+    # The documented degradation: answer "not extending" rather than
+    # binary-searching a null table. Output stays byte-correct; only
+    # cluster grouping degrades.
+    chk("cp_is_extending(0x0300) degrades to 0", cp_is_extending(0x0300) == 0);
+    chk("cp_is_extending(0x200D) degrades to 0", cp_is_extending(0x200D) == 0);
+    chk("cp_is_extending(0x0041) still 0", cp_is_extending(0x0041) == 0);
+
+    pout("[allocfail] phase escape table\n");
+    chk("_phase_esc_init reports failure", _phase_esc_init() == (0 - 1));
+    chk("_PHASE_ESC_TABLE is still null", _PHASE_ESC_TABLE == 0);
+
+    pout("[allocfail] E-01 — the error reporter itself\n");
+    # anuenue_fail builds a Str for the agnostik error. Under
+    # exhaustion str_new returns 0, so the reporter must fall back to a
+    # bare stderr write and STILL return the right exit code. If this
+    # allocated, an OOM could never be reported.
+    chk("anuenue_fail(IO) returns exit 1 with no heap",
+        anuenue_fail(STIK_ERR_IO, "probe: simulated io failure") == ANUENUE_EXIT_RUN);
+    chk("anuenue_fail(INVALID_ARGUMENT) returns exit 2 with no heap",
+        anuenue_fail(STIK_ERR_INVALID_ARGUMENT, "probe: simulated usage error") == ANUENUE_EXIT_USAGE);
+    chk("anuenue_fail(RESOURCE_EXHAUSTED) returns exit 1 with no heap",
+        anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "probe: simulated oom") == ANUENUE_EXIT_RUN);
+
+    pout("[allocfail] the four driver entry points\n");
+    # Each allocates before touching stdin, so each must fail at the
+    # allocation and return the runtime exit code rather than crashing
+    # or proceeding with a null buffer.
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
+    chk("anuenue_filter exits 1", anuenue_filter() == ANUENUE_EXIT_RUN);
+    chk("anuenue_render_bytes exits 1",
+        anuenue_render_bytes("AGNOS\n", 6) == ANUENUE_EXIT_RUN);
+    chk("anuenue_passthrough exits 1", anuenue_passthrough() == ANUENUE_EXIT_RUN);
+    chk("anuenue_animate exits 1", anuenue_animate(1, 1) == ANUENUE_EXIT_RUN);
+
+    pout("\n");
+    if (_probe_fail == 0) {
+        pout("allocfail-probe: PASS\n");
+        return 0;
+    }
+    pout("allocfail-probe: FAIL\n");
+    return 1;
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);
