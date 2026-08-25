@@ -284,15 +284,54 @@ else
     fi
 fi
 
-# EPIPE must remain SIGPIPE — the fix must not turn a normal
-# `anuenue | head -1` into a confusing error.
-set +e
-"$BIN" --color=24bit < "$WORK/mal/all-256.in" 2>"$WORK/pipe.err" | head -c 1 >/dev/null
-set -e
-if [ -s "$WORK/pipe.err" ]; then
-    bad "a truncated downstream produced stderr output: $(head -1 "$WORK/pipe.err")"
-else
-    ok "a truncated downstream (head) stays silent — SIGPIPE, not an error path"
+# A truncated downstream (`anuenue | head -1`) must stay silent, and it
+# must do so under BOTH SIGPIPE dispositions — E-03.
+#
+# This is the case CI caught and this script previously missed, in two
+# separate ways:
+#
+#   1. It only exercised the DEFAULT disposition, where the kernel
+#      kills the process before write(2) returns and anuenue's EPIPE
+#      branch never runs at all. A CI runner sets SIGPIPE to SIG_IGN
+#      and children inherit it, so there write(2) returns -EPIPE and
+#      the branch is live. `trap '' PIPE` reproduces that in a shell.
+#   2. It used a 256-byte corpus. That fits entirely in a 64 KiB pipe
+#      buffer, so whether a second write happens at all — and therefore
+#      whether EPIPE is ever seen — was a race between anuenue
+#      finishing and `head` exiting. The corpus below is large enough
+#      that many writes are guaranteed after the reader is gone.
+python3 -c 'import sys; sys.stdout.write("rainbow line\n" * 200000)' > "$WORK/pipe.in" 2>/dev/null \
+    || awk 'BEGIN { for (i = 0; i < 200000; i++) print "rainbow line" }' > "$WORK/pipe.in"
+
+check_truncated_downstream() {
+    _label="$1"; _pre="$2"
+    set +e
+    sh -c "$_pre \"\$1\" --color=24bit < \"\$2\" 2>\"\$3\" | head -c 1 >/dev/null" \
+        _ "$BIN" "$WORK/pipe.in" "$WORK/pipe.err"
+    set -e
+    if [ -s "$WORK/pipe.err" ]; then
+        bad "truncated downstream ($_label) wrote to stderr: $(head -1 "$WORK/pipe.err")"
+    else
+        ok "truncated downstream ($_label) stays silent"
+    fi
+}
+
+check_truncated_downstream "SIGPIPE default" ""
+check_truncated_downstream "SIGPIPE ignored — the CI configuration" "trap '' PIPE;"
+
+# ...and the distinction has to hold: EPIPE is quiet, a REAL write
+# failure is not. Both run with SIGPIPE ignored so the EPIPE branch is
+# the one under test.
+if [ -c /dev/full ]; then
+    set +e
+    sh -c "trap '' PIPE; \"\$1\" --color=24bit AGNOS > /dev/full 2>\"\$2\"" _ "$BIN" "$WORK/full2.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 1 ] && grep -q 'write to stdout failed' "$WORK/full2.err"; then
+        ok "with SIGPIPE ignored, a real write failure is still reported and exits 1"
+    else
+        bad "with SIGPIPE ignored, /dev/full gave rc=$rc without the message"
+    fi
 fi
 
 echo

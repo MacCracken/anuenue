@@ -91,6 +91,12 @@ var ANUENUE_VERBOSE = 0;
 # byte — a few dozen additions across a multi-megabyte stream.
 var ANUENUE_BYTES_IN = 0;
 
+# Set when a stdout write returned EPIPE — the consumer closed the pipe.
+# Distinguishes "the downstream is done" (a normal pipeline ending) from
+# "the write failed" (a real error). See the EPIPE branch in
+# anuenue_write_all and the dispatch in anuenue_write_failed.
+var ANUENUE_STDOUT_EPIPE = 0;
+
 # ---- _eprint ------------------------------------------------------
 #
 # Write a null-terminated string to fd 2 using runtime strlen —
@@ -155,6 +161,28 @@ fn anuenue_write_all(buf, len): i64 {
             sleep_ms(1);
             continue;
         }
+        if (n == (0 - 32)) {                      # EPIPE — consumer closed
+            # E-03 (v1.3.4). The downstream is gone. That is the normal
+            # end of `anuenue | head -1`, not a failure, and it must
+            # look the same whether SIGPIPE is default or ignored.
+            #
+            # When SIGPIPE has its default disposition the kernel kills
+            # us before write(2) ever returns, so this branch is
+            # unreachable and the process exits 141 in silence. When a
+            # parent has set SIGPIPE to SIG_IGN — which a CI runner
+            # does, and which children inherit — write(2) returns
+            # -EPIPE instead and this branch is the only thing standing
+            # between a routine truncated pipeline and a spurious error.
+            #
+            # v1.3.3 shipped without it: E-01 classed EPIPE as fatal on
+            # the strength of `anuenue | head -1` behaving correctly in
+            # a shell where SIGPIPE was default — i.e. for a reason that
+            # had nothing to do with the code under test. CI, running
+            # with SIGPIPE ignored, executed the branch for the first
+            # time and failed.
+            ANUENUE_STDOUT_EPIPE = 1;
+            return 0 - 1;
+        }
         # n == 0 for a non-zero length would mean no progress and no
         # error; treat it as fatal rather than looping forever.
         return 0 - 1;
@@ -165,7 +193,22 @@ fn anuenue_write_all(buf, len): i64 {
 # Report a failed stdout write and return the process exit code.
 # Separate from anuenue_write_all so the hot path stays a bare
 # comparison at each call site and the message lives in one place.
+#
+# Two outcomes share the -1 return from anuenue_write_all, and they are
+# not the same event:
+#
+#   EPIPE  — the consumer closed the pipe. `anuenue | head -1` is the
+#            canonical case. Nothing is wrong: stop, say nothing, exit
+#            0. This mirrors what the process does when SIGPIPE has its
+#            default disposition, where the kernel kills it silently
+#            before write(2) returns at all.
+#   others — ENOSPC, EBADF, EIO. The stream was lost and the caller has
+#            to be told, or anuenue reports success while discarding
+#            output (E-01).
 fn anuenue_write_failed(): i64 {
+    if (ANUENUE_STDOUT_EPIPE == 1) {
+        return ANUENUE_EXIT_OK;
+    }
     return anuenue_fail(STIK_ERR_IO, "write to stdout failed");
 }
 

@@ -1084,6 +1084,30 @@ fn main(): i64 {
     ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
     _phase_esc_init();
 
+    test_group("v1.3.4 E-03 — EPIPE is a normal pipeline end, not a failure");
+    # Two outcomes share anuenue_write_all's -1 return and they are not
+    # the same event. EPIPE means the consumer closed the pipe
+    # (`anuenue | head -1`); everything else means the stream was lost.
+    #
+    # This distinction is only observable when SIGPIPE is IGNORED —
+    # under the default disposition the kernel kills the process before
+    # write(2) returns and the branch never runs. That is why the
+    # v1.3.3 gate passed locally and failed in CI; the process-level
+    # coverage lives in scripts/robustness-check.sh, which now runs
+    # both dispositions. What is pinned here is the dispatch itself.
+    ANUENUE_STDOUT_EPIPE = 0;
+    assert_eq(anuenue_write_failed(), ANUENUE_EXIT_RUN,
+              "a real write failure exits 1");
+    ANUENUE_STDOUT_EPIPE = 1;
+    assert_eq(anuenue_write_failed(), ANUENUE_EXIT_OK,
+              "EPIPE exits 0 — the downstream is done, nothing is wrong");
+    # The flag must be a clean two-state; anything else and the
+    # dispatch above silently picks the error branch.
+    assert_eq(ANUENUE_STDOUT_EPIPE, 1, "the EPIPE flag holds its value");
+    ANUENUE_STDOUT_EPIPE = 0;
+    assert_eq(anuenue_write_failed(), ANUENUE_EXIT_RUN,
+              "clearing the flag restores the error path");
+
     return assert_summary();
 }
 

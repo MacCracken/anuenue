@@ -4,7 +4,61 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.3.4] — 2026-08-26 (allocation-failure probe)
+## [1.3.4] — 2026-08-26 (allocation-failure probe + CI fix)
+
+### Fixed — E-03 (CI regression from v1.3.3)
+
+**CI failed on v1.3.3, and the bug was in the v1.3.3 fix.**
+
+```
+FAIL: a truncated downstream produced stderr output:
+      anuenue: i/o error: write to stdout failed
+```
+
+E-01 (v1.3.3) made every stdout write checked, and classed **EPIPE as fatal**.
+That is wrong: EPIPE means the consumer closed the pipe — `anuenue | head -1` —
+which is the normal end of a pipeline, not a failure.
+
+**Why it passed locally and failed in CI.** SIGPIPE's disposition is inherited.
+Under the default disposition the kernel kills the process before `write(2)`
+returns, so the EPIPE branch never executes and the pipeline is silent — which
+is what I observed and asserted on. A CI runner sets SIGPIPE to `SIG_IGN` and
+children inherit it; there `write(2)` returns `-EPIPE`, the branch runs, and
+anuenue printed an error and exited 1 for a routine truncated pipeline.
+
+So the v1.3.3 audit's claim that this case was "verified" rested on a
+configuration in which **the code under test never ran**. CI executed that branch
+for the first time.
+
+**Fix** — `anuenue_write_all` records EPIPE in `ANUENUE_STDOUT_EPIPE`, and
+`anuenue_write_failed` dispatches on it: EPIPE exits **0 in silence**, matching
+what the process does under the default disposition; every other errno still
+reports and exits 1. Two functions changed, no call-site changes — all 17 sites
+already routed through the reporter.
+
+Verified in both configurations, and that `> /dev/full` **still** exits 1 with a
+message under SIGPIPE-ignored, so E-01's actual defect stays fixed.
+
+### Fixed — the gate that should have caught it
+
+`scripts/robustness-check.sh`'s EPIPE check was wrong in two independent ways,
+either of which alone would have hidden E-03:
+
+1. **It only ran the default disposition** — the one where the branch under test
+   is unreachable. It now runs both, using `trap '' PIPE` to reproduce the CI
+   environment in plain shell.
+2. **It used a 256-byte corpus.** That fits entirely in a 64 KiB pipe buffer, so
+   whether a second write happened at all — and therefore whether EPIPE was ever
+   seen — was a race between anuenue finishing and `head` exiting. The corpus is
+   now large enough to guarantee many writes after the reader is gone.
+
+Mutation-proven, and the proof is pointed: deleting the EPIPE dispatch leaves the
+**SIGPIPE-default row still passing** and fails only the SIGPIPE-ignored row.
+That is precisely why the old gate missed it.
+
+Plus 4 unit assertions (380 → **384**) pinning the dispatch itself.
+
+### Added — allocation-failure probe
 
 Closes the standing **"unproven guard"** gap — the item the v1.3.3 sweep ranked
 first among unaudited surfaces.
@@ -20,8 +74,6 @@ Three audits in a row recorded findings they could not test:
 All for one reason: **nothing could drive `alloc` to return 0 from outside the
 process**, so deleting any of those guards left the whole suite green. A guard
 with no failing test behind it is a comment that happens to compile.
-
-### Added
 
 - **`tests/probes/allocfail-probe.cyr` + `scripts/allocfail-check.sh`** — 15
   checks against a genuinely exhausted heap, wired into CI, skip-clean without

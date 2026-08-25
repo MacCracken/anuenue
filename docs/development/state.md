@@ -5,9 +5,35 @@
 
 ## Version
 
-**1.3.4** — cut 2026-08-26. **Allocation-failure probe.** Closes the
-standing "unproven guard" gap — the surface the v1.3.3 sweep ranked
-first.
+**1.3.4** — cut 2026-08-26. **Allocation-failure probe + a CI fix.**
+
+**E-03 — CI failed on v1.3.3, and the bug was in the v1.3.3 fix.**
+E-01 made every stdout write checked and classed **EPIPE as fatal**.
+Wrong: EPIPE means the consumer closed the pipe (`anuenue | head -1`),
+the normal end of a pipeline. It passed locally because SIGPIPE's
+default disposition has the kernel kill the process before `write(2)`
+returns — so the branch never executed, and the v1.3.3 audit's
+"verified" rested on a configuration in which the code under test did
+not run. A CI runner sets SIGPIPE to `SIG_IGN`, children inherit it,
+and CI executed that branch for the first time. Fixed: EPIPE exits 0
+in silence, every other errno still reports and exits 1.
+
+**The gate that should have caught it was wrong twice over.** It ran
+only the default disposition — where the branch is unreachable — and
+used a 256-byte corpus that fits entirely in a pipe buffer, making
+"does a second write happen at all" a race. Both fixed; `trap '' PIPE`
+reproduces the CI environment in plain shell. Mutation-proven, and the
+proof is pointed: deleting the dispatch leaves the SIGPIPE-default row
+**still passing** and fails only the SIGPIPE-ignored row.
+
+*Lesson:* **a passing test proves nothing if the environment makes the
+code under test unreachable.** Same family as the v1.2.2 finding about
+accepted-but-unmeasured INFO items, and the v1.3.2 one about gates
+stated but never executed — three variants of "the check looked green
+for a reason unrelated to the thing it names".
+
+**Allocation-failure probe.** Closes the standing "unproven guard"
+gap — the surface the v1.3.3 sweep ranked first.
 
 Three audits in a row recorded guards they could not test (A-01 at
 v1.2.2, E-01 at v1.3.3, plus eight other `alloc` call sites), all for

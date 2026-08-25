@@ -68,7 +68,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 ### Quality bar at v1.3.4
 
-- **380** unit assertions across 51 groups (`cyrius test`)
+- **384** unit assertions across 52 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **22** observability + pipe-purity checks (`scripts/observe-check.sh`), including
