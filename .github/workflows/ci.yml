@@ -73,20 +73,17 @@ jobs:
           echo "binary: $(wc -c < build/${{ github.event.repository.name }}) bytes"
 
       - name: Lint
-        # `cyrius lint` gained an untracked-deferral check that the 6.4.62
-        # pin did not run; src/filter.cyr tripped it on the v1.2.1 bump.
-        # Gate it so the next one is caught by CI rather than by the next
-        # person to bump the pin. Zero tolerance: anuenue's src/ is seven
-        # files and has been warning-clean since v0.9.0.
-        run: |
-          fail=0
-          for f in src/*.cyr; do
-            out=$(cyrius lint "$f" 2>&1 || true)
-            echo "$out"
-            echo "$out" | grep -qE '^0 warnings' || fail=1
-            echo "$out" | grep -qE '^0 untracked deferrals' || fail=1
-          done
-          [ $fail -eq 0 ] || { echo "::error::lint warnings or untracked deferrals present"; exit 1; }
+        # Calls the script rather than inlining the loop, so the local
+        # gate and this one are the same implementation and cannot
+        # drift. They did drift, twice: `cyrius audit`'s lint section
+        # prints "ok: lint clean" WITHOUT counting untracked deferrals,
+        # so a local gate built on it passed a tree CI rejected.
+        #
+        # The script also lints tests/ and fuzz/, which this step used
+        # to skip — sweeping them turned up a deferral in
+        # tests/anuenue.bcyr that had gone unflagged because its
+        # cross-reference sat on the line after the keyword.
+        run: sh scripts/lint-check.sh
 
       - name: Test
         # v5.6.28: bare `cyrius test` picks up the [build].test entry

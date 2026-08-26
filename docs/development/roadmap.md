@@ -215,6 +215,16 @@ on every path, at exit 1. Fixed with `anuenue_read_some`, symmetric to
 `anuenue_write_all` — the two sides of a filter should not disagree about what
 counts as an error. Gate 6 in `robustness-check.sh`, mutation-proven.
 
+**A second pattern, about the gates rather than the code.** Twice in two cuts a
+local gate passed while CI failed, and both times because the local check was
+green *about something else* — E-03 ran a SIGPIPE disposition in which the code
+under test could not execute, and the lint gate used `cyrius audit`, whose lint
+section does not count untracked deferrals. The fix in both cases was to make
+local and CI the same implementation: `robustness-check.sh` now runs both
+SIGPIPE dispositions, and `scripts/lint-check.sh` is called by CI rather than
+duplicated in YAML. **A gate that is not literally the same code as CI's is a
+different gate.**
+
 **Pattern worth keeping.** E-01, E-03 and F-01 are one defect in three places:
 a syscall wrapper that does not distinguish *transient* from *fatal*, and call
 sites that treat every negative return the same way. anuenue now has exactly two

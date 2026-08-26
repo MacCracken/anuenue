@@ -198,7 +198,8 @@ fn anuenue_write_all(buf, len): i64 {
 # F-01 (2026-08-26 sweep). The read side is the mirror of E-01, and it
 # had the mirror defect: `file_read` is a bare `sys_read` and all three
 # stdin call sites classed **any** negative return as fatal. But two
-# negatives are transient and mean "not yet", not "broken":
+# negatives are transient — they say the data has not arrived, not that
+# the stream is broken:
 #
 #   EAGAIN (-11) stdin is O_NONBLOCK and no data has arrived. Measured
 #                before this fix: a slow writer on a non-blocking pipe
@@ -227,7 +228,7 @@ fn anuenue_read_some(buf, len): i64 {
         var n = file_read(STDIN, buf, len);
         if (n >= 0) { return n; }
         if (n == (0 - 4)) { continue; }          # EINTR — retry at once
-        if (n == (0 - 11)) {                      # EAGAIN — no data yet
+        if (n == (0 - 11)) {                      # EAGAIN — data has not arrived
             sleep_ms(1);
             continue;
         }

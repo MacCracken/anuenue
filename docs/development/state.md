@@ -35,6 +35,18 @@ default-disposition signals do not interrupt a blocking read — verified
 by driving SIGSTOP/SIGCONT/SIGWINCH/SIGCHLD/SIGURG at a process blocked
 in `read`.
 
+*Also in this cut, from a CI lint failure:* a comment reading `mean
+"not yet", not "broken"` tripped the deferral heuristic — prose, not a
+deferral, reworded rather than suppressed. **The local gate reported
+success**: `cyrius audit`'s lint section prints "ok: lint clean"
+*without* counting untracked deferrals, while `cyrius lint <file>`
+counts them. Second time in two cuts a local check passed for a reason
+unrelated to what CI enforces (E-03 was the first). Fixed structurally
+with `scripts/lint-check.sh` — one implementation, called by both, and
+it lints `tests/`/`fuzz/` too, which immediately surfaced an untracked
+deferral in `tests/anuenue.bcyr` whose cross-reference sat one line
+below the keyword.
+
 Gate 6 in `robustness-check.sh`, mutation-proven: removing the retry
 fails all three path checks while the closed-stdin control still
 passes, so the gate distinguishes "retries transient errors" from

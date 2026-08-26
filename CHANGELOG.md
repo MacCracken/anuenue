@@ -61,6 +61,42 @@ SIGURG at a process blocked in `read`, none of which produced EINTR. It is one
 comparison, it matches the write side, and a consumer that execs anuenue with an
 inherited handler would reach it. Recorded rather than implied.
 
+### Fixed — the lint gate, and the reason it did not catch this
+
+CI failed on lint after the F-01 work:
+
+```
+deferral line 201: untracked 'not yet'
+```
+
+The comment read `mean "not yet", not "broken"` — descriptive prose, not a
+deferral. Same false-positive class as the v1.2.2 `# detect not yet run` hit,
+and reworded the same way rather than suppressed.
+
+**The gate that should have caught it locally reported success**, and that is
+the part worth fixing. `cyrius audit`'s lint section prints `ok: lint clean`
+**without counting untracked deferrals**; `cyrius lint <file>` counts them and
+reports them on their own line. A local gate built on `cyrius audit` therefore
+passes a tree CI rejects. Mine was.
+
+That is the second time in two cuts that a local check passed for a reason
+unrelated to what CI enforces — E-03 was the first, where the local test ran a
+SIGPIPE disposition in which the code under test could not execute. Different
+mechanism, same shape: **the check was green, and it was green about something
+else.**
+
+- **`scripts/lint-check.sh`** — the lint gate as one implementation, called by
+  both the local gate and CI, so they cannot drift again. Requires *both*
+  counters at zero per file. Mutation-tested: reintroducing the reworded comment
+  fails it.
+
+- **It lints `tests/` and `fuzz/` too**, which the CI step never did. Sweeping
+  them immediately turned up an untracked deferral in `tests/anuenue.bcyr` that
+  had been sitting unflagged: the cross-reference it needed was on the line
+  *after* the keyword, and the heuristic reads one line. Fixed by moving the
+  reference onto the same line — the deferral itself was correctly tracked all
+  along, just not in a form the linter could see.
+
 ### Added
 
 - **`scripts/robustness-check.sh` gate 6** — all three read paths driven from a

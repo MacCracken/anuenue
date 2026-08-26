@@ -22,9 +22,9 @@
 # it shipped scripts/perf-bench.sh instead, which owns end-to-end
 # measurement and has been the M5 ratchet ever since. The split
 # works: this file benches functions, the shell script benches the
-# process. The in-file aggregate is deferred, not planned, and is
-# tracked in docs/development/roadmap.md § "v1.x — later minors"
-# with the trigger that would justify it.
+# process. The in-file aggregate is deferred (docs/development/roadmap.md
+# § "v1.x — later minors") rather than planned, and that entry carries
+# the trigger that would justify building it.
 #
 # Stdlib + darshana + the filter source auto-included via cyrius.cyml.
 
