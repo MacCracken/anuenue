@@ -4,6 +4,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.6] — 2026-09-10
+
+Ecosystem migration onto the cyrius **6.6.2** repair release.
+
+### Changed — toolchain + dependency pins
+
+- `cyrius` pin **6.5.35 → 6.6.2**. 6.6.0 flipped `Result`/`Option`/`Either`
+  declared `: stack` to a two-register value form and deleted the boxed
+  accessors; 6.6.2 restores them under their own names in `lib/boxed.cyr`
+  (`boxed_new` / `boxed_tag` / `boxed_payload` / `boxed_is`, with
+  `tagged_new` keeping its name because its meaning never changed) and
+  ships nine further repairs, including a SIMD operand-slot Critical and a
+  `map_u64` sentinel-key bug.
+- `darshana` 1.0.0 → **1.1.1**
+- `sakshi` 2.4.11 → **2.5.1**
+- `agnostik` 1.5.1 → **1.6.0**
+- `cmdit` 1.2.4 (already current)
+
+anuenue's own sources needed **no** migration edits: the repo has zero calls
+to the retired `payload()` / `tag()` / `is_tag()` spellings. The one apparent
+hit in an earlier survey (`src/filter.cyr:41`) is the English word "payload"
+inside a comment.
+
+### Removed — a stale vendored bundle nothing included
+
+- `lib/agnosys.cyr` — a 335 KB `cyrius distlib` bundle of **agnosys 1.4.3**,
+  vendored 2026-06-19, with no `include` anywhere in the repo and no
+  `[deps.agnosys]` entry to regenerate it. It was the only file in the tree
+  still calling the retired accessors (32 sites). An orphaned bundle is not
+  inert: it is exactly what a blanket `--allow-undef` scan would have waved
+  through, so it is deleted rather than migrated.
+
+
 ## [1.3.5] — 2026-08-26 (stdin failure surface)
 
 The surface the v1.3.3 sweep ranked highest after the allocation probe, and the
