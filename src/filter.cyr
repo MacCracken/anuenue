@@ -38,11 +38,11 @@ var ANUENUE_PHASE_STEP = 7;
 var ANUENUE_PHASE_START = 0;
 
 # Heap-allocated line buffer size (bytes). Sized so a single-write
-# flush per line holds ~1700 bytes of fg-escape + payload (each char
-# costs ≤19 bytes worst case; the `_ansi_emit_u8` digit packing means
-# most run 13–17). 32KB covers a generous terminal-line width without
-# bloating the binary; explicit heap allocation per CLAUDE.md
-# "Heap-allocate large buffers" rule.
+# flush per line holds ~1700 characters of fg-escape + payload (each
+# fg escape is at most 17 bytes — measured maxima 16-colour 5, 256 11,
+# truecolor 17; see docs/architecture/001). 32KB covers a generous
+# terminal-line width without bloating the binary; explicit heap
+# allocation per CLAUDE.md "Heap-allocate large buffers" rule.
 var ANUENUE_LINE_BUF = 32768;
 
 # Per-syscall read chunk. Independent of the line buffer — we read
@@ -66,24 +66,40 @@ var ANUENUE_FLUSH_RESERVE = 32;
 
 # ---- phase-cached escape table (M5 perf pass, v0.6.0) -------------
 #
-# Hot-path optimisation: `hsv_rainbow(phase, &rgb)` + `tty_fg_rgb_buf(
-# line_buf, pos, R, G, B)` takes ~53 ns per call (the divides /
-# digit-encoding in darshana's `_ansi_emit_u8` dominate). At
-# ANUENUE_PHASE_MOD = 1530 distinct phase values, all of them
-# pre-formattable, the right shape is a 1530-entry table of pre-
-# baked "\x1b[38;2;R;G;Bm" escapes indexed by `phase % MOD`.
+# At ANUENUE_PHASE_MOD = 1530 distinct phase values, every escape
+# anuenue can emit is pre-formattable, so M5 (v0.6.0) replaced the
+# per-cluster `hsv_rainbow(phase, &rgb)` + darshana composer with a
+# 1530-entry table of pre-baked escapes indexed by `phase % MOD`.
 #
 # Indexed by `phase % MOD` (not `cluster_idx % count`): works for
 # any -p step value without an lcm/gcd argument. Cost: one
-# normalize + one length-prefixed memcpy per cluster instead of
-# hsv_rainbow + 3× _ansi_emit_u8 digit packing.
+# normalize + one length-prefixed byte copy per cluster.
+#
+# RE-MEASURED at v1.4.0 (darshana 1.3.0, cyrius 6.7.9), because the
+# darshana consumer survey asked whether the table now costs more than
+# it saves — darshana 1.2.0 made its composers 35–49% faster.
+# tests/anuenue.bcyr, ns per escape, table vs hsv_rainbow + composer:
+#
+#   truecolor  43–45 vs 31–33   the composer wins
+#   256        30–31 vs 37–38   the table wins
+#   16            18 vs 24      the table wins
+#
+# End to end (scripts/perf-bench.sh, ascii no-LF), deleting the table
+# measured 49.6 → 41.9 ns/byte on truecolor (−15%) but 36.1 → 48.0 on
+# 256 (+33%) and 24.2 → 34.5 on 16 (+42%). KEPT: it is a net loss
+# to delete. What the numbers do say is where its cost is — the
+# byte-at-a-time copy below, not the lookup: a three-word copy of the
+# same entry measured 9–10 ns in every mode. That copy writes past
+# `elen`, which changes this function's write footprint (and what
+# fuzz/emit-phase-esc.fcyr asserts), so it is a roadmap item of its
+# own rather than part of this measurement. docs/benchmarks.md § v1.4.0.
 #
 # Layout: 32 bytes/entry, 1530 entries = 48 960 bytes runtime
 # (heap-allocated; doesn't bloat the DCE binary). Each entry:
-#   offset 0..7  : i64 length (always 13..19; truecolor SGR
-#                  has 3 channels × {1,2,3} digits + framing)
-#   offset 8..30 : payload bytes (escape sequence)
-#   offset 31    : padding
+#   offset 0..7  : i64 length — at most 17 truecolor, 11 for 256,
+#                  5 for 16 (measured maxima; docs/architecture/001)
+#   offset 8..31 : payload bytes (escape sequence), 24-byte budget
+#                  the v1.3.3 E-02 unit group checks every entry against
 # 32-byte stride matches a cache line on the x86_64 hosts anuenue
 # targets — one entry fits in a single $L1 fill.
 var ANUENUE_ESC_TABLE_ENTRY_SIZE = 32;
@@ -175,13 +191,16 @@ fn _phase_esc_init(): i64 {
 }
 
 # Hot-path emit. Copies the pre-formatted escape for `phase` into
-# `line_buf` at `pos`. Returns the new write position. Equivalent to
-# the v0.5.0 sequence:
+# `line_buf` at `pos`. Returns the new write position. Byte-identical
+# to the v0.5.0 sequence:
 #   hsv_rainbow(phase, &rgb);
 #   pos = tty_fg_rgb_buf(line_buf, pos, R, G, B);
-# but skips the per-call hsv math + digit encoding (~45 ns → ~10
-# ns on the hot path; the remaining 10 ns is the entry length-load
-# + the byte-copy loop bounded at 19 iterations).
+# (or the 256 / 16 composer for those modes). Writes exactly `elen`
+# bytes — at most 17. Measured at v1.4.0: 43–45 ns per call on
+# truecolor, 30 on 256, 18 on 16, almost all of it the byte-copy loop
+# (see the table header above for what that means and what it does
+# not). The "~10 ns" this comment quoted from v0.6.0 does not describe
+# the loop on cyrius 6.6.2 (41–43 ns measured) or 6.7.9.
 fn _emit_phase_esc(line_buf, pos, phase): i64 {
     var p = phase % ANUENUE_PHASE_MOD;
     if (p < 0) { p = p + ANUENUE_PHASE_MOD; }
@@ -455,7 +474,8 @@ fn anuenue_filter(): i64 {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "filter line/read buffer allocation failed");
     }
     # Initialize the phase-cached escape table once before entering
-    # the hot loop. ~80 μs (1530 × hsv_rainbow + tty_fg_rgb_buf);
+    # the hot loop: 1530 × (hsv_rainbow + one darshana composer), on
+    # the order of 50 µs by tests/anuenue.bcyr's per-call figures;
     # amortised over millions of bytes in a real filter run.
     if (_phase_esc_init() != 0) {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "phase escape table allocation failed");

@@ -137,7 +137,7 @@ fn fuzz_random_argv(seed, n_tokens) {
 
     # Invariant 1: rc is one of the four documented result codes.
     assert(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
-           "cmdit_parse_argv returned an undocumented result code");
+      "cmdit_parse_argv returned an undocumented result code");
 
     # Invariant 2: err is a valid CmditErr (NONE .. TOO_MANY_POSITIONAL).
     assert(err >= 0, "cmdit_error below CMDIT_ERR_NONE");
@@ -204,6 +204,9 @@ fn fuzz_each_flag_alone() {
     return 0;
 }
 
+# Harness entry: seeded random argv at three sizes, then the empty argv
+# and each flag alone.
+# Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
 

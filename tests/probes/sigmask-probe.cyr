@@ -1,6 +1,7 @@
-# tests/probes/sigmask-probe.cyr — forced-failure probe for
-# _open_exit_signalfd's SIG_BLOCK rollback (v1.3.0, closes the
-# 2026-05-22 audit's INFO 8 + 9).
+# tests/probes/sigmask-probe.cyr — what _open_exit_signalfd and
+# _close_exit_signalfd do to the process signal mask, including under a
+# forced signalfd(2) failure (v1.3.0, closes the 2026-05-22 audit's
+# INFO 8 + 9; extended at v1.4.0 for the darshana signalfd).
 #
 # Driven by scripts/signal-check.sh; not a .tcyr, because it has to be
 # a standalone binary that can be run under an fd limit.
@@ -22,47 +23,86 @@
 # HOW IT OBSERVES THE MASK
 #
 # Reading /proc/self/status would need a fourth fd. Instead it queries
-# sigprocmask itself: SIG_BLOCK (how = 0) with an EMPTY set changes
-# nothing and returns the current mask through `oldset`. No fd, no
-# allocation, no side effect.
+# sigprocmask itself (_sig_blocked_now in src/animate.cyr): SIG_BLOCK
+# with an EMPTY set changes nothing and returns the current mask
+# through `oldset`. No fd, no allocation, no side effect.
 #
-# Expected output:
-#   normal    -> fd >= 0, exit_bits_blocked = 16387 (0x4003, HUP|INT|TERM)
-#   --nofile=3 -> fd = -1, exit_bits_blocked = 0     (rollback happened)
+# TWO CASES, one line each
 #
-# Mutation-proven: deleting the sys_sigprocmask(1, ...) rollback in
-# src/animate.cyr makes the second case report 16387 — signals blocked
-# for the rest of the process with no fd to drain them, so Ctrl-C,
-# `kill` and terminal hangup are all inert and only SIGKILL works.
+#   case=plain       nothing blocked beforehand.
+#   case=preblocked  SIGHUP blocked beforehand, as a parent that spawned
+#                    anuenue with a live signalfd of its own would leave
+#                    it (darshana's "the block is inherited by children").
+#                    anuenue must hand that block back untouched — on a
+#                    failed open AND at the close.
+#
+# Expected output (exit_bits = mask & TTY_SIGMASK_EXIT; 16387 = 0x4003):
+#
+#   normal      plain       fd>=0 exit_bits=16387 cloexec=1 nonblock=1 after_close=0
+#               preblocked  fd>=0 exit_bits=16387 after_close=1   (HUP kept)
+#   --nofile=3  plain       fd=-1 exit_bits=0                     (rolled back)
+#               preblocked  fd=-1 exit_bits=1                     (HUP kept)
+#
+# Mutation-proven:
+#   * against the v1.3.6 hand-rolled open (whole-mask rollback, no
+#     CLOEXEC), a scratch build of the `preblocked` case reported SIGHUP
+#     unblocked under --nofile=3 and `cloexec=0` normally — measured
+#     before the swap (this file itself needs v1.4.0's
+#     _close_exit_signalfd, so it does not build against v1.3.6);
+#   * dropping `& ~prev` from _open_exit_signalfd reports
+#     `preblocked … after_close=0`;
+#   * deleting B-01's rollback (now darshana's) reports `plain …
+#     exit_bits=16387` with fd=-1 — signals blocked for the rest of the
+#     process with no fd to drain them, so Ctrl-C, `kill` and terminal
+#     hangup are all inert and only SIGKILL works.
 include "src/observe.cyr"
 include "src/hsv.cyr"
 include "src/color.cyr"
 include "src/filter.cyr"
 include "src/animate.cyr"
 
-fn cur_mask(): i64 {
-    # SIG_BLOCK with an empty set is a pure query: returns the current
-    # mask in oldset without changing it.
-    var empty[8];
-    var out[8];
-    var i = 0;
-    while (i < 8) { store8(&empty + i, 0); store8(&out + i, 0); i = i + 1; }
-    sys_sigprocmask(0, &empty, &out);
-    return load64(&out);
+# Write a label then an integer to stdout. Raw write(2) is fine here:
+# the probe is test infrastructure, and stdout is its report channel.
+fn kv(label, n): i64 {
+    syscall(1, 1, label, strlen(label));
+    fmt_int(n);
+    return 0;
 }
 
-fn probe(): i64 {
-    var before = cur_mask();
+# Open, report, close, report — for whatever the mask is on entry.
+# `name` labels the line. Returns 0.
+fn run_case(name): i64 {
+    var before = _sig_blocked_now();
     var fd = _open_exit_signalfd();
-    var after = cur_mask();
+    var after = _sig_blocked_now();
 
-    syscall(1, 1, "mask_before=", 12); fmt_int(before);
-    syscall(1, 1, " fd=", 4);          fmt_int(fd);
-    syscall(1, 1, " mask_after=", 12); fmt_int(after);
-    syscall(1, 1, " exit_bits_blocked=", 19);
-    fmt_int(after & TTY_SIGMASK_EXIT);
+    syscall(1, 1, "case=", 5);
+    syscall(1, 1, name, strlen(name));
+    kv(" mask_before=", before);
+    kv(" fd=", fd);
+    kv(" mask_after=", after);
+    kv(" exit_bits_blocked=", after & TTY_SIGMASK_EXIT);
+    if (fd >= 0) {
+        kv(" cloexec=", sys_fcntl(fd, F_GETFD, 0) & FD_CLOEXEC);
+        var nb = 0;
+        if ((sys_fcntl(fd, F_GETFL, 0) & SFD_NONBLOCK) != 0) { nb = 1; }
+        kv(" nonblock=", nb);
+        _close_exit_signalfd(fd);
+        kv(" after_close_exit_bits=", _sig_blocked_now() & TTY_SIGMASK_EXIT);
+    }
     syscall(1, 1, "\n", 1);
     return 0;
 }
+
+# Run both cases in order: plain first, then with SIGHUP pre-blocked.
+# Returns 0.
+fn probe(): i64 {
+    run_case("plain");
+    var hup[8];
+    store64(&hup, 1);                # SIGHUP = bit 0 of a Linux sigset_t
+    sys_sigprocmask(SIG_BLOCK, &hup, 0);
+    run_case("preblocked");
+    return 0;
+}
 var r = probe();
-syscall(60, 0);
+syscall(SYS_EXIT, 0);

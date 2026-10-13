@@ -30,7 +30,7 @@ cat poem.txt | ./build/anuenue -a              # animated (-d <s> / -S <speed>)
 NO_COLOR=1 echo "AGNOS" | ./build/anuenue      # byte-identical passthrough
 ./build/anuenue --color=256                    # quantize to xterm 256-cube
 ./build/anuenue --force-color | tee motd.ansi  # keep colour through a non-TTY pipe
-./build/anuenue --version                      # anuenue 1.1.1
+./build/anuenue --version                      # anuenue X.Y.Z
 ./build/anuenue --help                         # full flag surface
 ```
 
@@ -66,28 +66,28 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.3.5
+### Quality bar at v1.4.0
 
-- **384** unit assertions across 52 groups (`cyrius test`)
+- **402** unit assertions across 53 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **22** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
-- **11** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **21** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
-  values, overlongs, surrogates), argv at both i64 extremes
+  values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
+  dispositions, a non-blocking stdin
 - **1,450,672** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
-- **0** HIGH+ security audit findings open — four audits, latest
-  [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md)
-- **14** PTY checks + **12** signal/pacing checks + **15** allocation-failure
+- **0** HIGH+ security audit findings open — five audits, latest
+  [`docs/audit/2026-10-12-v140-delta.md`](docs/audit/2026-10-12-v140-delta.md)
+- **14** PTY checks + **18** signal/pacing checks + **15** allocation-failure
   checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
   `scripts/allocfail-check.sh` — the last runs every guarded `alloc` site under
   a genuinely exhausted heap)
-- **Binary** tracked every release, **not capped** — the first-party dep surface
-  sets the floor, and `CYRIUS_DCE=1` no longer removes anything on 6.5.x. See
+- **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 46.90 ns/byte ASCII no-LF (M5 acceptance ≤60 ns/byte)
-- **0** `cyrius lint` warnings, 0 untracked deferrals
+- **Perf**: see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60 ns/byte ASCII no-LF)
+- **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics
 
@@ -122,11 +122,11 @@ $ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
 
 | Dep | Tag | Role |
 |-----|-----|------|
-| [`darshana`](https://github.com/MacCracken/darshana) | 1.0.0 | ANSI escape primitives (frozen v1.0 API) |
+| [`darshana`](https://github.com/MacCracken/darshana) | 1.3.0 | ANSI escape primitives + the animation exit-signal fd (frozen v1.0 API) |
 | [`cmdit`](https://github.com/MacCracken/cmdit) | 1.2.4 | CLI / argument parsing (getopt-long) |
-| [`sakshi`](https://github.com/MacCracken/sakshi) | 2.4.11 | Errors / tracing (first-party-standards-required) |
-| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.5.1 | Shared Result / Error shapes |
-| Cyrius toolchain | 6.5.35 | `cyrius.cyml [package].cyrius` |
+| [`sakshi`](https://github.com/MacCracken/sakshi) | 2.5.8 | Errors / tracing (first-party-standards-required) |
+| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.6.0 | Shared Result / Error shapes |
+| Cyrius toolchain | 6.7.9 | `cyrius.cyml [package].cyrius` |
 
 ## Documentation
 

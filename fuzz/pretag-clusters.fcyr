@@ -172,6 +172,9 @@ fn fuzz_pretag_cap_exhaustion(seed) {
     return 0;
 }
 
+# Harness entry: random, ASCII and long-cluster corpora through
+# _pretag_clusters across sizes and caps, then cap exhaustion.
+# Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
     # Phase cache not needed — _pretag_clusters doesn't touch it —

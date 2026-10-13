@@ -41,9 +41,15 @@ ioctl(TIOCGWINSZ)  # via darshana's tty_isatty
 exit(60, …)
 ```
 
-Animation mode (`-a`) additionally uses `rt_sigprocmask`,
-`signalfd4`, and `nanosleep` for the frame loop and SIGINT cursor-
-restore. The non-animation path is the smaller set above.
+Animation mode (`-a`) additionally uses `rt_sigprocmask`, `signalfd4`,
+`fcntl` (to make that signalfd non-blocking) and `close` for the
+SIGINT cursor-restore, plus `poll` (`sleep_ms`) and `clock_gettime`
+for the frame loop. `fcntl` and `close` are new at v1.4.0, when the
+signalfd moved onto darshana's `tty_open_signalfd` /
+`tty_close_signalfd` — a seccomp allowlist written for v1.3.x needs
+both added. (Earlier versions of this list said `nanosleep`; the
+stdlib's `sleep_ms` has been `poll(NULL, 0, ms)` since cyrius 6.0.65.)
+The non-animation path is the smaller set above.
 
 No `connect`, no `fork`, no `execve`, no `unlink`. anuenue cannot
 escape its pipe.
@@ -146,8 +152,10 @@ Integrators wiring this into a MOTD chain should be aware:
 - **SIGINT is signal-safe.** Ctrl-C unwinds via the signalfd probe
   between frames and emits the cursor-show / SGR-reset epilogue.
   Don't wrap `anuenue -a` in a shell loop that traps SIGINT
-  expecting to "catch" it before anuenue does — anuenue installs the
-  handler at startup.
+  expecting to "catch" it before anuenue does — while it animates,
+  anuenue blocks HUP/INT/TERM and reads them from a signalfd (no
+  handler is installed), then restores the signal mask it started
+  with on the way out.
 
 ## What anuenue does NOT do
 

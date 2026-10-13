@@ -253,9 +253,13 @@ fn anuenue_detect_color_mode(no_color_flag, force_color, override): i64 {
             return ANUENUE_COLOR_MONO;
         }
         #endif
-        # agnos: no isatty/ioctl (tty_isatty is darshana Linux-only), and output
-        # is the FB console (color always wanted, no shell `> file` redirection
-        # yet) — so don't force MONO here.
+        # agnos: skipped, but not for want of a darshana peer — tty_isatty has
+        # had an AGNOS arm since darshana 0.8.2. That arm cannot answer THIS
+        # question: it reports whether the framebuffer console is up and
+        # ignores `fd`, so a redirected stdout would still read as a TTY (its
+        # docstring says so). Output on agnos is the FB console anyway (colour
+        # always wanted, no shell `> file` redirection yet), so don't force
+        # MONO here.
     }
     #ifdef CYRIUS_TARGET_AGNOS
     # agnos: the framebuffer console is 24-bit truecolor-capable, and its kernel

@@ -1,5 +1,14 @@
 # 005 — `sleep_ms` takes an i64 and hands it to a 32-bit int
 
+> **Fixed upstream at cyrius 6.6.20; re-measured at anuenue v1.4.0.**
+> `sleep_ms` now clamps before the call: a negative `ms` sleeps 0, and anything
+> above INT_MAX sleeps INT_MAX (~24.8 days), on every target. Measured on cyrius
+> 6.7.9, x86-64 Linux: `sleep_ms(2147483648)`, `(4294967296)`, `(4294967396)` and
+> `(i64::MAX)` all still blocking after 2 s (killed by `timeout`), `sleep_ms(-1)`
+> exiting in 2 ms wall, process start included. So the table below is history — what cyrius ≤ 6.6.19 did —
+> and the primitive is monotonic now. Both anuenue bounds listed below stay, for
+> the reasons given there; the general rule at the end did not change.
+
 `lib/chrono.cyr`'s `sleep_ms(ms)` is `poll(NULL, 0, ms)` on Linux and macOS.
 `poll(2)`'s timeout argument is a **32-bit `int`**. The Cyrius signature takes
 an i64, so anything above int32 range is silently truncated on the way into the
@@ -28,7 +37,9 @@ bound it *before* the call. Two do today:
 
 - **`-i` / `--interval`** is rejected at `<= 0` and clamped at
   `ANUENUE_MAX_INTERVAL_MS` (3 600 000 ms), chosen to sit far inside int32's
-  positive range.
+  positive range. Since 6.6.20 the clamp is no longer what keeps the primitive
+  honest, but it is user-visible — a one-hour cap that `-v` announces, which
+  `scripts/signal-check.sh` asserts — so it stays as behaviour.
 - **`_frame_wait`** never passes more than `ANUENUE_TICK_MS` (16) to a single
   `sleep_ms` call regardless of the interval, slicing a long wait instead. That
   is primarily for signal responsiveness (see

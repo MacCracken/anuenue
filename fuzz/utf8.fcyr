@@ -146,6 +146,8 @@ fn fuzz_cp_is_extending(seed) {
     return 0;
 }
 
+# cp_is_regional_indicator over 2 000 full-range i64 values from `seed`
+# is a strict 0/1 predicate. Returns 0.
 fn fuzz_cp_is_regional_indicator(seed) {
     _fuzz_seed(seed);
     var iters = 0;
@@ -159,6 +161,8 @@ fn fuzz_cp_is_regional_indicator(seed) {
     return 0;
 }
 
+# Harness entry: the UTF-8 sequence/decode/classifier invariants.
+# Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
 

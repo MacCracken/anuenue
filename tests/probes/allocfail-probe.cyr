@@ -91,6 +91,8 @@ fn drain_heap(): i64 {
     return n;
 }
 
+# Probe entry: drains the heap, then drives every guarded allocation
+# site and prints one ok/FAIL line each. Returns 0 on PASS, 1 on any FAIL.
 fn main(): i64 {
     alloc_init();
 
@@ -110,9 +112,9 @@ fn main(): i64 {
     # The guard added at v1.2.2. Unguarded, this wrote 42 store64s
     # through a null pointer.
     chk("_cp_ext_init reports failure instead of writing through null",
-        _cp_ext_init() == (0 - 1));
+      _cp_ext_init() == (0 - 1));
     chk("_CP_EXT_TABLE is still null after the failed init",
-        _CP_EXT_TABLE == 0);
+      _CP_EXT_TABLE == 0);
     # The documented degradation: answer "not extending" rather than
     # binary-searching a null table. Output stays byte-correct; only
     # cluster grouping degrades.
@@ -130,11 +132,11 @@ fn main(): i64 {
     # bare stderr write and STILL return the right exit code. If this
     # allocated, an OOM could never be reported.
     chk("anuenue_fail(IO) returns exit 1 with no heap",
-        anuenue_fail(STIK_ERR_IO, "probe: simulated io failure") == ANUENUE_EXIT_RUN);
+      anuenue_fail(STIK_ERR_IO, "probe: simulated io failure") == ANUENUE_EXIT_RUN);
     chk("anuenue_fail(INVALID_ARGUMENT) returns exit 2 with no heap",
-        anuenue_fail(STIK_ERR_INVALID_ARGUMENT, "probe: simulated usage error") == ANUENUE_EXIT_USAGE);
+      anuenue_fail(STIK_ERR_INVALID_ARGUMENT, "probe: simulated usage error") == ANUENUE_EXIT_USAGE);
     chk("anuenue_fail(RESOURCE_EXHAUSTED) returns exit 1 with no heap",
-        anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "probe: simulated oom") == ANUENUE_EXIT_RUN);
+      anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "probe: simulated oom") == ANUENUE_EXIT_RUN);
 
     pout("[allocfail] the four driver entry points\n");
     # Each allocates before touching stdin, so each must fail at the
@@ -143,7 +145,7 @@ fn main(): i64 {
     ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
     chk("anuenue_filter exits 1", anuenue_filter() == ANUENUE_EXIT_RUN);
     chk("anuenue_render_bytes exits 1",
-        anuenue_render_bytes("AGNOS\n", 6) == ANUENUE_EXIT_RUN);
+      anuenue_render_bytes("AGNOS\n", 6) == ANUENUE_EXIT_RUN);
     chk("anuenue_passthrough exits 1", anuenue_passthrough() == ANUENUE_EXIT_RUN);
     chk("anuenue_animate exits 1", anuenue_animate(1, 1) == ANUENUE_EXIT_RUN);
 

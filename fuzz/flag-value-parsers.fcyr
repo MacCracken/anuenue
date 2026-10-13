@@ -114,6 +114,9 @@ fn fuzz_color_override_total(seed) {
     return 0;
 }
 
+# Totality: 2 000 random byte strings from `seed` through
+# anuenue_log_parse all land inside the declared enum, and only BAD
+# maps outside sakshi's level scale. Returns 0.
 fn fuzz_log_parse_total(seed) {
     _fuzz_seed(seed);
     var lbuf = alloc(72);
@@ -189,6 +192,8 @@ fn _fuzz_mutate_reject(known, expect_ok, is_color, seed) {
     return 0;
 }
 
+# Exactness: every documented --color and --log-level value parses,
+# and every one-byte mutation of it is rejected. Returns 0.
 fn fuzz_exactness(seed) {
     # All nine documented --color values, including `mono` (A-09).
     _fuzz_mutate_reject("auto",      ANUENUE_COLOR_OVERRIDE_AUTO, 1, seed + 11);
@@ -269,6 +274,8 @@ fn fuzz_null_and_empty() {
     return 0;
 }
 
+# Harness entry: totality, exactness, name totality and round-trip.
+# Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
 

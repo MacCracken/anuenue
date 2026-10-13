@@ -6,14 +6,19 @@
 # rainbow's phase shifted per frame. The user's terminal becomes a
 # "scrolling rainbow" view of the same N lines.
 #
-# Capability surface delta vs the filter:
+# Capability surface delta vs the filter (x86_64 Linux numbers):
 #
 #   - rt_sigprocmask(14)  — block SIGHUP/SIGINT/SIGTERM so they queue
 #                            on a signalfd instead of killing the
-#                            process mid-frame
-#   - signalfd4(289)       — non-blocking exit-signal probe between
-#                            frames
-#   - nanosleep(35)        — frame interval (via chrono.sleep_ms)
+#                            process mid-frame, and unblock them at
+#                            teardown (darshana tty_open_signalfd /
+#                            tty_close_signalfd)
+#   - signalfd4(289)       — the exit-signal fd, close-on-exec
+#   - fcntl(72)            — F_GETFL + F_SETFL, making that fd
+#                            non-blocking (stdlib fd_set_nonblocking)
+#   - close(3)             — the fd, at teardown
+#   - poll(7)              — frame interval (chrono.sleep_ms is
+#                            `poll(NULL, 0, ms)`)
 #   - clock_gettime(228)   — deadline math (via chrono.clock_now_ns)
 #
 # Pipe-purity caveat: animation mode is the v1.0 exception to the
@@ -47,13 +52,12 @@ var ANUENUE_ANIMATE_CLUSTER_MAX = 8192;
 # ANUENUE_PHASE_STEP / _START.
 var ANUENUE_FRAME_MS = 16;
 
-# Upper bound for -i / --interval, and it is a correctness bound, not
-# a taste one.
+# Upper bound for -i / --interval.
 #
-# `sleep_ms(ms)` on Linux and macOS is `poll(NULL, 0, ms)`, and
-# poll(2)'s timeout argument is a 32-bit **int**. An i64 millisecond
-# count is therefore truncated on the way in, and the result is not
-# merely imprecise — it is non-monotonic. Measured on this toolchain:
+# Set at v1.3.0 as a correctness bound. `sleep_ms(ms)` on Linux and
+# macOS is `poll(NULL, 0, ms)`, poll(2)'s timeout is a 32-bit **int**,
+# and through cyrius 6.6.19 the stdlib passed the i64 straight through,
+# so the truncation was non-monotonic. Measured on cyrius 6.5.35:
 #
 #   sleep_ms(2147483647)  -> blocks ~24.8 days   (int32 max; honest)
 #   sleep_ms(2147483648)  -> truncates to -2^31  -> BLOCKS FOREVER
@@ -61,16 +65,19 @@ var ANUENUE_FRAME_MS = 16;
 #   sleep_ms(4294967396)  -> truncates to 100    -> sleeps 100 ms
 #   sleep_ms(i64::MAX)    -> truncates to -1     -> BLOCKS FOREVER
 #
-# So a large -i does not give a slow animation. Depending on which
-# side of a power of two it lands, it gives either a hung terminal or
-# a busy-loop that renders as fast as the CPU allows — both the
-# opposite of "wait longer between frames". Same defect class as A-02
-# (2026-08-25 audit), reached through a different arithmetic.
+# cyrius 6.6.20 fixed that in the stdlib: `sleep_ms` now clamps a
+# negative `ms` to 0 and anything above INT_MAX to INT_MAX. Re-measured
+# on 6.7.9 (v1.4.0): every value above INT_MAX blocks, and -1 returns
+# at once — monotonic. And `_frame_wait` never hands `sleep_ms` more
+# than ANUENUE_TICK_MS anyway (B-02), so neither the old truncation nor
+# the new clamp is reachable from the frame loop.
 #
-# 3 600 000 ms is one hour per frame: far inside int32's positive
-# range, and already so far past useful that anything above it is a
-# typo rather than an intent. Values above are clamped and warned
-# about rather than rejected, matching -d.
+# The bound stays because it is user-visible behaviour, not because
+# the primitive still needs it: `-i` above one hour is clamped to one
+# hour and says so under -v (signal-check.sh asserts both). 3 600 000
+# ms is already so far past useful that anything above it is a typo
+# rather than an intent. Clamped and warned rather than rejected,
+# matching -d. See docs/architecture/005.
 var ANUENUE_MAX_INTERVAL_MS = 3600000;
 
 # Default animation duration when -d isn't passed. 5 seconds is enough
@@ -107,13 +114,10 @@ var ANUENUE_DEFAULT_SPEED = 1;
 # going", and clamping honours that where overflowing inverted it.
 var ANUENUE_MAX_DURATION_S = 4000000000;
 
-# Signal-mask constants — these mirror lib/syscalls_linux_common.cyr's
-# but referenced from anuenue so future audits can grep here for
-# "what signals does anuenue actually mask". TTY_SIGMASK_EXIT
-# (darshana 0.5.x) is HUP|INT|TERM = bits 0,1,14 = 0x4003.
-# SFD_NONBLOCK = O_NONBLOCK = 2048 on x86_64 + aarch64 Linux —
-# documented in include/uapi/asm-generic/fcntl.h.
-var ANUENUE_SFD_NONBLOCK = 2048;
+# What signals does animation mask? Exactly darshana's
+# TTY_SIGMASK_EXIT: HUP|INT|TERM = bits 0,1,14 = 0x4003 on Linux. The
+# private ANUENUE_SFD_NONBLOCK (2048) that sat here through v1.3.6 is
+# gone with the hand-rolled signalfd it fed — see _open_exit_signalfd.
 
 # ---- input buffering ----------------------------------------------
 #
@@ -388,80 +392,158 @@ var ANUENUE_TICK_MS = 16;
 
 # ---- signal handling ----------------------------------------------
 #
-# Open a non-blocking signalfd masking SIGHUP/SIGINT/SIGTERM. Goes
-# through sys_sigprocmask + sys_signalfd directly (rather than
-# darshana's tty_open_signalfd) for one reason: darshana's helper
-# creates a *blocking* fd, sized for cyim/chakshu's epoll-driven
-# pattern where the wait happens at the poll layer. anuenue's frame
-# loop drives timing via chrono.sleep_ms and probes the fd between
-# frames, so non-blocking is the right shape here.
+# v1.4.0: the exit-signal fd is darshana's. Through v1.3.6 anuenue
+# hand-rolled it (sys_sigprocmask + sys_signalfd with a private
+# SFD_NONBLOCK), because darshana's tty_open_signalfd returns a
+# BLOCKING fd and the frame loop needs to probe without waiting. The
+# copy had drifted behind darshana twice, and both were reproduced on
+# the v1.3.6 code before this change (probe: SIGHUP pre-blocked, then
+# a forced signalfd failure under `prlimit --nofile=3`):
 #
-# Returns the fd on success, -1 on failure. Callers that get -1
-# should fall back to no-signal handling — Ctrl-C will still kill
-# the process normally, just without the explicit cursor-restore
-# tidy-up.
+#   * its failure rollback unblocked the WHOLE mask, so a signal that
+#     was blocked before animation started came back UNBLOCKED
+#     (`hup_blocked=0`). darshana fixed exactly this at 1.0.2 by
+#     unblocking only `sigmask & ~prev`;
+#   * the fd had no SFD_CLOEXEC (`cloexec=0`), so it would have been
+#     inherited across an execve. anuenue never execs, so that one was
+#     latent — but it is darshana's discipline and now it is ours.
+#
+# darshana documents the non-blocking route itself: open with
+# tty_open_signalfd, then the stdlib's fd_set_nonblocking (cyrius
+# 6.6.8+). Reading goes through tty_read_signal, which answers 0 for
+# "nothing pending" on a non-blocking fd, and closing through
+# tty_close_signalfd. Nothing here touches a signalfd directly any more.
+
+# The bits of TTY_SIGMASK_EXIT that _open_exit_signalfd itself added to
+# the thread's blocked set — the ones that were NOT already blocked
+# when animation started. _close_exit_signalfd unblocks exactly these,
+# so the mask anuenue leaves behind is the mask it inherited (the same
+# `sigmask & ~prev` rule darshana's open applies to its own rollback).
+var _ANUENUE_SIG_ADDED = 0;
+
+# The thread's current blocked-signal set, as a Linux sigset_t word.
+# SIG_BLOCK with an EMPTY set changes nothing and returns the mask
+# through `oldset` — a pure query that needs no descriptor, which is
+# what lets tests/probes/sigmask-probe.cyr run under --nofile=3.
+# Returns 0 if the query itself fails; the caller then treats every
+# exit signal as one it added, the direction that never leaves a signal
+# blocked behind it.
+fn _sig_blocked_now(): i64 {
+    var empty[8];
+    var cur[8];
+    store64(&empty, 0);
+    store64(&cur, 0);
+    if (sys_sigprocmask(SIG_BLOCK, &empty, &cur) < 0) { return 0; }
+    return load64(&cur);
+}
+
+# Open the non-blocking exit-signal fd: SIGHUP / SIGINT / SIGTERM
+# (darshana's TTY_SIGMASK_EXIT) blocked and routed to a close-on-exec
+# signalfd that the frame loop probes between slices.
+#
+# Returns the fd on success, -1 on failure. On -1 nothing is left
+# behind — no fd, and the signal mask exactly as it was — so the caller
+# falls back to no-signal handling: Ctrl-C still kills the process
+# normally, just without the cursor-restore tidy-up.
 fn _open_exit_signalfd(): i64 {
     #ifndef CYRIUS_TARGET_AGNOS
-    var mask[8];
-    var i = 0;
-    while (i < 8) { store8(&mask + i, 0); i = i + 1; }
-    store64(&mask, TTY_SIGMASK_EXIT);
-    # SIG_BLOCK = 0 — pile pending signals on the fd instead of
-    # letting them kill us.
-    if (sys_sigprocmask(0, &mask, 0) < 0) { return 0 - 1; }
-    var fd = sys_signalfd(0 - 1, &mask, ANUENUE_SFD_NONBLOCK);
+    var prev = _sig_blocked_now();
+    var fd = tty_open_signalfd(TTY_SIGMASK_EXIT);
     if (fd < 0) {
-        # B-01 (v1.3.0). Acquire order is block-then-open, so a failed
-        # open must unwind the block or the process runs the rest of
-        # its life with HUP/INT/TERM blocked and NO fd to drain them:
-        # Ctrl-C inert, `kill` inert, terminal hangup inert, only
-        # SIGKILL working. The caller is documented to degrade
-        # gracefully on -1, and "gracefully" has to mean the signals
-        # still work.
+        # B-01 (v1.3.0) was the leak on this path: a failed signalfd(2)
+        # left HUP/INT/TERM blocked with no fd to drain them, so Ctrl-C,
+        # `kill` and hangup were all inert. darshana rolls its own block
+        # back on failure — and, since 1.0.2, only the bits it added —
+        # so the -1 needs no cleanup here.
         #
-        # This is the same defect darshana fixed in its own
-        # tty_open_signalfd at v0.9.3. anuenue rolls its own (it needs
-        # a NON-blocking fd; darshana's helper is sized for an
-        # epoll-driven consumer) and the copy predates that fix.
+        # Degrading is legitimate, but it was silent through v1.3.0, so a
+        # terminal left cursorless after Ctrl-C had no explanation
+        # anywhere (same discoverability lesson as A-05). darshana
+        # normalises the failure to -1, so there is no errno to report.
+        anuenue_log_kv_str(SK_WARN, "signalfd unavailable; animation runs without signal-driven cursor restore",
+          "open", "tty_open_signalfd failed");
+        return 0 - 1;
+    }
+    _ANUENUE_SIG_ADDED = TTY_SIGMASK_EXIT & ~prev;
+    var fl = fd_set_nonblocking(fd);
+    if (fl < 0) {
+        # A blocking fd would park the frame loop in read(2) until a
+        # signal arrived — the animation would freeze on its first
+        # frame. Give the fd back and unblock exactly what we added.
         #
-        # SIG_UNBLOCK = 1. Unblock-what-you-blocked rather than
-        # restore-a-saved-mask: we passed oldset = 0 above, so there is
-        # no prior mask to restore, and unblocking exactly our three is
-        # correct even if the caller had blocked others.
-        sys_sigprocmask(1, &mask, 0);
-        # Degrading here is legitimate — the caller falls back to
-        # no-signal handling and Ctrl-C still kills the process
-        # normally, just without the explicit cursor-restore tidy-up.
-        # But it was *silent*, so a terminal left cursorless after
-        # Ctrl-C had no explanation anywhere. Same discoverability
-        # lesson as A-05.
-        anuenue_log_kv_int(SK_WARN, "signalfd unavailable; animation runs without signal-driven cursor restore",
-          "errno", 0 - fd);
+        # ⚠ Unproven, in the cmdit 1.2.4 sense: F_GETFL / F_SETFL on a
+        # signalfd this process just opened has no failure anything
+        # outside can provoke, so no test reaches this branch. The
+        # rollback it uses is the same one _close_exit_signalfd's tests
+        # cover.
+        tty_close_signalfd(fd, _ANUENUE_SIG_ADDED);
+        _ANUENUE_SIG_ADDED = 0;
+        anuenue_log_kv_int(SK_WARN,
+          "signalfd not made non-blocking; animation runs without signal-driven cursor restore",
+          "errno", 0 - fl);
         return 0 - 1;
     }
     return fd;
     #endif
-    # agnos: no terminal-signal generation yet (no Ctrl-C → SIGINT), so the
-    # signalfd exit-cleanup is a no-op — return -1, the function's documented
-    # "fall back to plain exit" contract. Also sidesteps darshana's
-    # Linux-gated TTY_SIGMASK_EXIT (universal constant, Linux-only consumers there).
+    # agnos: no terminal-signal generation yet (no Ctrl-C → SIGINT), and
+    # no fcntl — the stdlib's agnos fd_set_nonblocking answers -ENOSYS —
+    # so the non-blocking fd the frame loop needs cannot be made there.
+    # Return -1, the documented "fall back to plain exit" contract.
+    # (darshana has had an AGNOS tty_open_signalfd and TTY_SIGMASK_EXIT
+    # since 0.9.0; the gate is about fcntl, not about darshana.)
     return 0 - 1;
 }
 
-# Non-blocking probe: 1 if any exit signal is pending on `sigfd`,
-# 0 otherwise. The 128-byte buf accommodates Linux's
-# struct signalfd_siginfo (128 bytes); we don't inspect its contents,
-# only the success/fail status of the read.
+# Non-blocking probe: 1 if an exit signal was pending on `sigfd` (it is
+# consumed), 0 otherwise — including when `sigfd` is the -1 fallback
+# and when the read fails. tty_read_signal answers 0 for "nothing
+# pending" on a non-blocking fd, so this never waits.
 fn _signal_pending(sigfd): i64 {
     if (sigfd < 0) { return 0; }
-    var siginfo[128];
-    var n = file_read(sigfd, &siginfo, 128);
-    # n > 0  → one or more siginfos drained, signal arrived.
-    # n == 0 → impossible for signalfd (man 2 signalfd documents this).
-    # n < 0  → -EAGAIN (no signal pending) or other error; either way
-    #          "no signal arrived this tick".
-    if (n > 0) { return 1; }
+    if (tty_read_signal(sigfd) > 0) { return 1; }
     return 0;
+}
+
+# Most exit signals _close_exit_signalfd will drain before it unblocks.
+# Three can be pending at once (HUP, INT, TERM — standard signals do not
+# queue), so 8 always empties the fd, and the cap means a sender in a
+# tight `kill` loop cannot hold the teardown in this loop. An enum, not
+# an initialized global, per the CLAUDE.md convention.
+enum AnuenueSigDrain {
+    ANUENUE_SIG_DRAIN_MAX = 8;
+}
+
+# Teardown counterpart to _open_exit_signalfd: drain the fd, close it,
+# and unblock exactly the signals the open added. Returns 0, or -1 if
+# the unblock failed. A no-op returning 0 for the -1 fallback fd.
+#
+# ⚠ ORDER. This is the LAST step of animation's exit path, after the
+# SGR reset, the cursor show and the final newline — darshana's
+# teardown order (its ADR 0002, amended at 1.1.4): closing does not
+# discard a signal that arrived but was never read, and the unblock
+# delivers it at once with its default action, which for HUP/INT/TERM
+# terminates the process. Done last, the terminal is already restored.
+#
+# The drain is anuenue's addition, and it keeps the v1.x exit contract:
+# "SIGINT caught → exit 0". The frame loop reads ONE signal per probe,
+# so with SIGINT and SIGTERM both pending the second would otherwise be
+# delivered here and turn exit 0 into death-by-SIGTERM (143). Through
+# v1.3.6 the fd was never closed and the mask never restored, so a
+# pending signal simply died with the process; draining first keeps
+# that outcome while the mask is now put back as it was found.
+fn _close_exit_signalfd(sigfd): i64 {
+    if (sigfd < 0) { return 0; }
+    var n = 0;
+    while (n < ANUENUE_SIG_DRAIN_MAX) {
+        if (tty_read_signal(sigfd) > 0) {
+            n = n + 1;
+        } else {
+            n = ANUENUE_SIG_DRAIN_MAX;
+        }
+    }
+    var rc = tty_close_signalfd(sigfd, _ANUENUE_SIG_ADDED);
+    _ANUENUE_SIG_ADDED = 0;
+    return rc;
 }
 
 # ---- _frame_wait --------------------------------------------------
@@ -608,7 +690,12 @@ fn anuenue_animate(duration_secs, speed): i64 {
         if (_render_frame(in_buf, ctab, n_clusters, phase_base, line_buf, ends_lf) != 0) {
             tty_sgr_reset();
             tty_cursor_show();
-            return anuenue_write_failed();
+            # Report before the close: the close is the one step that
+            # can deliver a signal (see _close_exit_signalfd), and the
+            # message must not depend on surviving it.
+            var frc = anuenue_write_failed();
+            _close_exit_signalfd(sigfd);
+            return frc;
         }
 
         if (_frame_wait(sigfd, deadline_ns) == 1) { go = 0; continue; }
@@ -621,10 +708,17 @@ fn anuenue_animate(duration_secs, speed): i64 {
     # the last rendered row; emit one LF so the shell prompt opens
     # below the animated block. If the input ended in LF, the
     # cursor's already on a fresh row.
+    #
+    # The signalfd closes LAST, after every terminal write — darshana's
+    # teardown order. Its unblock is the only step that can deliver a
+    # signal with its default action, so nothing that restores the
+    # terminal may come after it. See _close_exit_signalfd.
     tty_sgr_reset();
     tty_cursor_show();
+    var rc = 0;
     if (ends_lf == 0) {
-        if (anuenue_write_all("\n", 1) != 0) { return anuenue_write_failed(); }
+        if (anuenue_write_all("\n", 1) != 0) { rc = anuenue_write_failed(); }
     }
-    return 0;
+    _close_exit_signalfd(sigfd);
+    return rc;
 }

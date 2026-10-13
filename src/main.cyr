@@ -241,23 +241,28 @@ fn main(): i64 {
     # different reasons.
     #
     # Low: a non-positive interval is not "as fast as possible" — 0 is
-    # a busy-loop that pins a core, and a negative value reaches
-    # poll(2) as an infinite timeout and hangs the terminal. Neither is
-    # something anyone asks for, so it is a usage error, the same shape
-    # as --duration (A-03).
+    # a busy-loop that pins a core, and through cyrius 6.6.19 a
+    # negative value reached poll(2) as an infinite timeout and hung
+    # the terminal (the 6.6.20 stdlib clamps it to 0: a busy loop
+    # instead). Nobody asks for either, so it is a usage error, the
+    # same shape as --duration (A-03).
     #
-    # High: see ANUENUE_MAX_INTERVAL_MS in src/animate.cyr. sleep_ms
-    # truncates to a 32-bit int, so a large value lands anywhere from
-    # "blocks forever" to "returns instantly" depending on which side
-    # of a power of two it falls on. Clamping keeps the flag monotonic
-    # — a bigger number always means a slower animation.
+    # High: see ANUENUE_MAX_INTERVAL_MS in src/animate.cyr. Through
+    # cyrius 6.6.19 sleep_ms truncated to a 32-bit int, so a large
+    # value landed anywhere from "blocks forever" to "returns
+    # instantly". The stdlib clamps since 6.6.20, but the one-hour cap
+    # is user-visible behaviour and stays: it keeps the flag monotonic
+    # and says so under -v.
     var interval_ms = cmdit_get_int(fs, f_interval);
     if (interval_ms <= 0) {
         return anuenue_fail(STIK_ERR_INVALID_ARGUMENT,
           "--interval must be > 0 milliseconds");
     }
     if (interval_ms > ANUENUE_MAX_INTERVAL_MS) {
-        anuenue_log_kv_int(SK_WARN, "--interval clamped; sleep_ms truncates to a 32-bit int above this",
+        # v1.4.0: this record used to explain the clamp as "sleep_ms
+        # truncates to a 32-bit int above this" — false since cyrius
+        # 6.6.20, so it no longer says why, only what.
+        anuenue_log_kv_int(SK_WARN, "--interval clamped to one hour per frame",
           "max-ms", ANUENUE_MAX_INTERVAL_MS);
         interval_ms = ANUENUE_MAX_INTERVAL_MS;
     }

@@ -9,8 +9,17 @@
 #      filter's color-computation work; if this regresses every byte
 #      gets slower.
 #   2. tty_fg_rgb_buf — darshana's buf-targeting escape emitter,
-#      pure-fn over a stack buffer. Dominates the filter's escape-
-#      formatting work.
+#      pure-fn over a stack buffer. Since M5 it runs only while the
+#      phase-cached escape table is built, not per cluster.
+#
+# v1.4.0 adds the question the darshana consumer survey asked: does the
+# M5 phase-cached escape table still beat calling darshana's composers
+# per cluster? Per colour mode, the same phase walk (+7 per call, the
+# default -p) through `_emit_phase_esc` (the table) and through
+# hsv_rainbow + the mode's composer (what the filter would do without
+# it). The verdict at v1.4.0 and the end-to-end numbers behind it are
+# in docs/benchmarks.md; re-run this after a darshana or toolchain bump
+# before trusting that verdict.
 #
 # The end-to-end `cat largefile | anuenue` benchmark requires a real
 # pipe and a host filesystem read — not a Cyrius bench-loop fit.
@@ -41,6 +50,57 @@ var BENCH_ITERS_HSV = 1000000;
 # 1M iterations for tty_fg_rgb_buf — same per-call envelope.
 var BENCH_ITERS_FG  = 1000000;
 
+# 1M iterations per side of each table-vs-composer pair.
+var BENCH_ITERS_EMIT = 1000000;
+
+# Bench one colour mode both ways: the phase-cached table
+# (`_emit_phase_esc`) and the direct composition the table replaced
+# (hsv_rainbow + the mode's darshana composer). Both walk the same
+# phases into a stack buffer at pos 0. Returns 0.
+fn bench_emit_mode(mode, label_table, label_direct): i64 {
+    ANUENUE_COLOR_MODE = mode;
+    _phase_esc_init();
+    var ebuf[64];
+    var rgb[24];
+
+    var bt = bench_new(label_table);
+    bench_batch_start(bt);
+    var i = 0;
+    var phase = 0;
+    while (i < BENCH_ITERS_EMIT) {
+        _emit_phase_esc(&ebuf, 0, phase);
+        phase = phase + 7;
+        i = i + 1;
+    }
+    bench_batch_stop(bt, BENCH_ITERS_EMIT);
+    bench_report(bt);
+
+    var bd = bench_new(label_direct);
+    bench_batch_start(bd);
+    i = 0;
+    phase = 0;
+    while (i < BENCH_ITERS_EMIT) {
+        hsv_rainbow(phase, &rgb);
+        var r = load64(&rgb + 0);
+        var g = load64(&rgb + 8);
+        var b = load64(&rgb + 16);
+        if (mode == ANUENUE_COLOR_TRUE) {
+            tty_fg_rgb_buf(&ebuf, 0, r, g, b);
+        } else { if (mode == ANUENUE_COLOR_256) {
+                tty_fg_256_buf(&ebuf, 0, _rgb_to_256(r, g, b));
+            } else {
+                tty_sgr_buf(&ebuf, 0, _rgb_to_16(r, g, b));
+            } }
+        phase = phase + 7;
+        i = i + 1;
+    }
+    bench_batch_stop(bd, BENCH_ITERS_EMIT);
+    bench_report(bd);
+    return 0;
+}
+
+# Bench entry: the two M1 trend rows, then the v1.4.0 table-vs-composer
+# pair for each colour mode. Returns 0; the numbers are the output.
 fn main(): i64 {
     alloc_init();
 
@@ -64,11 +124,9 @@ fn main(): i64 {
     bench_report(b_hsv);
 
     # --- tty_fg_rgb_buf per-call cost -----------------------------
-    # The escape emitter dominates the formatting branch of the
-    # filter loop's hot path. RGB triple (255, 128, 17) exercises
-    # 3-digit / 3-digit / 2-digit channel encoding — the
-    # _ansi_emit_u8 branch most consumers will hit on a typical
-    # rainbow walk.
+    # The truecolor composer, at a fixed RGB triple (255, 128, 17):
+    # 3-digit / 3-digit / 2-digit channel encoding. Kept as the M1
+    # trend row; the per-mode rows below are the hot-path question.
     var ebuf[32];
     var b_fg = bench_new("tty_fg_rgb_buf");
     bench_batch_start(b_fg);
@@ -79,6 +137,11 @@ fn main(): i64 {
     }
     bench_batch_stop(b_fg, BENCH_ITERS_FG);
     bench_report(b_fg);
+
+    # --- phase-cached table vs direct composition, per mode -------
+    bench_emit_mode(ANUENUE_COLOR_TRUE, "emit 24bit: table", "emit 24bit: hsv + tty_fg_rgb_buf");
+    bench_emit_mode(ANUENUE_COLOR_256,  "emit 256: table",   "emit 256: hsv + tty_fg_256_buf");
+    bench_emit_mode(ANUENUE_COLOR_16,   "emit 16: table",    "emit 16: hsv + tty_sgr_buf");
 
     return 0;
 }

@@ -16,6 +16,8 @@ include "src/filter.cyr"
 include "src/animate.cyr"
 include "src/version_str.cyr"
 
+# Unit-suite entry: runs every test_group below in order and returns
+# assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
 fn main(): i64 {
     alloc_init();
 
@@ -381,9 +383,9 @@ fn main(): i64 {
         # Runtime path for comparison.
         hsv_rainbow(phase, &pe_rgb);
         var fresh_len = tty_fg_rgb_buf(&pe_fresh, 0,
-                                       load64(&pe_rgb + 0),
-                                       load64(&pe_rgb + 8),
-                                       load64(&pe_rgb + 16));
+          load64(&pe_rgb + 0),
+          load64(&pe_rgb + 8),
+          load64(&pe_rgb + 16));
         # Cached path: _emit_phase_esc writes elen bytes starting at
         # `pos` into the buffer and returns `pos + elen`.
         var cached_pos = _emit_phase_esc(&pe_dst, 0, phase);
@@ -570,9 +572,9 @@ fn main(): i64 {
     # Buffer ceilings stay well clear of the cluster index sizing.
     assert(ANUENUE_ANIMATE_INPUT_MAX > 0, "input ceiling > 0");
     assert(ANUENUE_ANIMATE_CLUSTER_MAX > 0, "cluster ceiling > 0");
-    # SFD_NONBLOCK is the Linux kernel ABI value (O_NONBLOCK = 04000
-    # octal = 2048 decimal on every Linux arch anuenue targets).
-    assert_eq(ANUENUE_SFD_NONBLOCK, 2048, "SFD_NONBLOCK = O_NONBLOCK = 2048");
+    # The teardown drain must be able to empty the fd: three exit
+    # signals can be pending at once (standard signals do not queue).
+    assert(ANUENUE_SIG_DRAIN_MAX >= 3, "signalfd drain covers HUP + INT + TERM pending together");
 
     test_group("M4 animate — _pretag_clusters ASCII");
     # Pre-tag "AGNOS\n" — six clusters, one per byte. ctab[i] holds
@@ -865,13 +867,13 @@ fn main(): i64 {
     # stderr, which the test runner tolerates; the return value is
     # what is asserted.
     assert_eq(anuenue_fail(STIK_ERR_INVALID_ARGUMENT, "test: invalid argument"),
-              ANUENUE_EXIT_USAGE, "INVALID_ARGUMENT → exit 2");
+      ANUENUE_EXIT_USAGE, "INVALID_ARGUMENT → exit 2");
     assert_eq(anuenue_fail(STIK_ERR_IO, "test: io"),
-              ANUENUE_EXIT_RUN, "IO → exit 1");
+      ANUENUE_EXIT_RUN, "IO → exit 1");
     assert_eq(anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "test: exhausted"),
-              ANUENUE_EXIT_RUN, "RESOURCE_EXHAUSTED → exit 1");
+      ANUENUE_EXIT_RUN, "RESOURCE_EXHAUSTED → exit 1");
     assert_eq(anuenue_fail(STIK_ERR_INTERNAL, "test: internal"),
-              ANUENUE_EXIT_RUN, "INTERNAL → exit 1");
+      ANUENUE_EXIT_RUN, "INTERNAL → exit 1");
     # And the agnostik codes those kinds carry are the stable
     # machine-readable identity a consumer would key on.
     var obs_e_io = agnostik_err_new(STIK_ERR_IO, str_new("x", 1));
@@ -924,14 +926,14 @@ fn main(): i64 {
     # merely the boot-relative one the stdlib returns today.
     assert_eq(aud_ns < 5000000000000000000, 1, "clamp * 1e9 stays under 5e18");
     assert_eq(9223372036854775807 - aud_ns > 5000000000000000000, 1,
-              "clamp leaves >5e18 ns of headroom — safe under an epoch-based clock too");
+      "clamp leaves >5e18 ns of headroom — safe under an epoch-based clock too");
     # The unclamped value is exactly the trap: prove the wrap is real
     # so nobody "simplifies" the clamp away.
     assert_eq(9223372036854775807 * 1000000000 < 0, 1,
-              "i64::MAX * 1e9 really does wrap negative (the A-02 trap)");
+      "i64::MAX * 1e9 really does wrap negative (the A-02 trap)");
     # A sane duration is untouched by the clamp.
     assert_eq(ANUENUE_DEFAULT_DURATION_S < ANUENUE_MAX_DURATION_S, 1,
-              "the default duration is well inside the clamp");
+      "the default duration is well inside the clamp");
 
     test_group("v1.2.2 A-04 — unknown --color value is rejected, not guessed");
     assert_eq(_color_override_from_str("auto"),      ANUENUE_COLOR_OVERRIDE_AUTO, "auto parses");
@@ -979,7 +981,7 @@ fn main(): i64 {
     # The sentinel is the truncation point, NOT the input length — this
     # is why the tail is dropped rather than rendered in one colour.
     assert_eq(load64(aud_ct + aud_c * 8), ANUENUE_ANIMATE_CLUSTER_MAX,
-              "sentinel is the stop offset, so bytes past it are dropped");
+      "sentinel is the stop offset, so bytes past it are dropped");
     assert_eq(load64(aud_ct + aud_c * 8) < aud_n, 1, "sentinel is short of the input length");
 
     # ---- v1.3.0 — animation slot ----------------------------------
@@ -997,17 +999,19 @@ fn main(): i64 {
     assert_eq(ANUENUE_TICK_MS < 2147483647, 1, "tick is inside poll(2)'s int32 timeout");
 
     test_group("v1.3.0 -i / --interval bounds");
-    # The clamp is a correctness bound, not a taste one: every value at
-    # or below it must survive sleep_ms's int32 truncation unchanged.
+    # Set at v1.3.0 as a correctness bound: through cyrius 6.6.19 every
+    # value at or below it had to survive sleep_ms's int32 truncation
+    # unchanged. The stdlib clamps since 6.6.20 (architecture 005); the
+    # bound stays as behaviour, and these pins keep it inside int32.
     assert_eq(ANUENUE_MAX_INTERVAL_MS > 0, 1, "interval clamp is positive");
     assert_eq(ANUENUE_MAX_INTERVAL_MS < 2147483647, 1, "clamp is inside int32 positive range");
     # Truncating the clamp to 32 bits must be a no-op — that is the
     # whole point of choosing it.
     assert_eq(ANUENUE_MAX_INTERVAL_MS % 4294967296, ANUENUE_MAX_INTERVAL_MS,
-              "clamp survives a 32-bit truncation unchanged");
-    # The two values that motivated the bound really do misbehave.
-    assert_eq(4294967296 % 4294967296, 0, "2^32 ms truncates to 0 (busy loop) — the reason for the clamp");
-    assert_eq(2147483648 > 2147483647, 1, "2^31 ms exceeds int32 max (becomes negative = blocks forever)");
+      "clamp survives a 32-bit truncation unchanged");
+    # The two values that motivated the bound, as int32 arithmetic.
+    assert_eq(4294967296 % 4294967296, 0, "2^32 ms truncates to 0 in an int32 (a busy loop through cyrius 6.6.19)");
+    assert_eq(2147483648 > 2147483647, 1, "2^31 ms exceeds int32 max (negative = blocked forever through 6.6.19)");
     # The default must sit inside the clamp or the default is unusable.
     assert_eq(ANUENUE_FRAME_MS <= ANUENUE_MAX_INTERVAL_MS, 1, "default interval is within the clamp");
     assert_eq(ANUENUE_FRAME_MS > 0, 1, "default interval is positive");
@@ -1023,9 +1027,6 @@ fn main(): i64 {
     assert_eq(TTY_SIGMASK_EXIT & 1, 1, "SIGHUP bit set");
     assert_eq(TTY_SIGMASK_EXIT & 2, 2, "SIGINT bit set");
     assert_eq(TTY_SIGMASK_EXIT & 16384, 16384, "SIGTERM bit set");
-    # SFD_NONBLOCK is what makes _signal_pending a probe rather than a
-    # block; if this ever became 0 the frame loop would stall on read.
-    assert_eq(ANUENUE_SFD_NONBLOCK, 2048, "SFD_NONBLOCK = O_NONBLOCK = 2048 on x86_64/aarch64 Linux");
 
     # ---- v1.3.3 — P-1 sweep regressions ---------------------------
 
@@ -1097,16 +1098,71 @@ fn main(): i64 {
     # both dispositions. What is pinned here is the dispatch itself.
     ANUENUE_STDOUT_EPIPE = 0;
     assert_eq(anuenue_write_failed(), ANUENUE_EXIT_RUN,
-              "a real write failure exits 1");
+      "a real write failure exits 1");
     ANUENUE_STDOUT_EPIPE = 1;
     assert_eq(anuenue_write_failed(), ANUENUE_EXIT_OK,
-              "EPIPE exits 0 — the downstream is done, nothing is wrong");
+      "EPIPE exits 0 — the downstream is done, nothing is wrong");
     # The flag must be a clean two-state; anything else and the
     # dispatch above silently picks the error branch.
     assert_eq(ANUENUE_STDOUT_EPIPE, 1, "the EPIPE flag holds its value");
     ANUENUE_STDOUT_EPIPE = 0;
     assert_eq(anuenue_write_failed(), ANUENUE_EXIT_RUN,
-              "clearing the flag restores the error path");
+      "clearing the flag restores the error path");
+
+    # ---- v1.4.0 — darshana 1.3.0 ------------------------------------
+
+    test_group("v1.4.0 — the exit signalfd is darshana's, and gives back what it took");
+    # The darshana consumer survey (2026-10-12) found two defects in the
+    # hand-rolled v1.3.6 open, both reproduced against that code before
+    # the swap: no CLOEXEC on the fd, and a failure rollback that
+    # unblocked the WHOLE mask. The forced-failure half needs an fd limit
+    # and lives in scripts/signal-check.sh (tests/probes/sigmask-probe.cyr);
+    # this group drives the success path in-process, where the fd's flags
+    # and the mask can be read back.
+    #
+    # ⚠ Two assertions below send this process real signals while they
+    # are blocked. If the teardown failed to drain them, its unblock would
+    # deliver one with its default action and KILL this test run — a loud
+    # failure, which is the point.
+    assert_eq(_signal_pending(0 - 1), 0, "the -1 fallback fd never reports a signal");
+    assert_eq(_close_exit_signalfd(0 - 1), 0, "closing the -1 fallback fd is a no-op");
+    var sfd_before = _sig_blocked_now() & TTY_SIGMASK_EXIT;
+    var sfd = _open_exit_signalfd();
+    assert_eq(sfd >= 0, 1, "the exit signalfd opens");
+    assert_eq(sys_fcntl(sfd, F_GETFD, 0) & FD_CLOEXEC, FD_CLOEXEC,
+      "the exit signalfd is close-on-exec (v1.3.6 passed SFD_NONBLOCK alone)");
+    assert_eq((sys_fcntl(sfd, F_GETFL, 0) & SFD_NONBLOCK) != 0, 1,
+      "the exit signalfd is non-blocking, so _signal_pending probes and never waits");
+    assert_eq(_sig_blocked_now() & TTY_SIGMASK_EXIT, TTY_SIGMASK_EXIT,
+      "HUP|INT|TERM are blocked while the fd is open");
+    assert_eq(_ANUENUE_SIG_ADDED, TTY_SIGMASK_EXIT & ~sfd_before,
+      "the open records exactly the bits it added");
+    assert_eq(_signal_pending(sfd), 0, "nothing pending reads as 0, at once");
+    sys_kill(sys_getpid(), SIGINT);
+    assert_eq(_signal_pending(sfd), 1, "a pending SIGINT is reported");
+    assert_eq(_signal_pending(sfd), 0, "and consumed by the probe");
+    # Two pending at teardown: the frame loop would have read one of them
+    # and stopped; the close must drain the other before it unblocks.
+    sys_kill(sys_getpid(), SIGINT);
+    sys_kill(sys_getpid(), SIGTERM);
+    assert_eq(_close_exit_signalfd(sfd), 0, "the teardown drains, closes and unblocks — and this process survives it");
+    assert_eq(_sig_blocked_now() & TTY_SIGMASK_EXIT, sfd_before,
+      "the mask is back to what it was before the open");
+    assert_eq(sys_fcntl(sfd, F_GETFD, 0) < 0, 1, "the fd is closed");
+    assert_eq(_ANUENUE_SIG_ADDED, 0, "the close forgets what it unblocked");
+    # A signal blocked BEFORE the open is not anuenue's to unblock — the
+    # shape a parent with a live signalfd of its own hands a child.
+    var sfd_hup[8];
+    store64(&sfd_hup, 1);                    # SIGHUP = bit 0 of a Linux sigset_t
+    sys_sigprocmask(SIG_BLOCK, &sfd_hup, 0);
+    var sfd2 = _open_exit_signalfd();
+    assert_eq(sfd2 >= 0, 1, "opens with SIGHUP already blocked");
+    assert_eq(_ANUENUE_SIG_ADDED & 1, 0, "a pre-blocked SIGHUP is not counted as added");
+    assert_eq(_close_exit_signalfd(sfd2), 0, "closes");
+    assert_eq(_sig_blocked_now() & 1, 1, "SIGHUP is still blocked after the close");
+    assert_eq(_sig_blocked_now() & TTY_SIGMASK_EXIT, sfd_before | 1,
+      "and INT/TERM are back to their state before the open");
+    if ((sfd_before & 1) == 0) { sys_sigprocmask(SIG_UNBLOCK, &sfd_hup, 0); }
 
     return assert_summary();
 }

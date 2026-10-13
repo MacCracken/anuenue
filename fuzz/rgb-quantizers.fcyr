@@ -64,6 +64,8 @@ fn fuzz_channel_to_6_in_range(seed) {
     return 0;
 }
 
+# _channel_to_6 over 1 000 full-range i64 channels from `seed` always
+# returns a cube bucket in [0, 5]. Returns 0.
 fn fuzz_channel_to_6_out_of_range(seed) {
     _fuzz_seed(seed);
     var iters = 0;
@@ -77,6 +79,8 @@ fn fuzz_channel_to_6_out_of_range(seed) {
     return 0;
 }
 
+# _rgb_to_256 over 1 000 in-range RGB triples from `seed` always lands
+# in the 6×6×6 cube, 16..231. Returns 0.
 fn fuzz_rgb_to_256(seed) {
     _fuzz_seed(seed);
     var iters = 0;
@@ -93,6 +97,8 @@ fn fuzz_rgb_to_256(seed) {
     return 0;
 }
 
+# _rgb_to_256 over 1 000 full-range i64 triples from `seed` still lands
+# in the cube. Returns 0.
 fn fuzz_rgb_to_256_out_of_range(seed) {
     _fuzz_seed(seed);
     var iters = 0;
@@ -127,6 +133,8 @@ fn fuzz_rgb_to_16(seed) {
     return 0;
 }
 
+# _rgb_to_16 over 1 000 full-range i64 triples from `seed` still returns
+# a bright-palette code, 91..97. Returns 0.
 fn fuzz_rgb_to_16_out_of_range(seed) {
     _fuzz_seed(seed);
     var iters = 0;
@@ -142,6 +150,8 @@ fn fuzz_rgb_to_16_out_of_range(seed) {
     return 0;
 }
 
+# Harness entry: both quantizers, in range and out of range.
+# Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
 

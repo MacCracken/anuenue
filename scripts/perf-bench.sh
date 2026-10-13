@@ -16,10 +16,21 @@
 #   RUNS=11 sh scripts/perf-bench.sh   # more samples → tighter median
 #   FIXTURE_BYTES=2800000 sh ...       # larger corpus for noisier hosts
 #   BIN=build/anuenue-old sh ...       # bench a different binary
+#   COLOR=256 sh scripts/perf-bench.sh # 256 / 16 instead of truecolor
+#
+# COLOR (v1.4.0) exists because the phase-cached escape table's value
+# differs by mode: deleting it was measured −15% on truecolor and
+# +33% / +42% on 256 / 16 (docs/benchmarks.md § v1.4.0). A harness
+# that could only measure truecolor would have recommended deleting it.
 
 set -eu
 
 BIN="${BIN:-build/anuenue}"
+COLOR="${COLOR:-24bit}"
+case "$COLOR" in
+    24bit|truecolor|256|16) ;;
+    *) echo "perf-bench: COLOR must be 24bit, 256 or 16 (got '$COLOR')" >&2; exit 2 ;;
+esac
 RUNS="${RUNS:-7}"
 FIXTURE_BYTES="${FIXTURE_BYTES:-1400000}"   # ~1.4 MB matches docs/benchmarks.md baseline
 
@@ -111,11 +122,11 @@ bench_corpus() {
     bytes="$3"
 
     cat_med=$(median_ns "cat '$fx' > /dev/null")
-    # --color=24bit forces the truecolor path regardless of TTY state.
-    # Without this, perf-bench's piped stdout triggers M6's auto-
-    # detect → MONO and we'd benchmark the passthrough instead of
+    # --color=$COLOR (24bit by default) forces a colour path regardless
+    # of TTY state. Without it, perf-bench's piped stdout triggers M6's
+    # auto-detect → MONO and we'd benchmark the passthrough instead of
     # the filter's hot path.
-    ane_med=$(median_ns "'$BIN' --color=24bit < '$fx' > /dev/null")
+    ane_med=$(median_ns "'$BIN' --color=$COLOR < '$fx' > /dev/null")
 
     # ns/byte overhead anuenue adds on top of the kernel's bare pipe.
     overhead_ns=$((ane_med - cat_med))
@@ -130,7 +141,7 @@ bench_corpus() {
 }
 
 # --- driver --------------------------------------------------------
-echo "perf-bench: $BIN  (runs=$RUNS  fixture≈${FIXTURE_BYTES} B)"
+echo "perf-bench: $BIN  (runs=$RUNS  fixture≈${FIXTURE_BYTES} B  --color=$COLOR)"
 echo
 echo "ASCII corpora ($ASCII_BYTES B / $ASCII_LF_BYTES B), UTF-8 corpus ($UTF8_BYTES B):"
 bench_corpus "$FX_ASCII"    "ascii (no LF)"  "$ASCII_BYTES"

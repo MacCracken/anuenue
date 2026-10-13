@@ -10,10 +10,11 @@
 Two layers of measurement:
 
 1. **Cyrius `bench` micro** — `tests/anuenue.bcyr`. Per-call cost of
-   the two hot-path primitives (`hsv_rainbow` and `tty_fg_rgb_buf`)
-   measured with `lib/bench.cyr`'s batched-clock harness (1M iter
-   per batch — keeps total wall-time well past the ~120ns
-   `clock_gettime` overhead floor).
+   the two M1 primitives (`hsv_rainbow` and `tty_fg_rgb_buf`) and,
+   since v1.4.0, of `_emit_phase_esc` (the phase-cached table) against
+   `hsv_rainbow` + darshana's composer in each colour mode — measured
+   with `lib/bench.cyr`'s batched-clock harness (1M iter per batch —
+   keeps total wall-time well past the `clock_gettime` overhead floor).
 2. **End-to-end shell** — `cat <fixture> | anuenue > /dev/null` vs
    `cat <fixture> > /dev/null`, measured with shell `time` over
    three runs. The fixture is `base64`-of-1MB-`/dev/urandom` — a
@@ -405,6 +406,87 @@ discarded 99.3% of the stream and exited 0.
 > is the same discipline the v1.2.2 and v1.3.2 cuts adopted, applied here after
 > nearly getting it wrong.
 
+## v1.4.0 — cyrius 6.7.9 + darshana 1.3.0
+
+### The phase-cached escape table, re-measured
+
+darshana's consumer survey asked whether the M5 table still pays for itself
+now that darshana 1.2.0 made its composers 35–49% faster. Two measurements, both
+in this repo's harnesses.
+
+**Micro** (`tests/anuenue.bcyr`, three runs, ns per escape; same phase walk
+through the table and through `hsv_rainbow` + the mode's composer):
+
+| Mode | table | hsv_rainbow + composer | winner |
+|---|---:|---:|---|
+| truecolor | 43–45 | 31–33 | composer |
+| 256 | 30–31 | 37–38 | table |
+| 16 | 18 | 24 | table |
+
+Under cyrius 6.6.2 with darshana 1.1.1 the truecolor pair was 41–43 vs 43–44 —
+a tie. darshana 1.3.0's faster composer is what tipped truecolor.
+
+**End to end** — `perf-bench.sh` (now `COLOR=`-selectable), a binary built with
+`_emit_phase_esc` replaced by the direct composition (stdout byte-identical
+across the same 276 comparisons) against the table binary, `RUNS=11`, two
+interleaved rounds each, host load average ~5.7 when the runs began:
+
+| Mode | corpus | table | no table | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 49.6 | 41.9 | −15% |
+| | ascii w/ LFs | 53.7 | 47.0 | −13% |
+| | utf8 mixed | 44.0 | 39.5 | −10% |
+| 256 | ascii no-LF | 36.1 | 48.0 | **+33%** |
+| | ascii w/ LFs | 40.6 | 52.6 | **+29%** |
+| | utf8 mixed | 34.8 | 43.0 | **+24%** |
+| 16 | ascii no-LF | 24.2 | 34.5 | **+42%** |
+| | ascii w/ LFs | 29.3 | 39.6 | **+35%** |
+| | utf8 mixed | 27.0 | 34.6 | **+28%** |
+
+**Kept.** Deleting the table is a net regression in two of the three modes. A
+harness that could only measure truecolor — `perf-bench.sh` before v1.4.0 —
+would have recommended the opposite.
+
+What the micro numbers locate is the cost: the byte-at-a-time copy, not the
+lookup. A three-word copy of the same entry measured **9–10 ns in every mode**
+(a scratch probe; not in the harness). It writes past the escape's length, so it
+is filed as its own roadmap item rather than taken here. And the "≈ 10 ns/call"
+this file has quoted for `_emit_phase_esc` since v0.6.0 is not what the byte
+loop costs: 41–43 ns under cyrius 6.6.2, 43–45 under 6.7.9.
+
+### Release ratchet — v1.3.6 vs v1.4.0
+
+The hot path did not change — `_emit_phase_esc` and the walk around it are the
+v1.3.6 code — so this measures the toolchain and darshana moves. A rebuilt v1.3.6
+binary (byte-identical to the 2026-09-10 v1.3.6 build left in `build/`) against v1.4.0, `RUNS=11`, three
+interleaved rounds per mode, medians of the rounds, ns/byte. The host was shared
+with other build jobs: load average 5.3–5.5 for truecolor, 5.6–6.0 for 256 and
+16; 16's third round ran at load 7.0–7.5 and read ~48 ns/byte for **both**
+binaries, so it is dropped and the 16 rows are the mean of rounds 1–2.
+
+| Mode | corpus | v1.3.6 | v1.4.0 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 48.53 | **48.56** | +0.1% |
+| | ascii w/ LFs | 52.85 | **52.85** | 0.0% |
+| | utf8 mixed | 43.42 | **43.46** | +0.1% |
+| 256 | ascii no-LF | 37.17 | **36.32** | −2.3% |
+| | ascii w/ LFs | 43.91 | **40.77** | −7.2% |
+| | utf8 mixed | 36.00 | **34.73** | −3.5% |
+| 16 | ascii no-LF | 24.68 | **24.84** | +0.6% |
+| | ascii w/ LFs | 29.61 | **29.50** | −0.4% |
+| | utf8 mixed | 27.27 | **28.07**¶ | +2.9% |
+
+¶ one clean sample; v1.4.0's round-2 utf8 read 48.50 at load 7.0.
+
+**Flat on truecolor**, where the rounds agree to within ±1.5%. The 256 rows
+favour v1.4.0 but its rounds spread up to 13% on the v1.3.6 side (w/ LFs 41.0 –
+46.6), so they are not evidence of a speed-up; read them as "no regression".
+Truecolor ascii no-LF is the M5 metric: 48.56 ns/byte, under the 60 ns/byte
+acceptance.
+
+- **1.4.0 binary**: **210 696 bytes**, +6 384 B over v1.3.6's 204 312 B — almost
+  all of it the toolchain (+6 040 B); see [`state.md` § Binary](development/state.md#binary).
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -428,7 +510,9 @@ discarded 99.3% of the stream and exited 0.
 | v1.3.2  | 46.47‡              | 9§               | 50§                 | 814 448      | v1.3.x closeout: perf + audit delta discharged |
 | v1.3.3  | 46.46‡              | 8§               | 51§                 | 814 480      | P(-1) sweep: E-01 checked writes (1 HIGH fixed) |
 | v1.3.4  | 46.64‡              | 8§               | 51§                 | 814 488      | Allocation-failure probe; E-03 EPIPE fix |
-| **v1.3.5** | **46.90**‡       | 8§               | 51§                 | **814 488**  | **F-01: transient read errors are not failures** |
+| v1.3.5  | 46.90‡              | 8§               | 51§                 | 814 488      | F-01: transient read errors are not failures |
+| v1.3.6  | 48.53‖              | 8§               | 37§                 | 204 312      | Toolchain 6.6.2 + dep refresh. Figures measured at v1.4.0 from a rebuilt v1.3.6 binary; binary compacted by 6.6.x DCE |
+| **v1.4.0** | **48.56**‖       | 9§               | 23§                 | **210 696**  | **cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -442,6 +526,12 @@ above.
 subtracts a measured timer floor the older harness did not. Not
 comparable to the rows above.
 
+‖ v1.3.6 and v1.4.0 measured back-to-back on a shared host (load average
+~5.4), so both read ~2 ns/byte above the v1.3.x rows, which came from idle
+hosts — compare the ‖ pair to each other. Their `tty_fg_rgb_buf` figures are
+darshana 1.1.1 (37 ns) and 1.3.0 (23 ns), the composer speed-up darshana 1.2.0
+shipped; neither touches the per-cluster hot path.
+
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both
 numbers are within host-variance bounds of each other; the M5
@@ -453,4 +543,6 @@ Post-M6 figures are doc-rounded against host-variance jitter
 between consecutive runs). The micro-benchmark figures (`hsv_rainbow`,
 `tty_fg_rgb_buf`) measure the table-build path — that's now
 one-shot at startup rather than per-cluster (the M5 phase cache
-replaced both on the hot path with `_emit_phase_esc` ≈ 10 ns/call).
+replaced both on the hot path with `_emit_phase_esc`, which this note
+used to put at ≈ 10 ns/call; v1.4.0 measured 41–45 ns for truecolor —
+see § v1.4.0).

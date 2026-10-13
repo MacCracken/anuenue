@@ -4,6 +4,202 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-12 (cyrius 6.7.9 + darshana 1.3.0)
+
+The cyrius 6.7 language minor and darshana's 1.2.0 / 1.3.0 additions, plus the
+items darshana's consumer survey (2026-10-12) filed in
+[`roadmap.md`](docs/development/roadmap.md). The survey's findings were "confirmed
+by reading the source; not yet reproduced by running it" — every one was
+reproduced on the v1.3.6 code before it was fixed. Audit delta:
+[`docs/audit/2026-10-12-v140-delta.md`](docs/audit/2026-10-12-v140-delta.md) — 1 LOW +
+3 INFO, all fixed, zero HIGH+ open.
+
+**stdout is byte-identical to v1.3.6**: 276 stdout + exit-code comparisons
+(16 corpora × 16 flag sets, positional text, help and usage errors with stderr),
+the six goldens, and full animation streams in all three colour modes. What
+changed that a user can see is listed under *Behaviour*.
+
+### Changed — toolchain + dependency pins
+
+- **cyrius 6.6.2 → 6.7.9** (`CYRIUS_DCE=1 cyrius build -v` reports
+  `compiler: …/versions/6.7.9/bin/cycc`). `lib/` re-vendored from scratch —
+  `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps` — so files the
+  6.7.9 snapshot no longer ships are gone (`base64`, `bigint`, `csv`, `cyml`,
+  `json`, `linalg`, `matrix`, `toml`, `u128`; nothing in anuenue included them)
+  and three new ones arrive (`alloc_cx`, `poison`, `tls_hostid`). This supersedes
+  a never-committed 2026-09-26 `cyrius deps` output that had been sitting in the
+  working tree (see the `path` note below for what it contained).
+- **darshana 1.1.1 → 1.3.0, and `path = "../darshana"` dropped.** 1.3.0 is what
+  forced the toolchain move: its bundle declares private constants with `const`
+  (cyrius 6.7.2), and under the 6.6.2 pin it fails with `expected '=', got
+  identifier` (re-checked here against 6.6.2). The `path` made `cyrius deps`
+  vendor darshana's working tree rather than the tag — the 2026-09-26 output held
+  darshana **1.1.2**, cmdit **1.2.5** and agnostik **1.6.4** under tags 1.1.1,
+  1.2.4 and 1.6.0. From cyrius 6.7.6 a `path` beside `git` + `tag` is only a
+  `CYRIUS_LOCAL` dev override and the tag builds by default; darshana's entry is
+  removed outright, and cmdit / sakshi / agnostik keep theirs as overrides.
+- **sakshi 2.5.1 → 2.5.8, because the toolchain moved.** The 6.7.9 stdlib
+  snapshot ships sakshi 2.5.8, and a `[deps.sakshi]` tag that disagrees with it is
+  a build-time `./lib/ shadows version-pinned … sakshi 2.5.1 (pinned: 2.5.8)`
+  warning on every build. 2.5.8 is the one tag that clears it; no API change.
+- cmdit 1.2.4 and agnostik 1.6.0 unchanged — the move required neither.
+
+**Language-bump repairs: none were needed in anuenue's own source.** It
+compiled with zero errors and zero warnings for x86_64 at the first 6.7.9 build.
+Checked rather than assumed: no identifier spelled `const` / `true` / `false` /
+`do` / `dyn` / `trait` / `loop`, no `!` other than `!=`, no compound assignment,
+no typed narrow pointer, no unary `-` / `~` on a constant. What the move *did*
+surface was outside the compiler:
+
+- **`dist/` was stale under 6.7.9.** `cyrius distlib --check` failed — the
+  bundle predated 6.6.18's compile-verified requires block. Regenerated with
+  `cyrius distlib --all`. The sidecar shrank from the eleven `[deps].stdlib`
+  leaves (the pre-6.6.18 leak) to one, `boxed` — which is itself a cyrius
+  misattribution, not a need of `src/hsv.cyr` (see the audit delta's *Upstream*).
+- **cyrius 6.6.20 fixed `sleep_ms`'s int32 truncation**, which
+  `ANUENUE_MAX_INTERVAL_MS`, `--interval`'s warning and
+  [architecture 005](docs/architecture/005-timing-primitives-truncate.md) all
+  described as current. Re-measured on 6.7.9 and documented as history; the
+  one-hour clamp stays as behaviour.
+- **`cyrius audit` was failing fmt and docs** — already under 6.6.2, so not new,
+  but this is a minor cut and CLAUDE.md's P(-1) step 1 wants it clean. Four
+  test/fuzz files run through `cyrius fmt` (its changes are whitespace only) and 18
+  test/fuzz functions given docstrings. Now clean on all five stages.
+
+### Fixed — the exit signalfd is darshana's (G-01 LOW, G-02 / G-03 INFO)
+
+`src/animate.cyr`'s `_open_exit_signalfd` hand-rolled `sigprocmask` + `signalfd`
+with a private `ANUENUE_SFD_NONBLOCK`, because darshana's `tty_open_signalfd`
+returns a blocking fd. Both survey defects reproduced on v1.3.6 with a probe that
+pre-blocks SIGHUP and forces `signalfd(2)` to fail under `prlimit --nofile=3`:
+
+- **G-01** — the failure rollback unblocked the **whole** mask, so a signal
+  blocked before animation started came back unblocked (`hup_blocked=0`). The
+  v1.0.2-class defect darshana fixed in its own open.
+- **G-02** — no `SFD_CLOEXEC` (`cloexec=0`). Latent: anuenue never execs.
+
+Now `tty_open_signalfd(TTY_SIGMASK_EXIT)` plus the stdlib's `fd_set_nonblocking`
+(the route darshana documents), `tty_read_signal` for the per-slice probe, and —
+**G-03**, the 2026-05-22 audit's INFO 8 + 9 — a matching close:
+`_close_exit_signalfd` runs as the LAST step of every exit from the frame loop,
+after the SGR reset, cursor show and final newline (darshana's teardown order),
+and unblocks only the bits the open added, so the mask anuenue leaves is the mask
+it inherited.
+
+Closing introduced a hazard of its own, found by mutation and closed in-cut: the
+unblock delivers any signal still pending, and the frame loop reads one per
+probe. With SIGINT and SIGTERM both pending, a close without a drain turned the
+documented exit 0 into death by SIGTERM — **exit 143, 3 of 3 runs**. The close
+drains first (bounded at `ANUENUE_SIG_DRAIN_MAX = 8`); v1.3.6 and v1.4.0 both
+exit 0, 3 of 3.
+
+⚠ **One branch is unproven**: if `fd_set_nonblocking` failed, the open gives the
+fd back and unblocks what it added (a blocking fd would freeze the frame loop).
+`F_GETFL` / `F_SETFL` on a signalfd the process just opened has no failure a
+test can provoke, so nothing reaches it; the rollback it calls is the one the
+close tests cover.
+
+On AGNOS the gate stays: the stdlib's agnos `fd_set_nonblocking` answers
+-ENOSYS, so the non-blocking fd cannot be made there. The comment saying the gate
+also dodged a "Linux-gated TTY_SIGMASK_EXIT" was wrong — darshana has had the
+AGNOS mask and open since 0.9.0 — and is corrected.
+
+### Behaviour
+
+- **Animation's syscall surface grows by two calls**: `fcntl` (F_GETFL + F_SETFL,
+  inside `fd_set_nonblocking`) and `close` at teardown. A seccomp allowlist for
+  `anuenue -a` needs both. The filter, passthrough and positional-text paths are
+  unchanged. [`integrating-anuenue.md`](docs/guides/integrating-anuenue.md)'s
+  list is corrected — it also still said `nanosleep`, which `sleep_ms` stopped
+  using at cyrius 6.0.65 (it is `poll`), and omitted `clock_gettime`.
+- **After animation the signal mask is restored** instead of left blocked until
+  exit. Not observable from outside (the process exits immediately), but it is
+  why the drain above exists.
+- **`--log-level=warn` wording**: `--interval clamped; sleep_ms truncates to a
+  32-bit int above this` → `--interval clamped to one hour per frame` (G-04 — the
+  stated cause stopped being true at cyrius 6.6.20). stderr only.
+- **The `-v` warning for a failed signalfd** carries `open=tty_open_signalfd
+  failed` instead of an errno: darshana normalises the failure to -1. A failed
+  `fd_set_nonblocking` gets its own warning, with the errno.
+
+### Kept — the phase-cached escape table, re-measured
+
+The survey asked whether the M5 table now costs more than it saves, since
+darshana 1.2.0 made the composers 35–49% faster. Measured in anuenue's own
+harnesses — `tests/anuenue.bcyr` gains a table-vs-composer pair per colour mode,
+and `scripts/perf-bench.sh` gains `COLOR=256|16`, without which it could only
+ever have measured the mode where deleting the table wins:
+
+| ns per escape (`anuenue.bcyr`) | table | hsv_rainbow + composer |
+|---|---:|---:|
+| truecolor | 43–45 | **31–33** |
+| 256 | **30–31** | 37–38 |
+| 16 | **18** | 24 |
+
+| ascii no-LF, ns/byte (`perf-bench.sh`, `RUNS=11`, ×2 interleaved) | table | no table | Δ |
+|---|---:|---:|---:|
+| truecolor | 49.6 | 41.9 | −15% |
+| 256 | 36.1 | 48.0 | **+33%** |
+| 16 | 24.2 | 34.5 | **+42%** |
+
+Deleting it would be a net regression, so it stays. The numbers do locate its
+cost: the byte-at-a-time copy, not the lookup — a three-word copy of the same
+entry measured 9–10 ns in every mode. That copy writes past the escape's length,
+which changes `_emit_phase_esc`'s write footprint and what
+`fuzz/emit-phase-esc.fcyr` asserts, so it is filed in the roadmap as its own
+item rather than slipped into a measurement. Also corrected: the "≈ 10 ns/call"
+figure for the table that `filter.cyr` and `docs/benchmarks.md` carried since
+v0.6.0 is not what the loop costs — 41–43 ns measured under cyrius 6.6.2.
+
+### Performance
+
+The per-cluster hot path is unchanged, so the release ratchet measures the
+toolchain and darshana moves. A rebuilt v1.3.6 binary against v1.4.0,
+`RUNS=11`, three interleaved rounds per mode, medians, on a host shared with
+other build jobs (load average ~5.4):
+
+| ascii no-LF, ns/byte | v1.3.6 | v1.4.0 | Δ |
+|---|---:|---:|---:|
+| truecolor (M5 metric) | 48.53 | **48.56** | +0.1% |
+| 256 | 37.17 | **36.32** | −2.3% (noisy) |
+| 16 | 24.68 | **24.84** | +0.6% |
+
+Flat. All corpora are in [`docs/benchmarks.md`](docs/benchmarks.md) § v1.4.0;
+the shared host puts both binaries ~2 ns/byte above the idle-host v1.3.x rows,
+so compare the pair, not the trend. darshana 1.3.0's composer is faster
+(`tty_fg_rgb_buf` 37 → 23 ns), but since M5 it runs only while the escape table
+is built.
+
+**Binary** 204 312 → **210 696 B** (+6 384): toolchain +6 040, sakshi −32,
+darshana +280, anuenue +96. (v1.3.6's 204 312 B, down from v1.3.5's 814 488,
+is cyrius 6.6.x compacting DCE'd code again — recorded at this cut because
+v1.3.6 did not.)
+
+### Changed — stale comments about darshana (survey)
+
+- `src/filter.cyr` blamed darshana's `_ansi_emit_u8` divides for the composer's
+  cost; darshana deleted `_ansi_emit_u8` at 1.1.0 (and measured reciprocal
+  multiplication slower). Rewritten around the v1.4.0 measurement.
+- `src/color.cyr` called `tty_isatty` "darshana Linux-only"; it has had an AGNOS
+  peer since darshana 0.8.2. The skip on AGNOS stays, for the reason that arm
+  documents: it reports whether the framebuffer console is up and ignores `fd`.
+
+### Added — tests
+
+- **Unit** (384 → **402** assertions, 52 → **53** groups): the darshana signalfd
+  group — fd flags read back with `fcntl` (CLOEXEC, O_NONBLOCK), a real SIGINT
+  reported and consumed, SIGINT + SIGTERM pending across the close (without the
+  drain the test process is killed), the mask restored, and a pre-blocked SIGHUP
+  left blocked. Mutation-checked: dropping the drain kills the run (signal 2);
+  dropping `& ~prev` fails 3 assertions. The two `ANUENUE_SFD_NONBLOCK`
+  assertions go with the constant.
+- **`scripts/signal-check.sh`** 12 → **18** checks: CLOEXEC and non-blocking on
+  the success path, the close giving back exactly what the open took, a
+  pre-blocked SIGHUP surviving a forced failure (the G-01 shape — a scratch
+  build of the same probe against the v1.3.6 code reported it unblocked), and
+  gate 5 — two exit signals at once exit 0 (fails without the drain, 3 of 3).
+  `tests/probes/sigmask-probe.cyr` reports a `plain` and a `preblocked` case.
+
 ## [1.3.6] — 2026-09-10
 
 Ecosystem migration onto the cyrius **6.6.2** repair release.
