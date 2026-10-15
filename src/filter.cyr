@@ -84,22 +84,29 @@ var ANUENUE_FLUSH_RESERVE = 32;
 #   256        30–31 vs 37–38   the table wins
 #   16            18 vs 24      the table wins
 #
+# v1.4.3, after the word copy (same harness): the table is 9 ns in
+# every mode, so it now wins in all three.
+#
 # End to end (scripts/perf-bench.sh, ascii no-LF), deleting the table
 # measured 49.6 → 41.9 ns/byte on truecolor (−15%) but 36.1 → 48.0 on
 # 256 (+33%) and 24.2 → 34.5 on 16 (+42%). KEPT: it is a net loss
-# to delete. What the numbers do say is where its cost is — the
-# byte-at-a-time copy below, not the lookup: a three-word copy of the
-# same entry measured 9–10 ns in every mode. That copy writes past
-# `elen`, which changes this function's write footprint (and what
-# fuzz/emit-phase-esc.fcyr asserts), so it is a roadmap item of its
-# own rather than part of this measurement. docs/benchmarks.md § v1.4.0.
+# to delete. What the numbers did say is where its cost was — the
+# byte-at-a-time copy in _emit_phase_esc, not the lookup. v1.4.3
+# replaced that copy with three words; see _emit_phase_esc for the
+# footprint that changes and docs/benchmarks.md § v1.4.3 for the
+# numbers.
 #
 # Layout: 32 bytes/entry, 1530 entries = 48 960 bytes runtime
 # (heap-allocated; doesn't bloat the DCE binary). Each entry:
 #   offset 0..7  : i64 length — at most 17 truecolor, 11 for 256,
 #                  5 for 16 (measured maxima; docs/architecture/001)
 #   offset 8..31 : payload bytes (escape sequence), 24-byte budget
-#                  the v1.3.3 E-02 unit group checks every entry against
+#                  the v1.3.3 E-02 unit group checks every entry against.
+#                  From v1.4.3 the bytes after the escape are ZERO —
+#                  _emit_phase_esc copies all 24, so what follows the
+#                  escape is scratch, and zero scratch is deterministic
+#                  (a mode rebuild would otherwise leave the previous
+#                  mode's longer escape behind it).
 # 32-byte stride matches a cache line on the x86_64 hosts anuenue
 # targets — one entry fits in a single $L1 fill.
 var ANUENUE_ESC_TABLE_ENTRY_SIZE = 32;
@@ -123,8 +130,8 @@ var _PHASE_ESC_TABLE = 0;
 #   MONO      → never reached (main.cyr dispatches to
 #               anuenue_passthrough before any filter call)
 #
-# Hot-path emit (_emit_phase_esc) is unchanged — it just memcpys
-# the pre-baked bytes whatever their length. The table contract
+# Hot-path emit (_emit_phase_esc) does not depend on the mode — it
+# copies the pre-baked payload whatever its length. The table contract
 # (8-byte length + payload) stays the same shape; only the payload
 # contents differ between modes.
 fn _phase_esc_init(): i64 {
@@ -180,6 +187,9 @@ fn _phase_esc_init(): i64 {
                 } } }
         var entry = _PHASE_ESC_TABLE + i * ANUENUE_ESC_TABLE_ENTRY_SIZE;
         store64(entry, elen);
+        store64(entry + 8,  0);              # v1.4.3: zero the payload
+        store64(entry + 16, 0);              # words first, so the bytes
+        store64(entry + 24, 0);              # past elen are scratch zeros
         var k = 0;
         while (k < elen) {
             store8(entry + 8 + k, load8(&ebuf + k));
@@ -191,27 +201,34 @@ fn _phase_esc_init(): i64 {
 }
 
 # Hot-path emit. Copies the pre-formatted escape for `phase` into
-# `line_buf` at `pos`. Returns the new write position. Byte-identical
-# to the v0.5.0 sequence:
+# `line_buf` at `pos`. Returns the new write position, pos + elen.
+# The `[pos, pos + elen)` bytes are identical to the v0.5.0 sequence:
 #   hsv_rainbow(phase, &rgb);
 #   pos = tty_fg_rgb_buf(line_buf, pos, R, G, B);
-# (or the 256 / 16 composer for those modes). Writes exactly `elen`
-# bytes — at most 17. Measured at v1.4.0: 43–45 ns per call on
-# truecolor, 30 on 256, 18 on 16, almost all of it the byte-copy loop
-# (see the table header above for what that means and what it does
-# not). The "~10 ns" this comment quoted from v0.6.0 does not describe
-# the loop on cyrius 6.6.2 (41–43 ns measured) or 6.7.9.
+# (or the 256 / 16 composer for those modes).
+#
+# ⚠ WRITE FOOTPRINT (v1.4.3): 24 bytes, `[pos, pos + 24)`, whatever
+# elen is. The payload is copied as three 8-byte words rather than
+# elen single bytes; the bytes past elen are the entry's zero scratch,
+# and the caller's next write overwrites them or leaves them past
+# `pos`, where no flush reads. Every caller must therefore enter with
+# 24 bytes of room — which all of them do, because they call this
+# only at the top of an iteration (pos <= LINE_BUF - FLUSH_RESERVE) or
+# right after a flush (pos = 0). The argument, call site by call site:
+# docs/architecture/001 § The escape write footprint.
+#
+# Why: the byte loop was the per-cluster path's largest cost — 39–45
+# ns per call on truecolor, 27–30 on 256, 16–18 on 16 (v1.4.0–v1.4.2).
+# The word copy's numbers are in docs/benchmarks.md § v1.4.3.
 fn _emit_phase_esc(line_buf, pos, phase): i64 {
     var p = phase % ANUENUE_PHASE_MOD;
     if (p < 0) { p = p + ANUENUE_PHASE_MOD; }
     var entry = _PHASE_ESC_TABLE + p * ANUENUE_ESC_TABLE_ENTRY_SIZE;
-    var elen = load64(entry);
-    var k = 0;
-    while (k < elen) {
-        store8(line_buf + pos + k, load8(entry + 8 + k));
-        k = k + 1;
-    }
-    return pos + elen;
+    var dst = line_buf + pos;
+    store64(dst,      load64(entry + 8));
+    store64(dst + 8,  load64(entry + 16));
+    store64(dst + 16, load64(entry + 24));
+    return pos + load64(entry);
 }
 
 # ---- UTF-8 sequence detection + codepoint decode ------------------

@@ -550,6 +550,50 @@ row: same host, a different hour; compare the pair.
   darshana's `tty_sanitize_buf` for the argv echo; see
   [`state.md` § Binary](development/state.md#binary).
 
+## v1.4.3 — escape-table word copy
+
+The first change to the per-cluster hot path since M5. `_emit_phase_esc`
+copies the table entry's 24-byte payload as three 8-byte words instead of
+`elen` single bytes (footprint argument: architecture 001).
+
+### Micro (`tests/anuenue.bcyr`, ns per escape, three runs each)
+
+| Mode | v1.4.2 table | v1.4.3 table | direct composition (hsv + composer) |
+|---|---:|---:|---:|
+| truecolor | 39 | **9** | 28–30 |
+| 256 | 27–28 | **9** | 34–36 |
+| 16 | 16–17 | **9** | 22–23 |
+
+The table now beats direct composition in every mode; v1.4.0's truecolor
+exception is gone. The cost no longer depends on the escape's length.
+
+### Release ratchet — v1.4.2 vs v1.4.3
+
+A rebuilt v1.4.2 binary against v1.4.3, `RUNS=11`, three interleaved rounds
+per mode, medians of the rounds, ns/byte, load average ~2:
+
+| Mode | corpus | v1.4.2 | v1.4.3 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 47.72 | **15.40** | −67.7% |
+| | ascii w/ LFs | 51.73 | **20.19** | −61.0% |
+| | utf8 mixed | 42.10 | **20.53** | −51.2% |
+| 256 | ascii no-LF | 34.63 | **15.36** | −55.6% |
+| | ascii w/ LFs | 39.37 | **20.08** | −49.0% |
+| | utf8 mixed | 33.48 | **20.65** | −38.3% |
+| 16 | ascii no-LF | 23.46 | **15.31** | −34.7% |
+| | ascii w/ LFs | 28.09 | **20.02** | −28.7% |
+| | utf8 mixed | 25.96 | **20.38** | −21.5% |
+
+The modes converge: what separated them was the copy's length (17 / 11 / 5
+bytes), and the word copy does not have one. The saving tracks the micro
+number — ~30 ns per escape on truecolor, one escape per ASCII byte.
+Cross-checked outside the harness: 10 MB of ASCII through `--color=24bit`,
+509 → 192 ms (median of five, startup included), identical md5.
+
+**M5 metric: 15.40 ns/byte**, a quarter of the 60 ns/byte acceptance bound.
+
+- **1.4.3 binary**: **226 624 bytes**, the same total as v1.4.2.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -577,7 +621,8 @@ row: same host, a different hour; compare the pair.
 | v1.3.6  | 48.53‖              | 8§               | 37§                 | 204 312      | Toolchain 6.6.2 + dep refresh. Figures measured at v1.4.0 from a rebuilt v1.3.6 binary; binary compacted by 6.6.x DCE |
 | v1.4.0  | 48.56‖              | 9§               | 23§                 | 210 696      | cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept |
 | v1.4.1  | 46.74¤              | 8§               | 21§                 | 222 520      | cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed |
-| **v1.4.2** | **47.41**¤       | 8§               | 22§                 | **226 624**  | **stderr hygiene: one line per failure; parse errors name a sanitized token** |
+| v1.4.2  | 47.41¤              | 8§               | 22§                 | 226 624      | stderr hygiene: one line per failure; parse errors name a sanitized token |
+| **v1.4.3** | **15.40**¤       | 9§               | 22§                 | **226 624**  | **escape-table word copy: 9 ns per escape in every mode; −68% end to end** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -599,7 +644,8 @@ shipped; neither touches the per-cluster hot path.
 
 ¤ v1.4.1 measured back-to-back with a rebuilt v1.4.0 on a quieter host (load
 1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
-v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run).
+v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), and v1.4.3
+against a rebuilt v1.4.2 (47.72).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both
@@ -614,4 +660,4 @@ between consecutive runs). The micro-benchmark figures (`hsv_rainbow`,
 one-shot at startup rather than per-cluster (the M5 phase cache
 replaced both on the hot path with `_emit_phase_esc`, which this note
 used to put at ≈ 10 ns/call; v1.4.0 measured 41–45 ns for truecolor —
-see § v1.4.0).
+see § v1.4.0 — and v1.4.3's word copy brought to 9 ns in every mode).

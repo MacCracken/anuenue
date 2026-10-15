@@ -4,6 +4,147 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-10-14 (escape-table word copy)
+
+The roadmap's v1.4.3 slot: `_emit_phase_esc` copies a table entry as three
+8-byte words instead of one byte at a time. **The filter path is 51–68% faster
+end to end** — truecolor ASCII 47.72 → **15.40 ns/byte** — and colour mode no
+longer changes the cost: all three modes now run at about 15.4. **stdout is
+byte-identical to v1.4.2**: 232 filter and one-shot comparisons (12 corpora
+× 18 flag sets, plus positional text including a 40 000-byte argument) and 12
+full animation streams in three modes. The goldens are unchanged.
+
+### Performance
+
+`_emit_phase_esc` ran once per grapheme cluster, and its byte-copy loop was the
+largest cost left on that path. Micro (`tests/anuenue.bcyr`, ns per escape,
+three runs each; v1.4.3 read 9 on every run):
+
+| Mode | v1.4.2 | v1.4.3 |
+|---|---:|---:|
+| truecolor | 39 | **9** |
+| 256 | 27–28 | **9** |
+| 16 | 16–17 | **9** |
+
+End to end (`scripts/perf-bench.sh`, a rebuilt v1.4.2 binary against v1.4.3,
+`RUNS=11`, three interleaved rounds per mode, medians, ns/byte, load average
+~2):
+
+| Mode | corpus | v1.4.2 | v1.4.3 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF (M5 metric) | 47.72 | **15.40** | −67.7% |
+| | ascii w/ LFs | 51.73 | **20.19** | −61.0% |
+| | utf8 mixed | 42.10 | **20.53** | −51.2% |
+| 256 | ascii no-LF | 34.63 | **15.36** | −55.6% |
+| | ascii w/ LFs | 39.37 | **20.08** | −49.0% |
+| | utf8 mixed | 33.48 | **20.65** | −38.3% |
+| 16 | ascii no-LF | 23.46 | **15.31** | −34.7% |
+| | ascii w/ LFs | 28.09 | **20.02** | −28.7% |
+| | utf8 mixed | 25.96 | **20.38** | −21.5% |
+
+Cross-checked outside the harness: a 10 MB ASCII file through `--color=24bit`
+took 509 → 192 ms (median of five, startup included), same md5 out. The saving
+is ~30 ns per escape on truecolor, and ASCII is one escape per byte, so the
+ns/byte drop matches the micro number. That puts the M5 acceptance figure (≤ 60)
+at a quarter of its bound.
+
+**The table now beats direct composition in every mode** (9 ns against 23–36),
+so the truecolor exception v1.4.0 measured is gone.
+
+**Binary** 226 624 B, the same total as v1.4.2 (different content; the change nets to zero bytes).
+
+### Changed — `_emit_phase_esc` writes 24 bytes, advances by `elen`
+
+The write footprint is now `[pos, pos + 24)` whatever the escape's length.
+`pos` advances by `elen` as before. The bytes past the escape are scratch, and
+that is safe only because of an argument the code did not need before. It is
+now [architecture 001 § The escape write footprint](docs/architecture/001-buffer-geometry.md),
+call site by call site:
+
+- every caller enters with `pos <= LINE_BUF - FLUSH_RESERVE`: either at the top
+  of an iteration, or right after a flush that set `pos = 0`. The footprint (24)
+  fits the reserve (32). All eight call sites were checked.
+- every flush writes `[0, pos)`, and the next write starts at the advanced
+  `pos`, so scratch is overwritten or left past `pos`. It never goes out.
+- the three-word read is exactly the entry's payload region, `[entry + 8,
+  entry + 32)`.
+
+`_phase_esc_init` now **zero-fills each entry's payload** before writing the
+escape, so the scratch is deterministic. Without it, a rebuild in place for a
+shorter mode (truecolor → 16, the E-02 path) would leave the longer escape's
+tail behind every new one.
+
+### Changed — `fuzz/emit-phase-esc.fcyr` asserts the new footprint
+
+"Writes exactly `elen` bytes" described the byte loop and is no longer true.
+It is restated as three properties:
+
+- **the footprint**: the escape bytes equal the table entry's, then zeros to
+  `pos + 24`, then nothing.
+- **the stream** (new, `fuzz_emit_stream`): 3 000 random clusters per mode go
+  through `_emit_phase_esc` and through a byte-copy reference emitter. Every
+  prefix flushed at the filter's reserve must be byte-identical. This checks the
+  callers' "scratch never flushed" property without a process.
+- the old bounds checks, unchanged.
+
+`emit-phase-esc` 1 013 957 → **1 046 876** assertions; fuzz total 1 450 668 →
+**1 483 587**.
+
+### Added — tests
+
+- **Unit** (429 → **437** assertions, 55 → **56** groups): the footprint fits
+  the reserve; every entry's payload past `elen` is zero after a rebuild in
+  place from truecolor to 16-colour; and, at an unaligned `pos`, the escape,
+  the zero scratch to `pos + 24`, and the untouched bytes after it.
+- **`scripts/robustness-check.sh` gate 9** (37 → **38** checks): NUL-free input
+  gives NUL-free stdout, which a leaked scratch byte would break. It covers the
+  filter (short lines, a 70 000-byte line, UTF-8 across the 4096-byte
+  boundary), one-shot text, and animation (a 32 KB cluster with its mid-cluster
+  re-emit, plus plain lines), in all three modes: 18 runs.
+- **Mutation-checked**, each caught:
+
+  | Mutation | Caught by |
+  |---|---|
+  | no zero-fill in `_phase_esc_init` | 2 unit assertions |
+  | a fourth word (32-byte footprint) | unit and fuzz |
+  | the old byte loop | unit and fuzz, which now assert the new footprint |
+  | returning `pos + 24` (scratch leaks) | the fuzz stream check, and all 18 gate-9 runs |
+
+### Decided — no fixed input corpus in `tests/anuenue.bcyr`
+
+The roadmap left this to the word copy's slot, because it was the first change
+whose gate wanted per-call and end-to-end numbers side by side. Running
+`perf-bench.sh` next to the `.bcyr` rows supplied both. An in-process corpus
+bench would need a stdout sink that `anuenue_filter` does not have, since it
+writes fd 1 directly — a test-only seam in the hot path. Moved to the roadmap's
+*Explicitly declined*.
+
+### Found — a cyrius miscompile (upstream; worked around)
+
+The new unit group, appended to the end of `tests/anuenue.tcyr`'s `main()`,
+made the suite die with SIGSEGV in its *third* group, a cmdit parse, long
+before the new code runs. It does so on cyrius 6.7.9, 6.7.10 and 6.7.11, and
+the same lines pass in a function of their own, which is where they live now
+(`test_word_copy`).
+
+It is not:
+- the local count: twelve extra integer locals pass;
+- an array local: 40 bytes pass;
+- code size: forty extra statements pass.
+
+Not minimized — that is past CLAUDE.md's three-attempt rule — so it is filed in
+the roadmap's *Upstream* list with exact reproduction steps. The v1.4.4
+closeout's refactor pass now includes splitting `main()` into per-cut
+functions.
+
+### Docs
+
+- Roadmap: the v1.4.3 slot removed; the corpus decision and the miscompile
+  recorded; the v1.4.4 closeout gains the `main()` split.
+- Architecture 001 gains the footprint argument and its call-site table, and
+  "what breaks" now covers the word copy. `src/filter.cyr`'s table header and
+  `tests/anuenue.bcyr`'s comments carry the new numbers and the decision.
+
 ## [1.4.2] — 2026-10-14 (stderr hygiene)
 
 The roadmap's stderr-hygiene slot, both items measured at v1.4.1. **Nothing on

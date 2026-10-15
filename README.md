@@ -66,21 +66,22 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.4.2
+### Quality bar at v1.4.3
 
-- **429** unit assertions across 55 groups (`cyrius test`)
+- **437** unit assertions across 56 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **27** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
   and one stderr line per failure
-- **37** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **38** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
   clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
-  positionals), and parse-error lines that echo argv sanitized and bounded
-- **1,450,668** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
+  positionals), parse-error lines that echo argv sanitized and bounded, and
+  no escape-copy scratch byte ever reaching stdout
+- **1,483,587** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open — five audits, latest
   [`docs/audit/2026-10-12-v140-delta.md`](docs/audit/2026-10-12-v140-delta.md)
 - **14** PTY checks + **18** signal/pacing checks + **15** allocation-failure
@@ -89,7 +90,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
   a genuinely exhausted heap)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60 ns/byte ASCII no-LF)
+- **Perf**: 15.4 ns/byte ASCII no-LF in every colour mode at v1.4.3 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics

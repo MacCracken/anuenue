@@ -8,7 +8,17 @@
 #   - Table entry length elen ∈ [0, 24] (payload fits in the 32-byte slot
 #     minus the 8-byte length prefix)
 #   - Returned new_pos == old_pos + elen (no spurious advancement)
-#   - Writes exactly elen bytes to line_buf[pos..pos+elen]
+#   - v1.4.3 — the WRITE FOOTPRINT is 24 bytes, [pos, pos + 24), because
+#     the payload is copied as three 8-byte words: the elen escape bytes
+#     (equal to the table entry's), then zero scratch up to pos + 24, then
+#     nothing — every byte before pos and from pos + 24 on is untouched.
+#     (Through v1.4.2 this read "writes exactly elen bytes", true of the
+#     byte loop the word copy replaced.)
+#   - v1.4.3 — the scratch is never part of the output: a stream of emits
+#     and payload bytes, flushed at the filter's reserve, produces the same
+#     [0, pos) bytes as a byte-copy reference emitter. This is the property
+#     the callers rely on (docs/architecture/001 § The escape write
+#     footprint), checked here without a process.
 #
 # Adversarial inputs covered:
 #   - i64::MIN, i64::MAX, zero, ±MOD, ±MOD - 1
@@ -78,14 +88,96 @@ fn fuzz_one_phase(phase, line_buf, line_buf_size) {
         assert(b == SENTINEL_FRONT, "_emit_phase_esc wrote behind starting pos");
         j = j + 1;
     }
-    # Invariant 6: bytes after `new_pos` (up to back sentinel) were
-    # not touched.
-    var k = new_pos;
+    # Invariant 6 (v1.4.3): the escape bytes are the table entry's.
+    var p = phase % ANUENUE_PHASE_MOD;
+    if (p < 0) { p = p + ANUENUE_PHASE_MOD; }
+    var entry = _PHASE_ESC_TABLE + p * ANUENUE_ESC_TABLE_ENTRY_SIZE;
+    var e = 0;
+    while (e < elen) {
+        assert(load8(line_buf + pos + e) == load8(entry + 8 + e),
+          "_emit_phase_esc escape byte differs from its table entry");
+        e = e + 1;
+    }
+    # Invariant 7 (v1.4.3): [new_pos, pos + 24) is zero scratch — the
+    # footprint of the three-word copy past the escape.
+    var z = new_pos;
+    while (z < pos + 24) {
+        assert(load8(line_buf + z) == 0, "_emit_phase_esc scratch past elen is not zero");
+        z = z + 1;
+    }
+    # Invariant 8: from pos + 24 to the back sentinel, untouched — the
+    # footprint ends at 24 bytes.
+    var k = pos + 24;
     while (k < line_buf_size - 1) {
         var b = load8(line_buf + k);
-        assert(b == SENTINEL_FRONT, "_emit_phase_esc wrote past new_pos");
+        assert(b == SENTINEL_FRONT, "_emit_phase_esc wrote past pos + 24");
         k = k + 1;
     }
+    return 0;
+}
+
+# Byte-copy reference emitter — the pre-v1.4.3 _emit_phase_esc, kept here
+# as the oracle the word copy is checked against.
+fn _ref_emit(buf, pos, phase) {
+    var p = phase % ANUENUE_PHASE_MOD;
+    if (p < 0) { p = p + ANUENUE_PHASE_MOD; }
+    var entry = _PHASE_ESC_TABLE + p * ANUENUE_ESC_TABLE_ENTRY_SIZE;
+    var elen = load64(entry);
+    var k = 0;
+    while (k < elen) {
+        store8(buf + pos + k, load8(entry + 8 + k));
+        k = k + 1;
+    }
+    return pos + elen;
+}
+
+# Stream check (v1.4.3). 3 000 random clusters — a random phase, then
+# 1..4 random non-zero payload bytes — written the way the filter writes
+# them: escape, payload, then flush when pos + ANUENUE_FLUSH_RESERVE >
+# buf_size. Built twice, with _emit_phase_esc and with _ref_emit; every
+# flushed prefix [0, pos) must be byte-identical. The buffer is small (512
+# B) so flushes land at every alignment of the footprint. Returns 0.
+fn fuzz_emit_stream(seed) {
+    _fuzz_seed(seed);
+    var buf_size = 512;
+    var a = alloc(buf_size);
+    var b = alloc(buf_size);
+    if (a == 0 || b == 0) { return 1; }
+    var pa = 0;
+    var pb = 0;
+    var flushes = 0;
+    var c = 0;
+    while (c < 3000) {
+        var phase = _fuzz_next_i64();
+        pa = _emit_phase_esc(a, pa, phase);
+        pb = _ref_emit(b, pb, phase);
+        var nbytes = 1 + ((_fuzz_next_i64() >> 33) & 3);
+        var j = 0;
+        while (j < nbytes) {
+            var v = 1 + ((_fuzz_next_i64() >> 33) % 255);
+            store8(a + pa, v);
+            store8(b + pb, v);
+            pa = pa + 1;
+            pb = pb + 1;
+            j = j + 1;
+        }
+        if (pa + ANUENUE_FLUSH_RESERVE > buf_size) {
+            assert(pa == pb, "word copy and byte copy disagree on pos");
+            var same = 1;
+            var q = 0;
+            while (q < pa) {
+                if (load8(a + q) != load8(b + q)) { same = 0; }
+                q = q + 1;
+            }
+            assert(same == 1, "a flushed prefix differs from the byte-copy reference");
+            pa = 0;
+            pb = 0;
+            flushes = flushes + 1;
+        }
+        c = c + 1;
+    }
+    # MONO (elen 0) is the sparsest: ~2.5 bytes a cluster, ~15 flushes.
+    assert(flushes > 10, "the stream check flushed too rarely to mean anything");
     return 0;
 }
 
@@ -151,6 +243,7 @@ fn fuzz_under_mode(mode_name_or_zero, mode) {
 
     fuzz_emit_extreme_phases(line_buf, line_buf_size);
     fuzz_emit_random_phases(mode_name_or_zero, line_buf, line_buf_size);
+    fuzz_emit_stream(mode_name_or_zero + 1);
     return 0;
 }
 

@@ -19,7 +19,9 @@
 # hsv_rainbow + the mode's composer (what the filter would do without
 # it). The verdict at v1.4.0 and the end-to-end numbers behind it are
 # in docs/benchmarks.md; re-run this after a darshana or toolchain bump
-# before trusting that verdict.
+# before trusting that verdict. v1.4.3 replaced the table's byte-copy
+# loop with a three-word copy: 9 ns per escape in every mode (was 39 /
+# 27 / 16), so the table now wins in all three, truecolor included.
 #
 # The end-to-end `cat largefile | anuenue` benchmark requires a real
 # pipe and a host filesystem read — not a Cyrius bench-loop fit.
@@ -31,9 +33,14 @@
 # it shipped scripts/perf-bench.sh instead, which owns end-to-end
 # measurement and has been the M5 ratchet ever since. The split
 # works: this file benches functions, the shell script benches the
-# process. The in-file aggregate is deferred (docs/development/roadmap.md
-# § "v1.x — later minors") rather than planned, and that entry carries
-# the trigger that would justify building it.
+# process. The in-file aggregate was DECLINED at v1.4.3
+# (docs/development/roadmap.md § Explicitly declined): the word copy
+# was the first change whose gate wanted both kinds of number side by
+# side, and running perf-bench.sh next to these rows supplied them. An
+# in-process corpus bench would need a stdout sink anuenue_filter does
+# not have — it writes fd 1 directly — so building one means a
+# test-only seam in the hot path, to measure what the shell script
+# already measures.
 #
 # Stdlib + darshana + the filter source auto-included via cyrius.cyml.
 

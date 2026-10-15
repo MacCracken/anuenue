@@ -16,6 +16,67 @@ include "src/filter.cyr"
 include "src/animate.cyr"
 include "src/version_str.cyr"
 
+# v1.4.3 — the escape word copy. Its own function rather than more of
+# main(): appended to main(), these exact lines made the suite die with
+# SIGSEGV in its third group, long before they run — on cyrius 6.7.9,
+# 6.7.10 and 6.7.11 alike, while the same lines pass here. Not the local
+# count, an array local or code size (each probed). Filed as upstream in
+# docs/development/roadmap.md; v1.4.4's refactor splits main() the same
+# way. Returns 0.
+fn test_word_copy(): i64 {
+    test_group("v1.4.3 — the escape word copy: footprint, scratch, geometry");
+    # _emit_phase_esc writes [pos, pos + 24) whatever elen is, so every
+    # caller needs 24 bytes of room — the reserve they already keep.
+    assert_eq(ANUENUE_ESC_TABLE_ENTRY_SIZE - 8 <= ANUENUE_FLUSH_RESERVE, 1,
+      "the 24-byte write footprint fits FLUSH_RESERVE");
+    # The scratch past elen must be zero even after a rebuild IN PLACE from
+    # a longer mode: truecolor (up to 17 bytes) then 16-colour (5). Without
+    # init's zero-fill, bytes 5..16 of each entry would still hold the
+    # truecolor escape.
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
+    _phase_esc_init();
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_16;
+    assert_eq(_phase_esc_init(), 0, "rebuild in place for 16-colour");
+    var wc_dirty = 0;
+    var wc_i = 0;
+    while (wc_i < ANUENUE_PHASE_MOD) {
+        var wc_entry = _PHASE_ESC_TABLE + wc_i * ANUENUE_ESC_TABLE_ENTRY_SIZE;
+        var wc_k = load64(wc_entry);
+        while (wc_k < 24) {
+            if (load8(wc_entry + 8 + wc_k) != 0) { wc_dirty = wc_dirty + 1; }
+            wc_k = wc_k + 1;
+        }
+        wc_i = wc_i + 1;
+    }
+    assert_eq(wc_dirty, 0, "every entry's payload past elen is zero after the rebuild");
+    # The footprint at an unaligned pos: escape, zero scratch to pos + 24,
+    # untouched after.
+    var wc_buf[40];
+    var wc_j = 0;
+    while (wc_j < 40) { store8(&wc_buf + wc_j, 0xAA); wc_j = wc_j + 1; }
+    var wc_end = _emit_phase_esc(&wc_buf, 3, 100);
+    assert_eq(wc_end, 3 + 5, "16-colour: pos advances by elen (5), not 24");
+    assert_eq(load8(&wc_buf + 3), 27, "the escape starts with ESC at pos");
+    assert_eq(load8(&wc_buf + 2), 0xAA, "the byte before pos is untouched");
+    var wc_zero = 1;
+    wc_j = wc_end;
+    while (wc_j < 3 + 24) {
+        if (load8(&wc_buf + wc_j) != 0) { wc_zero = 0; }
+        wc_j = wc_j + 1;
+    }
+    assert_eq(wc_zero, 1, "pos + elen .. pos + 24 is zero scratch");
+    var wc_after = 1;
+    wc_j = 3 + 24;
+    while (wc_j < 40) {
+        if (load8(&wc_buf + wc_j) != 0xAA) { wc_after = 0; }
+        wc_j = wc_j + 1;
+    }
+    assert_eq(wc_after, 1, "nothing from pos + 24 on is touched");
+    ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
+    _phase_esc_init();
+    return 0;
+}
+
 # Unit-suite entry: runs every test_group below in order and returns
 # assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
 fn main(): i64 {
@@ -1241,6 +1302,8 @@ fn main(): i64 {
     assert_eq(anuenue_arg_attached("--animate="), 1, "--animate= carries an empty value");
     assert_eq(anuenue_arg_attached("-p"), 0, "-p does not");
     assert_eq(anuenue_arg_attached(0), 0, "a 0 token does not");
+
+    test_word_copy();
 
     return assert_summary();
 }

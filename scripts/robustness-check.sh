@@ -39,6 +39,10 @@
 #   8. Parse-error lines name the offending token (v1.4.2) — and since
 #      that token is argv headed for a terminal, it is echoed sanitized
 #      (no ESC / BEL / C0 / C1 survives) and bounded (64 bytes + "...").
+#   9. The escape word copy's scratch never reaches stdout (v1.4.3).
+#      _emit_phase_esc writes 24 bytes per escape, zero past the escape;
+#      a leaked scratch byte would be a NUL, so NUL-free input must give
+#      NUL-free output on every route, in every mode, across flushes.
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -575,6 +579,49 @@ if [ "$(head -n 1 "$WORK/long.err")" = "$_want" ]; then
     ok "a 302-byte token is echoed as its first 64 bytes + '...'"
 else
     bad "long token: '$(head -c 120 "$WORK/long.err")'"
+fi
+
+# --- gate 9: the word copy's scratch never reaches stdout -----------
+#
+# v1.4.3. Corpora chosen to put flushes everywhere relative to an
+# escape: short lines (flush on every LF), one 70 000-byte line (flushes
+# at the line-buffer reserve, mid-line), wide UTF-8 across the 4096-byte
+# read boundary, no trailing LF (the EOF flush), and for animation one
+# 32 KB grapheme cluster (the mid-cluster flush + re-emit). The output
+# is checked for NUL by counting what `tr -d` removes.
+echo "[robustness] the escape word copy's scratch never reaches stdout (v1.4.3)"
+python3 -I - "$WORK" <<'PYEOF'
+import sys
+w = sys.argv[1]
+open(w + "/nul-lines.in", "wb").write(b"AGNOS rainbow pipe\n" * 400)
+open(w + "/nul-long.in", "wb").write(b"x" * 70000 + b"\n")
+open(w + "/nul-utf8.in", "wb").write(("a" * 4095 + "\u00e9" + "\u65e5\u672c\U0001F308" * 3000).encode())
+open(w + "/nul-cluster.in", "wb").write(("a" + "\u0301" * 16000 + "\n").encode())
+PYEOF
+_nul_ok() {   # $1 = label, $2 = output file
+    _all=$(wc -c < "$2" | tr -d ' ')
+    _non=$(tr -d '\000' < "$2" | wc -c | tr -d ' ')
+    if [ "$_all" -gt 0 ] && [ "$_all" -eq "$_non" ]; then
+        _nul_pass=$((_nul_pass + 1))
+    else
+        bad "$1: $((_all - _non)) NUL byte(s) in $_all bytes of output"
+    fi
+}
+_nul_pass=0
+for _m in 24bit 256 16; do
+    for _c in lines long utf8; do
+        "$BIN" --color=$_m < "$WORK/nul-$_c.in" > "$WORK/nul.out" 2>/dev/null || true
+        _nul_ok "filter $_m $_c" "$WORK/nul.out"
+    done
+    "$BIN" --color=$_m "$(head -c 40000 "$WORK/nul-long.in")" < /dev/null > "$WORK/nul.out" 2>/dev/null || true
+    _nul_ok "one-shot $_m" "$WORK/nul.out"
+    timeout 20 "$BIN" -a -d 1 -i 400 --color=$_m < "$WORK/nul-cluster.in" > "$WORK/nul.out" 2>/dev/null || true
+    _nul_ok "animate $_m 32 KB cluster" "$WORK/nul.out"
+    timeout 20 "$BIN" -a -d 1 -i 400 --color=$_m < "$WORK/nul-lines.in" > "$WORK/nul.out" 2>/dev/null || true
+    _nul_ok "animate $_m lines" "$WORK/nul.out"
+done
+if [ "$_nul_pass" -eq 18 ]; then
+    ok "no NUL on stdout: filter (3 corpora), one-shot and animation (2), x 3 modes"
 fi
 
 echo

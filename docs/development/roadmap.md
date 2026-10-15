@@ -28,7 +28,7 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.2.** The v1.x contract — exit codes, output shape, capability surface —
+**v1.4.3.** The v1.x contract — exit codes, output shape, capability surface —
 has been frozen since GA and is unbroken; the flag set has only ever grown. Zero
 HIGH+ findings open across five audits. The 1.4.x arc below is all actionable
 except its last slot, which waits on the cyrius 6.7.11 tag; the 1.5+ minors are
@@ -39,7 +39,6 @@ appearing).
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.4.3](#v143--escape-table-word-copy) | Escape-table word copy | none — actionable |
 | [v1.4.4](#v144--v14x-closeout--p-1-sweep) | v1.4.x closeout + P(-1) sweep | none — actionable |
 | [v1.4.5](#v145--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
 | [v1.5.0](#v150--adoption) | Adoption | a consumer integration lands |
@@ -52,35 +51,6 @@ patch, after the closeout, so v1.4.5 re-runs the closeout's build-level gates
 itself — see that slot.
 
 ---
-
-## v1.4.3 — escape-table word copy
-
-> **Status:** actionable. A measurement looking for a slot, not a defect.
-
-`_emit_phase_esc` copies `elen` bytes one at a time: 39–45 ns per escape on
-truecolor, 26–30 on 256, 15–18 on 16 (`tests/anuenue.bcyr`, v1.4.0 / v1.4.1).
-Three `load64` / `store64` of the same 24-byte payload measured **9–10 ns in
-every mode** — by the micro-benchmark the largest single cost left on the
-per-cluster path. Not yet measured end to end; that is the first gate.
-
-The catch is the write footprint: a word copy writes past `elen`, up to 24 bytes
-from `pos`. That stays inside the line buffer only because every call site keeps
-`pos + ANUENUE_FLUSH_RESERVE ≤ ANUENUE_LINE_BUF` (32 ≥ 24) — an argument
-[architecture 001](../architecture/001-buffer-geometry.md) has to make
-explicitly before the code relies on it — and `fuzz/emit-phase-esc.fcyr`
-asserts "writes exactly `elen` bytes", which becomes "the bytes past `elen` are
-overwritten before any flush".
-
-Gates: `perf-bench.sh` in all three `COLOR=` modes, goldens, a stdout identity
-comparison against the previous binary across corpora × flags,
-robustness-check's 4096-boundary corpus, and the long-cluster animation smoke.
-
-**Decided in this slot:** whether `tests/anuenue.bcyr` gains a fixed input
-corpus (its own source comment: "once we have a fixed input corpus to bench").
-Today `scripts/perf-bench.sh` owns end-to-end measurement and the `.bcyr` file
-benches functions. The word copy is the first change whose gate wants both
-numbers side by side; adopt the corpus here, or move the item to
-[§ Explicitly declined](#explicitly-declined).
 
 ## v1.4.4 — v1.4.x closeout + P(-1) sweep
 
@@ -114,7 +84,12 @@ at*, not what worked last time:
      on is pinned in `tests/anuenue.tcyr`.
 
 The closeout's own steps — dead code, refactor, cleanup, security re-scan,
-downstream check, clean build — run as written in CLAUDE.md.
+downstream check, clean build — run as written in CLAUDE.md. **One refactor is
+already known:** `tests/anuenue.tcyr`'s `main()` holds every unit group since
+M1, about 140 locals. At v1.4.3, growing it by one more group crashed the
+suite (see § Upstream), so that group lives in its own function. Split the rest
+the same way, one function per milestone or cut, so the next group does not land
+on the same edge.
 
 ## v1.4.5 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
 
@@ -225,6 +200,13 @@ Recorded so they are not re-raised as findings.
   values pass through. Neutralising control bytes in stdin would break the
   contract it exists to keep. (Diagnostics are not the stream: since v1.4.2 it
   sanitizes the argv tokens that parse-error lines echo to stderr.)
+- **A fixed input corpus inside `tests/anuenue.bcyr`** (decided at v1.4.3, the
+  slot that had to decide it). The word copy was the first change whose gate
+  wanted end-to-end and per-call numbers side by side. Running
+  `scripts/perf-bench.sh` next to the `.bcyr` rows supplied both. An in-process
+  corpus bench would need a stdout sink that `anuenue_filter` does not have — it
+  writes fd 1 directly — so it would mean a test-only seam in the hot path, to
+  measure what the shell script already measures.
 - **Flattening `src/filter.cyr`'s `} } } }` chain.** A genuine 4-way dispatch at
   ≤24 columns that passes `cyrius fmt`. (`src/main.cyr`'s parse-error chain was
   flattened at v1.4.1 because cmdit 1.4.0 pushed it to five levels; this one has
@@ -243,6 +225,17 @@ Re-checked at every bump of the dep named.
   v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
   parsing a prefix; the fix is the stdlib's. See v1.4.5 for what changes here
   when it lands.
+- **cyrius: growing a large function miscompiles code far from the growth.**
+  At v1.4.3, appending one more group (about forty lines, nine locals, a 40-byte
+  array) to the end of `tests/anuenue.tcyr`'s `main()` made the suite die
+  with SIGSEGV in its *third* group — a cmdit parse, long before the new code
+  runs. Same on cyrius 6.7.9, 6.7.10 and 6.7.11. Not the local count (twelve
+  extra int locals pass), not an array local (40 bytes pass), not code size
+  (forty extra statements pass). The same lines in their own function pass.
+  Reproduce: move `test_word_copy()`'s body inline into `main()` where the call
+  is. Not minimized — three probes past the 3-attempt rule — so the issue still
+  needs a minimal case. Worth filing: a silent miscompile is not bounded to test
+  code.
 - **darshana: `cyrius distlib` reports `tty_winsize` undefined on
   x86_64-windows / x86_64-macos / aarch64-macos.** A warning on every
   `cyrius distlib` run, present at v1.4.0 too. None of those is an anuenue
