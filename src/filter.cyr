@@ -471,10 +471,12 @@ fn cp_is_regional_indicator(cp) {
 # monotonically-advancing phase counter, flushes on LF or buffer-near-
 # full, resets SGR before each LF so the terminal returns clean.
 #
-# Capability surface: read(0), write(1), and the brk(2) that
-# `alloc()` already invoked for the heap. No open, connect, fork,
-# exec, signal, ioctl. Auditable by `strace -e trace=!read,!write -p
-# <pid>` returning empty after `alloc_init()`.
+# Capability surface: read(0) and write(1). The heap is the one
+# anonymous mmap(2) chunk alloc_init() mapped at startup (the stdlib
+# allocator; it was brk(2) until cyrius 6.1.19, which is what this
+# comment said through v1.4.3 — H-03). No open, connect, fork, exec,
+# signal, ioctl here. Measured per route at v1.4.4 by catching every
+# syscall under gdb — see docs/adr/0001's table.
 #
 # Return value: 0 on clean EOF, non-zero on a read(2) error. Per
 # CLAUDE.md the only failure path we care about is the kernel-side

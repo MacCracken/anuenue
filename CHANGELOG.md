@@ -4,6 +4,201 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.4] — 2026-10-14 (v1.4.x closeout + P(-1) sweep)
+
+The v1.4.x arc's closeout and the minor-cut audit sweep. Audit delta:
+[`docs/audit/2026-10-14-v14x-delta.md`](docs/audit/2026-10-14-v14x-delta.md) —
+**6 findings, 1 MEDIUM + 2 LOW + 3 INFO, zero HIGH+.** Five are fixed in-cut.
+H-06 is recorded, not fixed: it changes stdout, so it needs an owner. **Every
+guard ever recorded as unproven is now proven by a gate.**
+
+**stdout is byte-identical to v1.4.3 on every pipe route**, the filter and
+one-shot text over the 12-corpus × 18-flag matrix and 18 animation streams,
+with one exception: H-05, where animation now renders the combining mark it
+used to drop. What changed that a user can see, all of it on a terminal:
+- animation no longer smears a too-wide or too-tall block;
+- a block taller than the terminal is drawn once;
+- a stalled non-blocking peer no longer costs CPU.
+
+### Fixed — H-01 (MEDIUM): animation smeared in a terminal too small for the block
+
+Re-anchoring climbed one row per LF, so a line wider than the terminal (it
+wraps) or a block taller than it (it scrolls) made every frame scroll a copy of
+the block into scrollback, at ~60 frames a second. Measured with a new terminal
+model, `scripts/term-model.py`, fed a real pty's transcript: five 162-column
+lines at 80 columns scrolled **+8.7 rows per frame**, and a 40-line block on 24
+rows **+17**. A single line over 80 columns is enough.
+
+Now, when stdout is a terminal of known size, the climb is counted in
+**physical rows**, using a display-width table generated from UAX #11
+([ADR 0005](docs/adr/0005-practical-subset-display-width.md)). A block that
+still cannot fit is **drawn once**, with a `warn` record. The size comes from
+the `TIOCGWINSZ` ioctl `tty_isatty` already issues. On an unknown size (a pipe,
+an unsized pty, agnos) the count is the old LF count exactly, so non-terminal
+output is unchanged.
+
+The fix's first cut had two errors, both caught by this cut's code review
+before release:
+- **the width table**: hand-picked, it called ✅ ✨ ⚡ ⭐ ❌ ☕ 1 column wide;
+- **input escapes**: they were modelled as zero-width, and an unterminated
+  OSC swallowed every LF after it, so the climb fell below v1.4.3's count.
+
+The table is now `scripts/gen-wide-table.py`'s output: Unicode 16.0, 82
+ranges, binary-searched. An input ESC counts 0 columns and the bytes after it
+count normally, because that is what reaches the screen (H-06).
+
+### Fixed — H-02 (LOW): waiting on a non-blocking descriptor was polling
+
+`anuenue_read_some` / `anuenue_write_all` answered EAGAIN with `sleep_ms(1)`
+and a retry. With a non-blocking stdin whose writer stalled, that was **30 ms
+of CPU every 4 s**, about 1 000 wakeups a second, for as long as the stall
+lasted. A stalled non-blocking stdout did the same. Both now block in `poll(2)`
+on the descriptor (`anuenue_wait_fd`, over the stdlib's `fd_wait_ready`): **0
+ms**. `poll` is already in the surface, because `sleep_ms` is
+`poll(NULL, 0, ms)`. On agnos, where the wait is ENOSYS, it falls back to the
+1 ms sleep. A stalled *blocking* stdin was already correct: 0 ms CPU, the line
+before the stall rendered, SIGTERM exits in 0.2 ms.
+
+### Fixed — H-05 (LOW): animation dropped an extender with nothing to extend
+
+Present since M4, found by the code review. `printf 'a\n\xcc\x81b\n' | anuenue -a`
+rendered `a\nb\n`: the U+0301 had folded into the LF's cluster, which renders as
+reset + LF only. A combining mark at the very start of the input was never
+tagged at all. The filter path kept both. Such an extender now opens a cluster
+of its own.
+
+### Fixed — H-03 / H-04 (INFO): two documented properties that were never measured
+
+- **H-03**: the capability surface, in ADR 0001's table, the guide and five
+  comments, named `brk(12)` for the heap. Measured under gdb, **no route issues
+  `brk`**: the stdlib heap has used anonymous `mmap` since cyrius 6.1.19. The
+  table also omitted animation's `fcntl`, `poll` and `clock_gettime`. All
+  corrected from the measurement, which is now a gate (below).
+- **H-04**: architecture 001's worst-case table summed four components to
+  "≤ 29 — fits in 32". They sum to 33, and two of them never share an
+  iteration. The real bound is escape (24) + codepoint (4) + the flush's reset
+  (4) = **32: exactly the reserve, zero slack** at the escape budget, 7 at the
+  17 bytes anuenue emits. The unit group behind it still described v0.3.0's
+  22-byte reserve. Both are rewritten, and the group asserts
+  `RESERVE ≥ (ENTRY_SIZE − 8) + 4 + 4`.
+
+### Recorded — H-06 (INFO): escape sequences in the input do not survive
+
+anuenue's own escape before every cluster cancels each input ESC, so the rest
+of the sequence prints as text: `ls --color=always | anuenue` shows `[01;34m`.
+True on every route since M1; every byte still reaches stdout. Fixing it means
+choosing a stdout behaviour: strip input SGR as Ruby lolcat does, or pass whole
+input sequences through untinted. It is a trigger-gated item in the roadmap.
+
+### Proven — every guard recorded as unproven
+
+| Guard | Recorded unproven at | Now proven by |
+|---|---|---|
+| D-01, `_frame_wait`'s zero-tick guard | v1.3.2 | `tests/probes/tick-probe.cyr`: tick 0 and −5 return; without the guard it times out |
+| E-01, zero-byte write | v1.3.3 | gdb injection, `write` returning 0: exit 1, reported |
+| EINTR, read and write | v1.3.5 | gdb injection, −4 on the first call: retried, output byte-identical, on filter / MONO / animation slurp |
+| NOMEM, `cmdit_new`'s OOM | v1.4.1 | `allocfail-probe` under a really exhausted heap: a real 0 handle, exit 1, reported through `anuenue_fail`'s no-allocation fallback |
+| the signalfd's `fd_set_nonblocking` failing | v1.4.0 | gdb injection, −EINVAL on the first `fcntl`: warns, falls back, frames byte-identical |
+
+The NOMEM routing moved from `src/main.cyr` into `anuenue_parse_runtime_failure`
+(`src/observe.cyr`) so the probe could reach it.
+
+### Added — `scripts/fault-check.sh` (CI-wired) and the gdb harness
+
+- **Layer 1**, the D-01 probe.
+- **Layer 2**, `scripts/gdb-inject.py`: it changes exactly one syscall of the
+  real binary under gdb — the first match — and lets the rest through:
+  - **zero**: the length set to 0, so the kernel returns 0;
+  - **eintr** / **fail<errno>**: the call turned into `getpid`, and its
+    return value rewritten.
+- **Layer 3**, the capability surface: `scripts/gdb-syscalls.py` records every
+  syscall of seven routes, and each set must stay inside its allowlist. A
+  build that adds one `getpid` fails all seven.
+
+The gdb layers skip cleanly without gdb, without ptrace, or off x86_64. CI
+installs gdb. Every case is mutation-checked.
+
+### Changed — closeout
+
+- **The unit suite's `main()` is sixteen per-cut functions.** It held every
+  group since M1, about 140 locals, and growing it by one more group at v1.4.3
+  crashed the suite (the cyrius issue below). The suite's output is
+  line-for-line identical before and after.
+- **`scripts/pty-check.sh`** matched the animation process by the literal name
+  `anuenue`. So its own documented `BIN=build/anuenue-dce` usage failed gate
+  4; it now uses `BIN`'s basename.
+- **Dead code**: the floor is one function, `anuenue_log_parse_name`, reached
+  only from tests. It is kept as the fuzz round-trip's oracle (DCE drops it).
+  Its comment claimed two callers that do not exist, and is corrected.
+- **Cleanup**: five stale "unproven" comments now point at their gates, and
+  the `brk` claims are gone (H-03). Lint's deferral heuristic flagged
+  "deferred autowrap" twice; that is prose, reworded rather than suppressed.
+- **Downstream**: thoth vendors `dist/anuenue.cyr` (at 1.3.6) for `/theme
+  rainbow`. Its code is identical to 1.4.4's apart from the header, so nothing
+  changes for it. `state.md` now lists it as a consumer; it had said "None
+  yet" since M0.
+- **Docs**: the integration guide and README describe the draw-once
+  behaviour. ADR 0005 records the width decision and its in-cut amendment.
+
+### Added — tests
+
+- **Unit** (437 → **484** assertions, 56 → **59** groups):
+  - H-01's width and row count (+40);
+  - H-05's clustering (+6);
+  - H-04's reserve bound (+1).
+- **`scripts/pty-check.sh` gate 5** (14 → **25** checks): the width oracle at
+  every cluster-starting codepoint to U+3FFFF, then ten sized-pty animation
+  cases played into the terminal model.
+- **`scripts/robustness-check.sh`** (38 → **46**): H-02's four stall checks and
+  H-05's four animation byte-preservation checks.
+- **`scripts/allocfail-check.sh`** (17 → **23**): NOMEM under exhaustion.
+- **`scripts/observe-check.sh`** unchanged at **27**. **`scripts/fault-check.sh`**
+  is new, at **17**.
+- **Fuzz** 1 483 587 → **1 491 882**: `pretag-clusters` asserts coverage (the
+  first cluster at byte 0, an LF cluster the LF alone) and gains an
+  LF / combining / ZWJ / RI token corpus. On v1.4.3's code the new invariants
+  fail 584 times.
+
+### Upstream
+
+- **agnostik: `agnostik_err_new` writes through an unchecked `alloc(24)`**
+  (`src/error.cyr:32` at 1.12.0). Found by the review, filed as agnostik
+  `docs/development/issues/anuenue-agnostik-err-new-unchecked-alloc-2026-10-14.md`.
+  It is filed, not patched: agnostik's own agent repairs agnostik. In
+  anuenue it is reachable only if `str_new` succeeds and the next small
+  allocation fails.
+
+### Performance
+
+The per-cluster path did not change. A rebuilt v1.4.3 binary against v1.4.4,
+`RUNS=11`, **five** interleaved rounds per mode, medians. A first, three-round
+run on a host at load average ~11 swung ±10% with mixed signs; it was
+discarded, and the five rounds ran at load average 5–7:
+
+| ascii no-LF, ns/byte | v1.4.3 | v1.4.4 | Δ |
+|---|---:|---:|---:|
+| truecolor (M5 metric) | 15.59 | **15.60** | +0.1% |
+| 256 | 15.42 | **15.51** | +0.6% |
+| 16 | 15.34 | **15.40** | +0.4% |
+
+Flat — all nine corpus × mode rows are within ±0.6%. Micro rows are unchanged
+from v1.4.3: the table emit is 9 ns in every mode.
+
+**Binary** 226 624 → **235 800 B** (+9 176; non-DCE 985 368). Measured stepwise, `fd_wait_ready` (H-02)
+alone is +4 096. The rest is H-01's table, row count and size query, plus H-05.
+The binary grows in what look like page-aligned steps, so finer attribution is
+not meaningful.
+
+### Docs
+
+- **The cyrius miscompile found at 1.4.3 is filed** as cyrius
+  `docs/development/issues/2026-10-14-anuenue-growing-a-large-fn-segfaults-an-earlier-call.md`.
+  The reproduction is pinned to anuenue tag 1.4.2, with the probes that ruled
+  out local count, array locals and code size, and no proposed fix.
+  Investigating it is the cyrius agent's job; anuenue's part ends at filing.
+  The roadmap's *Upstream* entry, CLAUDE.md, `state.md` and `test_word_copy`'s
+  comment now name the issue.
+
 ## [1.4.3] — 2026-10-14 (escape-table word copy)
 
 The roadmap's v1.4.3 slot: `_emit_phase_esc` copies a table entry as three
@@ -323,8 +518,8 @@ always holds the handle (the 16 MiB small-board fallback included), and no
 `prlimit --as` value between "`alloc_init` fails" and "everything fits" exists
 to drive it. The 0-handle contract it rests on is pinned in the unit suite; a
 fault-injection probe is filed under
-[roadmap v1.4.4](docs/development/roadmap.md#v144--v14x-closeout--p-1-sweep)
-(filed as v1.4.5; renumbered at v1.4.2).
+roadmap v1.4.4 (filed as v1.4.5; renumbered at v1.4.2) — which proved it:
+[v1.4.x audit delta](docs/audit/2026-10-14-v14x-delta.md).
 
 ### Fixed — `src/main.cyr`'s parse-error switch
 

@@ -28,10 +28,11 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.3.** The v1.x contract — exit codes, output shape, capability surface —
-has been frozen since GA and is unbroken; the flag set has only ever grown. Zero
-HIGH+ findings open across five audits. The 1.4.x arc below is all actionable
-except its last slot, which waits on the cyrius 6.7.11 tag; the 1.5+ minors are
+**v1.4.4.** The v1.x contract — exit codes, output shape, capability surface —
+has been frozen since GA and is unbroken; the flag set has only ever grown. Six
+audits have run, the latest the [v1.4.x delta](../audit/2026-10-14-v14x-delta.md),
+all with zero HIGH+ open, and since v1.4.4 **no guard is recorded as unproven**.
+The one 1.4.x slot left waits on the cyrius 6.7.11 tag; the 1.5+ minors are
 gated on things anuenue cannot do itself (a consumer landing, a sibling filter
 appearing).
 
@@ -39,57 +40,17 @@ appearing).
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.4.4](#v144--v14x-closeout--p-1-sweep) | v1.4.x closeout + P(-1) sweep | none — actionable |
 | [v1.4.5](#v145--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
 | [v1.5.0](#v150--adoption) | Adoption | a consumer integration lands |
 | [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family | a second pipe-decorator wants a rainbow |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
 
-The 1.4.x order is fixed (set at v1.4.2): the toolchain move is the arc's last
-patch, after the closeout, so v1.4.5 re-runs the closeout's build-level gates
-itself — see that slot.
+The 1.4.x order was fixed at v1.4.2: the toolchain move is the arc's last
+patch, after the v1.4.4 closeout, so v1.4.5 re-runs the closeout's build-level
+gates itself — see that slot.
 
 ---
-
-## v1.4.4 — v1.4.x closeout + P(-1) sweep
-
-> **Status:** actionable — CLAUDE.md § Closeout Pass, plus the audit
-> cadence's minor-cut sweep, recorded as `docs/audit/YYYY-MM-DD-v14x-delta.md`
-> against the [v1.4.0 delta](../audit/2026-10-12-v140-delta.md). Not the arc's
-> last patch: v1.4.5's toolchain move follows it and re-runs the build-level
-> gates.
-
-The sweep's surfaces, picked by the v1.3.3 method — *what has never been looked
-at*, not what worked last time:
-
-1. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
-   never resizes it, and `rows_to_climb` assumes the block fits on screen. The
-   highest-value unexamined surface since v1.3.3.
-2. **A stdin that never closes.** Both sides retry transient errors without an
-   attempt cap — correct backpressure, and what a blocking read does anyway — so
-   a writer that stalls forever hangs anuenue forever by design. Nothing tests
-   that it degrades the way the design says (blocked, not spinning).
-3. **The unproven branches.** Each is guarded and none is reachable from
-   outside, so each needs fault injection at a layer the existing probes lack:
-   - `D-01` — `_frame_wait`'s zero-tick guard (v1.3.2).
-   - `E-01` — `anuenue_write_all`'s zero-byte-write branch (v1.3.3).
-   - **EINTR** on the read and write paths (v1.3.5): anuenue installs no
-     handlers, and default-disposition signals do not interrupt a blocking
-     syscall. Reaching it needs a parent that execs anuenue with an inherited
-     handler.
-   - **NOMEM** in `src/main.cyr` (v1.4.1): cmdit_new's OOM. `alloc_init`'s
-     first chunk (16 MiB on the small-board fallback) always holds the handle,
-     so no `prlimit --as` value opens a window. The 0-handle contract it rests
-     on is pinned in `tests/anuenue.tcyr`.
-
-The closeout's own steps — dead code, refactor, cleanup, security re-scan,
-downstream check, clean build — run as written in CLAUDE.md. **One refactor is
-already known:** `tests/anuenue.tcyr`'s `main()` holds every unit group since
-M1, about 140 locals. At v1.4.3, growing it by one more group crashed the
-suite (see § Upstream), so that group lives in its own function. Split the rest
-the same way, one function per milestone or cut, so the next group does not land
-on the same edge.
 
 ## v1.4.5 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
 
@@ -99,8 +60,10 @@ on the same edge.
 >
 > **The arc's last patch, after the closeout.** Because it lands after v1.4.4,
 > it re-runs the closeout's build-level steps itself: full test suite, benchmark
-> baseline, downstream check, version verify, and the clean build
-> (`rm -rf build && cyrius deps && CYRIUS_DCE=1 cyrius build`).
+> baseline, downstream check (thoth's vendored `dist/anuenue.cyr`), version
+> verify, and the clean build (`rm -rf build && cyrius deps && CYRIUS_DCE=1
+> cyrius build`). Also re-run `scripts/fault-check.sh`'s capability-surface
+> layer: a stdlib change is exactly what moves a route's syscall set.
 
 From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
 nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
@@ -143,7 +106,11 @@ code anuenue can write; both close retroactively once an integration lands.
   real AGNOS pipeline for at least one minor-cycle window.
 - **Downstream gate** — at least one consumer green against v1.x (`agnoshi`
   MOTD chain or `iam`'s default login chain anticipated). Listed in
-  [`state.md` § Consumers](state.md#consumers) once real.
+  [`state.md` § Consumers](state.md#consumers) once real. *Noted at v1.4.4:*
+  thoth already consumes the **library** surface — it vendors
+  `dist/anuenue.cyr` (at 1.3.6, code-identical to 1.4.4's) for `/theme
+  rainbow`, and is green. Whether a library consumer closes this item, which
+  named pipeline consumers, is the user's call; until then it stays open.
 
 Additive surface an integration asks for lands here. One candidate is on file:
 
@@ -177,6 +144,8 @@ Pinned to the first minor after the trigger fires.
 
 | Item | Trigger | Source |
 |------|---------|--------|
+| **Pass escape sequences in the input through intact** | A consumer pipes coloured text (`ls --color=always \| anuenue`). Today anuenue's own escape before every cluster cancels each input ESC, so `ESC [31m` prints as `[31m`, on every route; v1.4.4's review measured it (audit H-06). Options: strip input SGR (Ruby lolcat's choice), or treat a whole input sequence as one zero-width, untinted cluster. Either changes stdout bytes, so it needs an owner. | [v1.4.x audit delta H-06](../audit/2026-10-14-v14x-delta.md) |
+| **Follow a resize mid-animation; animate a block taller than the terminal** | A consumer asks. v1.4.4 (H-01) reads the size once, before the first frame, and draws a block that cannot fit once. Following SIGWINCH means a signalfd mask change and a re-read per frame; animating an oversized block means a clipping policy (which rows?) nobody has specified. | [ADR 0005 § Consequences, § Alternatives](../adr/0005-practical-subset-display-width.md) |
 | **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. A behaviour change, so a minor. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
 
 ### Explicitly declined
@@ -193,7 +162,7 @@ Recorded so they are not re-raised as findings.
   SIGPIPE mid-teardown with the terminal raw. anuenue has no terminal state at
   risk when stdout is a pipe — its escapes went down the pipe — and adopting it
   would put a signalfd on the *filter* path, whose capability surface is
-  read/write/brk, and turn the default-disposition `anuenue | head -1` from exit
+  read/write/mmap, and turn the default-disposition `anuenue | head -1` from exit
   141 into exit 0. ([v1.4.0 audit delta](../audit/2026-10-12-v140-delta.md))
 - **darshana's `tty_sanitize_buf` on the filter path** (1.2.0). anuenue's
   contract is byte preservation; `robustness-check.sh` asserts all 256 byte
@@ -232,10 +201,15 @@ Re-checked at every bump of the dep named.
   runs. Same on cyrius 6.7.9, 6.7.10 and 6.7.11. Not the local count (twelve
   extra int locals pass), not an array local (40 bytes pass), not code size
   (forty extra statements pass). The same lines in their own function pass.
-  Reproduce: move `test_word_copy()`'s body inline into `main()` where the call
-  is. Not minimized — three probes past the 3-attempt rule — so the issue still
-  needs a minimal case. Worth filing: a silent miscompile is not bounded to test
-  code.
+  **Filed** as cyrius `docs/development/issues/2026-10-14-anuenue-growing-a-large-fn-segfaults-an-earlier-call.md` (2026-10-14), with a
+  reproduction pinned to anuenue tag 1.4.2. anuenue's part ends at filing; a
+  cyrius agent investigates and fixes. Re-check at each toolchain bump.
+- **agnostik: `agnostik_err_new` writes through an unchecked `alloc(24)`.**
+  Filed 2026-10-14 as agnostik
+  `docs/development/issues/anuenue-agnostik-err-new-unchecked-alloc-2026-10-14.md`.
+  The window in anuenue is narrow: `anuenue_fail`'s `str_new` would have to
+  succeed and the very next small allocation fail. Re-check at each agnostik
+  bump.
 - **darshana: `cyrius distlib` reports `tty_winsize` undefined on
   x86_64-windows / x86_64-macos / aarch64-macos.** A warning on every
   `cyrius distlib` run, present at v1.4.0 too. None of those is an anuenue
@@ -265,8 +239,8 @@ documented form ever put `=value` on a boolean.
 These run every cut and never "complete".
 
 - **Audit cadence.** A P(-1) sweep at every minor cut, recorded as a delta vs the
-  previous report — the next is [v1.4.4](#v144--v14x-closeout--p-1-sweep).
-  Five have run, latest the [v1.4.0 delta](../audit/2026-10-12-v140-delta.md).
+  previous report — the next is at the v1.5.0 cut. Six have run, latest the
+  [v1.4.x delta](../audit/2026-10-14-v14x-delta.md).
   Standing policy from v1.2.2: **an accepted INFO finding is a hypothesis about
   behaviour, not a measurement of it** — re-measure accepted items rather than
   carrying the prior description forward.

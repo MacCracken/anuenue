@@ -35,9 +35,9 @@ for the full reasoning):
 read(0,  …)        # stdin
 write(1, …)        # stdout
 write(2, …)        # stderr  (only on --help / --version / errors)
-brk(12, …)         # bump allocator (read buffer + line buffer)
-open / close       # bounded — /proc/self/cmdline + /proc/self/environ
-ioctl(TIOCGWINSZ)  # via darshana's tty_isatty
+mmap(9, …)         # the heap: one anonymous chunk at startup
+open / close       # bounded — /proc/self/cmdline (+ /proc/self/environ when colour is auto)
+ioctl(TIOCGWINSZ)  # via darshana's tty_isatty (auto colour); animation's terminal size
 exit(60, …)
 ```
 
@@ -149,6 +149,15 @@ Integrators wiring this into a MOTD chain should be aware:
   with `--force-color` if needed (rare).
 - **64 KB input cap.** Inputs larger than the cap truncate. The non-
   animated path has no cap.
+- **The block must fit the terminal** (v1.4.4). Each frame redraws over
+  the last by climbing back the rows the block occupies, counted with
+  wrapping at the terminal's width (wide CJK / emoji count 2 columns —
+  [ADR 0005](../adr/0005-practical-subset-display-width.md)). A block
+  taller than the terminal, after wrapping, cannot be redrawn in place,
+  so it is **drawn once** and anuenue exits; `--log-level=warn` says
+  so. Before v1.4.4 such a block — or any line wider than the terminal —
+  smeared a copy of itself into scrollback every frame. The size is read
+  once, before the first frame; resizing mid-animation is not followed.
 - **SIGINT is signal-safe.** Ctrl-C unwinds via the signalfd probe
   between frames and emits the cursor-show / SGR-reset epilogue.
   Don't wrap `anuenue -a` in a shell loop that traps SIGINT

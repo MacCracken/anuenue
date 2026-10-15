@@ -21,7 +21,8 @@
 #      `sakshi_set_output_fd(2)`. The file (SK_OUT_FILE) and UDP
 #      (SK_OUT_UDP) targets are never selected — that would breach
 #      the capability bound in CLAUDE.md ("no file I/O, no network").
-#      anuenue's syscall surface stays read/write/brk/exit.
+#      anuenue's syscall surface stays read/write/mmap/exit
+#      (docs/adr/0001's table, measured at v1.4.4).
 #   2. Logging is OFF by default. sakshi's own default is SK_INFO,
 #      which would put info lines on the stderr of every `iam |
 #      anuenue` in an MOTD. `anuenue_observe_init` drops the level
@@ -31,8 +32,9 @@
 # WHAT LIVES HERE VS IN color.cyr
 #
 # This module depends on nothing from anuenue — only on sakshi,
-# agnostik, the stdlib and (from v1.4.2, for the argv echo below)
-# darshana's tty_sanitize_buf — so it can be included first and every
+# agnostik, the stdlib, darshana's tty_sanitize_buf (from v1.4.2, for
+# the argv echo below) and cmdit's error codes (from v1.4.4, for
+# anuenue_parse_runtime_failure) — so it can be included first and every
 # other module can call `anuenue_fail`. The colour-decision reason
 # codes (`ANUENUE_CR_*`, `ANUENUE_COLOR_REASON`,
 # `anuenue_color_reason_name`) live in src/color.cyr instead: they
@@ -188,6 +190,31 @@ fn anuenue_eprint_arg(s): i64 {
     return 0;
 }
 
+# ---- anuenue_wait_fd -----------------------------------------------
+#
+# Block until `fd` is readable (`want_write` 0) or writable (1), for
+# the EAGAIN branch of anuenue_write_all and anuenue_read_some. Returns
+# 0; the caller retries its read or write either way, and that call
+# reports whatever poll(2) saw (a hang-up reads as EOF, an error as an
+# error).
+#
+# H-02 (v1.4.4). Both branches used to sleep_ms(1) and retry. Measured
+# with a non-blocking stdin whose writer stalled: 30 ms of CPU every
+# 4 s, on every route, for as long as the stall lasted — polling, not
+# blocking. poll(2) is the same syscall sleep_ms already issues
+# (`poll(NULL, 0, ms)`), so the capability surface does not grow.
+#
+# Falls back to the 1 ms sleep when the wait itself fails for any
+# reason but EINTR — on AGNOS fd_wait_ready is ENOSYS — so the retry
+# loop can never become a spin.
+fn anuenue_wait_fd(fd, want_write): i64 {
+    var wr = fd_wait_ready(fd, want_write, 0 - 1);
+    if (wr < 0) {
+        if (wr != (0 - 4)) { sleep_ms(1); }
+    }
+    return 0;
+}
+
 # ---- anuenue_write_all ---------------------------------------------
 #
 # Write `len` bytes from `buf` to stdout, completely. Returns 0 on
@@ -221,11 +248,14 @@ fn anuenue_eprint_arg(s): i64 {
 #   EAGAIN (-11) stdout is O_NONBLOCK and the consumer has not drained
 #                it. anuenue does not own that flag — a caller set it —
 #                and the correct response to backpressure is to wait,
-#                exactly as a blocking write would. Sleep 1 ms so the
-#                retry is not a spin. There is no attempt cap on
-#                purpose: a consumer that is alive but slow deserves
-#                backpressure, and a consumer that is GONE yields
-#                EPIPE, not EAGAIN, which exits below.
+#                exactly as a blocking write would: anuenue_wait_fd
+#                blocks in poll(2) until stdout is writable (H-02,
+#                v1.4.4 — it used to sleep 1 ms and retry, about 1 000
+#                wakeups a second for as long as the consumer stalled).
+#                There is no attempt cap on purpose: a consumer that is
+#                alive but slow deserves backpressure, and a consumer
+#                that is GONE yields EPIPE, not EAGAIN, which exits
+#                below.
 fn anuenue_write_all(buf, len): i64 {
     var off = 0;
     while (off < len) {
@@ -236,7 +266,7 @@ fn anuenue_write_all(buf, len): i64 {
         }
         if (n == (0 - 4)) { continue; }          # EINTR — retry at once
         if (n == (0 - 11)) {                      # EAGAIN — backpressure
-            sleep_ms(1);
+            anuenue_wait_fd(STDOUT, 1);
             continue;
         }
         if (n == (0 - 32)) {                      # EPIPE — consumer closed
@@ -289,17 +319,20 @@ fn anuenue_write_all(buf, len): i64 {
 #
 # The retry policy matches the write side deliberately: the two sides
 # of a filter should not disagree about what counts as an error. EAGAIN
-# sleeps 1 ms so the retry is not a spin, with no attempt cap — a
-# writer that is slow deserves to be waited for, and a writer that is
-# GONE closes the pipe, which is EOF (0), not EAGAIN.
+# waits in poll(2) until stdin is readable (anuenue_wait_fd; H-02,
+# v1.4.4 — through v1.4.3 it slept 1 ms and retried, so a stalled
+# non-blocking stdin cost ~1 000 wakeups a second forever), with no
+# attempt cap — a writer that is slow deserves to be waited for, and a
+# writer that is GONE closes the pipe, which is EOF (0), not EAGAIN.
 #
-# ⚠ The EINTR branch is **unproven**, in the cmdit 1.2.4 sense: anuenue
-# installs no signal handlers, and signals at their default disposition
-# do not interrupt a blocking read. Verified by driving SIGSTOP,
-# SIGCONT, SIGWINCH, SIGCHLD and SIGURG at a process blocked in read —
-# none produced EINTR. It is one comparison, it matches the write side,
-# and a future consumer that execs anuenue with an inherited handler
-# would reach it.
+# The EINTR branch is reached by no real signal — anuenue installs no
+# handlers, and default-disposition signals do not interrupt a blocking
+# read (SIGSTOP, SIGCONT, SIGWINCH, SIGCHLD and SIGURG were all tried at
+# v1.3.5). It was recorded as unproven until v1.4.4, when
+# scripts/fault-check.sh began injecting EINTR into the first read(2)
+# under gdb: filter, passthrough and animation slurp all retry and
+# render byte-identical output. The write side's EINTR and its
+# zero-byte branch are proven the same way.
 fn anuenue_read_some(buf, len): i64 {
     var go = 1;
     while (go == 1) {
@@ -307,7 +340,7 @@ fn anuenue_read_some(buf, len): i64 {
         if (n >= 0) { return n; }
         if (n == (0 - 4)) { continue; }          # EINTR — retry at once
         if (n == (0 - 11)) {                      # EAGAIN — data has not arrived
-            sleep_ms(1);
+            anuenue_wait_fd(STDIN, 0);
             continue;
         }
         return 0 - 1;
@@ -337,6 +370,36 @@ fn anuenue_write_failed(): i64 {
     return anuenue_fail(STIK_ERR_IO, "write to stdout failed");
 }
 
+# ---- anuenue_parse_runtime_failure --------------------------------
+#
+# Route the two cmdit parse failures that are not something the user
+# typed. Returns the exit code (1) after reporting through anuenue_fail,
+# or 0 when `err` is a usage error, which src/main.cyr reports itself
+# (its own line, then usage, exit 2).
+#
+#   NOMEM — cmdit_new's alloc failed and the handle is 0. cmdit 1.2.4
+#           crashed on the 0 handle; 1.4.0 guards every entry point.
+#           alloc_init's first chunk always holds the handle, so no
+#           external limit reaches it from the CLI. v1.4.4 moved this
+#           routing here so tests/probes/allocfail-probe.cyr can drive it
+#           with a real 0 handle under a really exhausted heap — which
+#           also puts anuenue_fail on its no-allocation fallback.
+#   ARGV  — the stdlib could not read the whole command line: over
+#           2 MiB (reachable after `ulimit -s unlimited`) or no
+#           descriptor for /proc/self/cmdline. cmdit 1.2.4 parsed the
+#           readable prefix and returned OK, so a trailing flag was
+#           dropped silently at exit 0.
+fn anuenue_parse_runtime_failure(err): i64 {
+    if (err == CMDIT_ERR_NOMEM) {
+        return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED,
+          "out of memory parsing the command line");
+    }
+    if (err == CMDIT_ERR_ARGV) {
+        return anuenue_fail(STIK_ERR_IO, "could not read the full command line");
+    }
+    return 0;
+}
+
 # ---- anuenue_log_parse --------------------------------------------
 #
 # Map a --log-level string to an AnuenueLogParse value. Exact match,
@@ -356,8 +419,13 @@ fn anuenue_log_parse(s): i64 {
     return ANUENUE_LOG_P_BAD;
 }
 
-# Human name for an AnuenueLogParse value — used in help text and in
-# the bad-value error message.
+# Human name for an AnuenueLogParse value — the inverse of
+# anuenue_log_parse. The binary never calls it (the help text and the
+# bad-value message spell the names out, and DCE drops it); it exists
+# as the oracle for fuzz/flag-value-parsers.fcyr's round trip,
+# parse(name(p)) == p, which is what proves the parser accepts exactly
+# these names. Through v1.4.3 this comment claimed both of those
+# callers; v1.4.4's dead-code audit found neither.
 fn anuenue_log_parse_name(p): i64 {
     if (p == ANUENUE_LOG_P_OFF)   { return "off"; }
     if (p == ANUENUE_LOG_P_FATAL) { return "fatal"; }

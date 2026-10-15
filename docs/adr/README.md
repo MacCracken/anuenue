@@ -25,3 +25,4 @@ Decisions about anuenue — what we chose, the context, and the consequences we 
 | [0002](0002-hsv-inline-not-abaco.md) | HSV→RGB stays inline; no abaco dependency | Accepted |
 | [0003](0003-grapheme-cluster-cycling.md) | Cycle by grapheme cluster via a practical-subset classifier | Accepted |
 | [0004](0004-stderr-only-observability.md) | Diagnostics go to stderr, and are off by default | Accepted |
+| [0005](0005-practical-subset-display-width.md) | Animation counts physical rows with an inline UAX #11 display-width table | Accepted |

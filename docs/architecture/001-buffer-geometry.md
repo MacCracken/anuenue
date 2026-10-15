@@ -24,15 +24,23 @@ if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) { flush; pos = 0; }
 So at the *top* of any iteration, `pos <= LINE_BUF - FLUSH_RESERVE` (32 736).
 An iteration must therefore never write more than `FLUSH_RESERVE` bytes.
 
-Worst case for one iteration:
+Worst case from the top of one iteration to the end of the flush it may
+trigger. The two write paths never share an iteration, so they are bounded
+separately:
 
-| Component | Bytes | Source |
-|---|---:|---|
-| Phase escape | ≤ 24 | `ESC_TABLE_ENTRY_SIZE` − 8-byte length prefix |
-| One codepoint | ≤ 4 | UTF-8 maximum |
-| SGR reset (LF path) | 4 | `\e[0m` |
-| LF | 1 | |
-| **Total** | **≤ 29** | fits in 32 |
+| Path | Writes | Bytes |
+|---|---|---:|
+| a codepoint | phase escape (≤ 24, `ESC_TABLE_ENTRY_SIZE` − 8) + one codepoint (≤ 4) | ≤ 28 |
+| … then the reserve flush | SGR reset `\e[0m` before the write | 4 |
+| **codepoint path total** | | **≤ 32** — exactly the reserve |
+| an LF | SGR reset (4) + LF (1), then flushed | 5 |
+
+**The reserve has zero bytes of slack at the 24-byte escape budget**, and 7
+with the 17-byte escape anuenue actually emits. *(Corrected at v1.4.4, H-04.
+Until then this table listed all four components in one column and gave the
+total as "≤ 29 — fits in 32". The column actually sums to 33, and the bound
+that matters is the codepoint path, 32. It still holds, but by 0 bytes, not
+3. The unit group now asserts `RESERVE ≥ (ENTRY_SIZE − 8) + 4 + 4`.)*
 
 The longest escape *actually* emitted is 17 bytes, not the 19 of a worst-case
 `\e[38;2;255;255;255m`. `hsv_rainbow` runs the cube edges at S=V=1, so one
@@ -72,8 +80,9 @@ That is safe for three reasons, and all three must keep holding:
 
    The rest of the iteration starts inside the footprint: the codepoint goes
    at `pos + elen`. With the measured `elen ≤ 17` it ends by `pos + 21`, inside
-   the 24. With the full 24-byte budget it would end at `pos + 28`, the same
-   bound the table above already allows. Either way it fits in 32.
+   the 24. With the full 24-byte budget it would end at `pos + 28`, the bound
+   the table above already allows. Either way the reset a flush appends
+   still fits in 32.
 
 2. **Scratch is never flushed.** Every flush writes `[0, pos)`, and the next
    write after an emit starts at the advanced `pos`. Scratch bytes are either
@@ -98,8 +107,9 @@ scratch byte that leaked would be a NUL.
 - **Raising `ESC_TABLE_ENTRY_SIZE`** without raising `FLUSH_RESERVE` lets the
   escape alone approach the reserve, and the codepoint written after it goes
   past `LINE_BUF`.
-- **Lowering `FLUSH_RESERVE`** below 29 does the same thing directly — and
-  below 24 the escape's own word-copy footprint runs past `LINE_BUF`.
+- **Lowering `FLUSH_RESERVE`** below 32 does the same thing directly (at the
+  24-byte escape budget; the measured 17-byte escape survives down to 25) —
+  and below 24 the escape's own word-copy footprint runs past `LINE_BUF`.
 - **Changing `ESC_TABLE_ENTRY_SIZE` at all** means changing `_emit_phase_esc`:
   it copies exactly three payload words, which is `ENTRY_SIZE - 8` only while
   the entry is 32 bytes. The unit suite pins the 32.

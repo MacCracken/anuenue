@@ -138,6 +138,20 @@ fn main(): i64 {
     chk("anuenue_fail(RESOURCE_EXHAUSTED) returns exit 1 with no heap",
       anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "probe: simulated oom") == ANUENUE_EXIT_RUN);
 
+    pout("[allocfail] v1.4.4 — cmdit_new's OOM, as src/main.cyr routes it\n");
+    # The NOMEM branch v1.4.1 recorded as unproven: no limit reaches it from
+    # the CLI (alloc_init's first chunk always holds the handle). Here the
+    # heap really is empty, so cmdit_new's alloc really fails.
+    var oom_fs = cmdit_new("anuenue");
+    chk("cmdit_new returns a 0 handle with no heap", oom_fs == 0);
+    chk("cmdit_parse on that handle fails closed", cmdit_parse(oom_fs) == CMDIT_RESULT_ERR);
+    var oom_err = cmdit_error(oom_fs);
+    chk("cmdit_error on that handle is NOMEM", oom_err == CMDIT_ERR_NOMEM);
+    chk("anuenue routes NOMEM as a runtime failure, exit 1, with no heap",
+      anuenue_parse_runtime_failure(oom_err) == ANUENUE_EXIT_RUN);
+    chk("a usage error is left to main.cyr (returns 0)",
+      anuenue_parse_runtime_failure(CMDIT_ERR_UNKNOWN) == 0);
+
     pout("[allocfail] the four driver entry points\n");
     # Each allocates before touching stdin, so each must fail at the
     # allocation and return the runtime exit code rather than crashing

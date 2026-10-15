@@ -5,6 +5,46 @@
 
 ## Version
 
+**1.4.4** — cut 2026-10-14. **The v1.4.x closeout + P(-1) sweep.** Audit
+delta [`2026-10-14-v14x-delta.md`](../audit/2026-10-14-v14x-delta.md): 6
+findings, 1 MEDIUM + 2 LOW + 3 INFO, zero HIGH+ — five fixed in-cut, H-06
+recorded (a stdout behaviour choice) — and **every guard ever recorded as
+unproven is now proven by a gate**.
+
+*H-01 (MEDIUM)*: animation re-anchored by LF count, so a line wider than
+the terminal, or a block taller than it, scrolled a copy of the block into
+scrollback every frame (+8.7 rows / frame for five 162-column lines at
+80 columns, measured with a new terminal model, `scripts/term-model.py`).
+Now physical rows on a terminal of known size, with a display-width table
+generated from UAX #11 (ADR 0005), and a block that cannot fit is drawn
+once; pipes unchanged. The fix's first cut had two errors (a hand-picked
+width table, input escapes modelled as zero-width) — caught by the
+closeout's code review. *H-02 (LOW)*: waiting on a non-blocking stdin /
+stdout was a 1 ms poll loop (30 ms CPU per 4 s); now `poll(2)`, 0 ms.
+*H-05 (LOW, since M4)*: animation dropped a combining mark after an LF or at
+the start of the input. *H-03 (INFO)*: the documented syscall surface named
+`brk`; measured, no route issues it, and the measurement is now a gate.
+*H-04 (INFO)*: architecture 001's worst case was mis-added (29); the real
+bound is 32 — exactly the reserve. *H-06 (INFO, recorded)*: escape
+sequences in the input print as text — anuenue's own escape cancels each
+input ESC; a roadmap item.
+
+*Proven*: D-01 (zero tick) by a probe; E-01's zero-byte write, EINTR on
+both sides and the signalfd `fcntl` fallback by gdb syscall injection
+(`scripts/fault-check.sh`, new, CI-wired, which also gates the syscall
+surface per route); NOMEM under a genuinely exhausted heap. *Closeout*: the
+unit suite's `main()` is sixteen per-cut functions (the v1.4.3 miscompile's
+workaround); the dead-code floor is one test oracle; thoth (a library
+consumer, now listed) is unaffected. *Upstream*: agnostik's unchecked
+`alloc(24)` in `agnostik_err_new`, filed.
+
+stdout byte-identical to v1.4.3 on every pipe route (232 + 18
+comparisons); perf flat (15.60 ns/byte truecolor ascii no-LF, +0.1%).
+**484/484** unit assertions in 59 groups (was 437 / 56), robustness **46**
+(was 38), PTY **25** (was 14), allocfail **23** (was 17), fault-check **17**
+(new), fuzz **1 491 882** (was 1 483 587), `cyrius audit` clean. Binary
+226 624 → **235 800 B**.
+
 **1.4.3** — cut 2026-10-14. **The escape-table word copy.**
 `_emit_phase_esc` copies an entry as three 8-byte words, not `elen` bytes:
 9 ns per escape in every mode (was 39 / 27–28 / 16–17), and end to end the
@@ -26,8 +66,9 @@ Four mutations, each caught.
 the micro rows gave this cut both numbers, and an in-process corpus would
 need a stdout seam in the hot path. *Found*: a cyrius miscompile — growing
 the unit suite's `main()` crashed it in an unrelated early group (6.7.9 –
-6.7.11); the new group lives in its own function, the bug is filed upstream,
-and v1.4.4's refactor splits `main()`.
+6.7.11); the new group lives in its own function, the bug is filed as a
+cyrius issue (reproduction pinned to anuenue 1.4.2), and v1.4.4's refactor
+splits `main()`.
 
 **437/437** unit assertions (was 429), robustness **38** (was 37), fuzz
 **1 483 587** (was 1 450 668), `cyrius audit` clean. Binary unchanged at
@@ -855,6 +896,11 @@ registry, post-v1.x).
 
 ## Binary
 
+- **Size (1.4.4)**: **235 800 bytes**, +9 176 B over v1.4.3, all anuenue's
+  own: `fd_wait_ready` for the H-02 poll wait (+4 096 B, measured alone),
+  then the H-01 width table (82 ranges), row count and window-size query
+  plus H-05's pretag change. The binary grows in what look like page-aligned
+  steps, so finer attribution is not meaningful. Non-DCE 985 368 B.
 - **Size (1.4.3)**: **226 624 bytes** — the same total as v1.4.2, though the
   binaries differ in content (the copy loop became three words and the init
   gained the zero-fill; the layout nets to zero bytes).
@@ -926,25 +972,25 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.4.3 = 226 624 B, 1.4.2 = 226 624 B, 1.4.1 = 222 520 B, 1.4.0 = 210 696 B, 1.3.6 = 204 312 B, 1.3.5 = 814 488 B, 1.3.4 = 814 488 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 – 1.3.5 measure the whole binary (6.4.x / 6.5.x NOPed dead code in place — point 2 above); 1.3.6 onward are compacted again, so 1.3.6 / 1.4.x compare with each other, not with the 1.2.x–1.3.5 rows.
+- **Size history**: 1.4.4 = 235 800 B, 1.4.3 = 226 624 B, 1.4.2 = 226 624 B, 1.4.1 = 222 520 B, 1.4.0 = 210 696 B, 1.3.6 = 204 312 B, 1.3.5 = 814 488 B, 1.3.4 = 814 488 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 – 1.3.5 measure the whole binary (6.4.x / 6.5.x NOPed dead code in place — point 2 above); 1.3.6 onward are compacted again, so 1.3.6 / 1.4.x compare with each other, not with the 1.2.x–1.3.5 rows.
 - **Output path**: `build/anuenue`
 
 ## Tests
 
 | File | Status |
 |------|--------|
-| `tests/anuenue.tcyr` | **437 assertions across 56 groups** at v1.4.3 (+8 / +1 group, in its own function `test_word_copy` — see the miscompile note in the roadmap: the word copy's footprint fits the reserve, the payload past `elen` is zero after a rebuild in place, and the escape / scratch / untouched layout at an unaligned `pos`). v1.4.2 was **429 across 55** (+19 / +1 group: the argv echo — the 64-byte cut and its UTF-8 step-back, the sanitizer's ESC / BEL / LF / C1 replacement, `anuenue_arg_attached`; mutation-checked). v1.4.1 was **410 across 54** (+8 / +1 group: cmdit 1.4.0's parse failures as `src/main.cyr` routes them — `--no-color=0` is `UNEXPECTED_VALUE` and leaves the flag unset, the 0-handle contract the NOMEM branch rests on, and the three new codes' values). v1.4.0 was **402 across 53** (+18 / +1 group: the exit signalfd through darshana — CLOEXEC and O_NONBLOCK read back with `fcntl`, a real SIGINT reported and consumed, SIGINT + SIGTERM pending across the close, the mask restored, a pre-blocked SIGHUP left blocked; dropping the drain kills the test run, dropping `& ~prev` fails 3). v1.2.2 was **349 assertions across 46 groups** (v1.2.2: +41 across 4 groups, one per audit finding with a testable invariant — A-01 table init, A-02 clamp arithmetic incl. a pin that `i64::MAX * 1e9` really wraps, A-04 colour-value parsing incl. the BAD sentinel, A-05 cap behaviour incl. that the sentinel is the stop offset). v1.2.1 was **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
+| `tests/anuenue.tcyr` | **484 assertions across 59 groups** at v1.4.4, in sixteen per-cut functions plus `test_word_copy` / `test_v144_rows` (v1.4.4 split `main()`; +47: H-01 width + rows +40, H-05 clustering +6, H-04 reserve bound +1). v1.4.3 was **437 assertions across 56 groups** (+8 / +1 group, in its own function `test_word_copy` — see the miscompile note in the roadmap: the word copy's footprint fits the reserve, the payload past `elen` is zero after a rebuild in place, and the escape / scratch / untouched layout at an unaligned `pos`). v1.4.2 was **429 across 55** (+19 / +1 group: the argv echo — the 64-byte cut and its UTF-8 step-back, the sanitizer's ESC / BEL / LF / C1 replacement, `anuenue_arg_attached`; mutation-checked). v1.4.1 was **410 across 54** (+8 / +1 group: cmdit 1.4.0's parse failures as `src/main.cyr` routes them — `--no-color=0` is `UNEXPECTED_VALUE` and leaves the flag unset, the 0-handle contract the NOMEM branch rests on, and the three new codes' values). v1.4.0 was **402 across 53** (+18 / +1 group: the exit signalfd through darshana — CLOEXEC and O_NONBLOCK read back with `fcntl`, a real SIGINT reported and consumed, SIGINT + SIGTERM pending across the close, the mask restored, a pre-blocked SIGHUP left blocked; dropping the drain kills the test run, dropping `& ~prev` fails 3). v1.2.2 was **349 assertions across 46 groups** (v1.2.2: +41 across 4 groups, one per audit finding with a testable invariant — A-01 table init, A-02 clamp arithmetic incl. a pin that `i64::MAX * 1e9` really wraps, A-04 colour-value parsing incl. the BAD sentinel, A-05 cap behaviour incl. that the sentinel is the stop offset). v1.2.1 was **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
 | `tests/anuenue.bcyr` | **8 rows at v1.4.0**: the two M1 trend rows plus, per colour mode, `_emit_phase_esc` (the table) vs `hsv_rainbow` + the darshana composer — the comparison behind keeping the table (v1.4.0, loaded host: truecolor 43–45 vs 31–33 ns, 256 30–31 vs 37–38, 16 18 vs 24; `hsv_rainbow` 9, `tty_fg_rgb_buf` 23–28 at darshana 1.3.0, was 37 at 1.1.1). The "~10 ns/call" table figure below is not what the byte-copy loop costs (41–43 ns under cyrius 6.6.2). Previously: 2 micro-benchmarks. At v1.2.1: `hsv_rainbow` **8 ns/call**, `tty_fg_rgb_buf` **52 ns/call** — **not comparable to pre-v1.2.1 figures**: 6.5.35's `bench` harness measures and subtracts a timer floor (1.347 µs per clock read on the reference host) that the 6.4.62 harness did not. Pre-M5 the filter loop called both per cluster; M5+ uses `_emit_phase_esc` (~10 ns/call) instead. The micros still measure the table-build path. |
-| `fuzz/*.fcyr` (v0.9.0+) | **Six harnesses, 1 483 587 assertions per run at v1.4.3** (`emit-phase-esc` **1 046 876** — v1.4.3 restated its write invariant for the word copy: the escape, zero scratch to `pos + 24`, nothing after; plus `fuzz_emit_stream`, 3 000 clusters per mode checked against a byte-copy reference over every flushed prefix). At v1.4.1: 1 450 668 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `flag-value-parsers` 96 091, `rgb-quantizers` 60 000, `flag-parser` 140), zero failures. v1.4.1's `flag-parser` change: the error-code invariant is a set check (every code must be one `src/main.cyr` names) rather than a range cmdit had outgrown; the flag set gained `-i` / `-v` / `--log-level`; a new group asserts every boolean given `=value` is `UNEXPECTED_VALUE`; and `solo_tokens[44]` (44 bytes holding 88) became `[112]`. v1.4.0 was 1 450 672 (`flag-parser` 144). At v0.9.0: **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
+| `fuzz/*.fcyr` (v0.9.0+) | **Six harnesses, 1 491 882 assertions per run at v1.4.4** (`pretag-clusters` 108 687: v1.4.4 added coverage invariants — the first cluster at byte 0, an LF cluster the LF alone — and an LF / combining / ZWJ / RI token corpus; on v1.4.3's code they fail 584 times). At v1.4.3: **1 483 587** (`emit-phase-esc` **1 046 876** — v1.4.3 restated its write invariant for the word copy: the escape, zero scratch to `pos + 24`, nothing after; plus `fuzz_emit_stream`, 3 000 clusters per mode checked against a byte-copy reference over every flushed prefix). At v1.4.1: 1 450 668 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `flag-value-parsers` 96 091, `rgb-quantizers` 60 000, `flag-parser` 140), zero failures. v1.4.1's `flag-parser` change: the error-code invariant is a set check (every code must be one `src/main.cyr` names) rather than a range cmdit had outgrown; the flag set gained `-i` / `-v` / `--log-level`; a new group asserts every boolean given `=value` is `UNEXPECTED_VALUE`; and `solo_tokens[44]` (44 bytes holding 88) became `[112]`. v1.4.0 was 1 450 672 (`flag-parser` 144). At v0.9.0: **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
 | `tests/golden/*.out` | **Six fixtures**. M2/M3: `agnos-rainbow-s100` (238 B), `cjk-mixed-s0` (125 B), `combining-s0` (155 B), `zwj-flag-s0` (135 B). **M6: `agnos-rainbow-256-s100.out` (160 B), `agnos-rainbow-16-s100.out` (82 B)**. All six byte-identical across the M5/M6/M8 cuts — proves the mode-aware phase cache matches runtime exactly and that the M8 fix is local to the long-cluster path. Plus three MONO equivalence checks in golden-check.sh (`NO_COLOR=1 anuenue` / `--no-color` / `--color=none` all byte-identical to input). |
 | `scripts/animate-smoke.sh` | M4 (v0.5.0). Animation structural guard. M6: invokes with `--color=24bit` so the TTY-detection in M6 doesn't drop the test into MONO. **M8 (v0.8.0) extension**: long-cluster section runs the historical attack (base + 16 000 combining acutes), asserts clean exit and full byte preservation (~976 000 combiner bytes over 61 frames) through the mid-cluster flushes. **v0.9.0 extensions**: `--color=256` + `--color=16` per-mode sections — each asserts clean exit, non-empty output, full cursor lifecycle, and the per-mode SGR shape (CSI 38;5;Nm for 256, CSI 9[1-7]m for 16; explicit no-leak check that truecolor 38;2;… doesn't appear under `--color=256`). |
-| `scripts/robustness-check.sh` | **38 checks at v1.4.3** (gate 9: no NUL on stdout from NUL-free input — 18 runs across filter / one-shot / animation × 3 modes, catching a leaked word-copy scratch byte). **37 at v1.4.2** (gate 8: the six parse-error lines verbatim, an OSC + BEL + CSI token echoed with no raw control byte, a 302-byte token capped at 64 + `...`). **NEW at v1.2.2** (P-1 audit). Adversarial byte streams and adversarial argv against the real binary — the surfaces the unit suite and the seeded fuzz harnesses do not reach, and where four of the nine audit findings lived. **29 checks at v1.4.1** (21 at v1.4.0; gate 7 added: four booleans given `=value`, 200 positionals, a 2.4 MB command line plus a 1.0 MB control, and `--nofile=3` — the argv states cmdit 1.2.4 parsed clean; all seven defect checks fail on the v1.4.0 binary). Eleven checks at v1.2.2: UTF-8 carry across the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1` — the property `carry_len` exists for, previously untested end to end); byte preservation under malformed UTF-8 (116 comparisons across overlong 2/3/4-byte forms, UTF-16 surrogates, >U+10FFFF, the 0xF5–0xFF range, lone continuations, EOF truncation, embedded NULs, all 256 byte values); every integer flag at both i64 extremes terminating with a documented exit code; and one process-level regression per finding. Runs in CI. |
+| `scripts/robustness-check.sh` | **46 checks at v1.4.4** (gate 6: H-02 — a stalled non-blocking stdin on three routes and a stalled stdout must cost ≤ 5 ms CPU; H-05: animation keeps every byte, four inputs). **38 checks at v1.4.3** (gate 9: no NUL on stdout from NUL-free input — 18 runs across filter / one-shot / animation × 3 modes, catching a leaked word-copy scratch byte). **37 at v1.4.2** (gate 8: the six parse-error lines verbatim, an OSC + BEL + CSI token echoed with no raw control byte, a 302-byte token capped at 64 + `...`). **NEW at v1.2.2** (P-1 audit). Adversarial byte streams and adversarial argv against the real binary — the surfaces the unit suite and the seeded fuzz harnesses do not reach, and where four of the nine audit findings lived. **29 checks at v1.4.1** (21 at v1.4.0; gate 7 added: four booleans given `=value`, 200 positionals, a 2.4 MB command line plus a 1.0 MB control, and `--nofile=3` — the argv states cmdit 1.2.4 parsed clean; all seven defect checks fail on the v1.4.0 binary). Eleven checks at v1.2.2: UTF-8 carry across the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1` — the property `carry_len` exists for, previously untested end to end); byte preservation under malformed UTF-8 (116 comparisons across overlong 2/3/4-byte forms, UTF-16 surrogates, >U+10FFFF, the 0xF5–0xFF range, lone continuations, EOF truncation, embedded NULs, all 256 byte values); every integer flag at both i64 extremes terminating with a documented exit code; and one process-level regression per finding. Runs in CI. |
 | `scripts/observe-check.sh` | **27 checks at v1.4.2** (was 22; gate 5: five failure paths, each exactly one stderr line ending in one newline). **NEW at v1.2.1.** The observability gate, and the enforcement point for pipe-purity under diagnostics. Four gates: (1) stdout byte-identical across 144 corpus × colour-mode × verbosity combinations — the property a unit test cannot express, and the one that matters because a byte leaked onto fd 1 corrupts every pipeline `-v` is enabled in; (2) stderr empty in every default-verbosity run, including for wholly invalid UTF-8; (3) `-v` carries the fields a bug report needs (version, phase step, colour mode, colour **reason**, route, byte count) and never reports `reason=unset`; (4) the forced read failure (stdin closed → EBADF) prints the agnostik kind, logs `code=1010`, and still exits 1. Runs in CI. |
 | `scripts/signal-check.sh` | **NEW at v1.3.0**; **18 checks at v1.4.0** (was 12). The process signal mask across the exit signalfd's open and close (via `tests/probes/sigmask-probe.cyr`, `plain` and `preblocked` cases, normal and under `prlimit --nofile=3`), CLOEXEC / non-blocking on the fd, SIGTERM latency independent of `-i`, `-d` honoured at every `-i`, `-i` pacing and validation, and — v1.4.0 — two exit signals at once still exiting 0. |
-| `scripts/pty-check.sh` / `scripts/allocfail-check.sh` | **14** PTY checks (v1.3.1) and **15** allocation-failure probe checks (v1.3.4); unchanged at v1.4.0. |
+| `scripts/pty-check.sh` / `scripts/allocfail-check.sh` | **25** PTY checks at v1.4.4 (gate 5: the UAX #11 width oracle, then ten sized-pty animation cases played into `scripts/term-model.py`) and **23** allocation checks (NOMEM under exhaustion); `scripts/fault-check.sh` **17** (new: D-01 probe, gdb injection of E-01 / EINTR / fcntl failure, the per-route syscall allowlist). Previously **14** PTY checks (v1.3.1) and **15** allocation-failure probe checks (v1.3.4); unchanged at v1.4.0. |
 | `scripts/perf-bench.sh` | v1.4.0: `COLOR=256` / `COLOR=16` select the mode (default 24bit) — the table's value differs by mode, so a truecolor-only harness would have recommended deleting it. M5 (v0.6.0). End-to-end ASCII + UTF-8 per-byte overhead. M6: invokes with `--color=24bit` for the same reason. The M5 ratchet. Latest run at v1.2.1 (`RUNS=11`, idle host, final binary): ASCII no-LF **46.63 ns/byte**, ASCII w/ LFs **50.99**, UTF-8 mixed **41.77** — all under the 60 ns/byte cap. Measured head-to-head against a rebuilt v1.2.0 binary rather than against a historical figure. |
 
-Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring) → v1.2.2 **349** (+41, P-1 audit regressions) → v1.3.0 **364** (+15) → v1.3.3 **380** (+16) → v1.3.4 **384** (+4, E-03) → v1.4.0 **402** (+18: the darshana-signalfd group +19, the drain-cap pin +1, the two `ANUENUE_SFD_NONBLOCK` pins −2 with the constant) → v1.4.1 **410** (+8, cmdit 1.4.0's parse failures) → v1.4.2 **429** (+19, the argv echo) → v1.4.3 **437** (+8, the word copy).
+Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring) → v1.2.2 **349** (+41, P-1 audit regressions) → v1.3.0 **364** (+15) → v1.3.3 **380** (+16) → v1.3.4 **384** (+4, E-03) → v1.4.0 **402** (+18: the darshana-signalfd group +19, the drain-cap pin +1, the two `ANUENUE_SFD_NONBLOCK` pins −2 with the constant) → v1.4.1 **410** (+8, cmdit 1.4.0's parse failures) → v1.4.2 **429** (+19, the argv echo) → v1.4.3 **437** (+8, the word copy) → v1.4.4 **484** (+47, H-01 / H-05 / H-04).
 
 ## Dependencies
 
@@ -969,9 +1015,15 @@ No pre-release / pre-1.0 deps on the critical path. No external (non-AGNOS) deps
 
 ## Consumers
 
-_None yet._
+- **thoth** — library consumer (since anuenue v1.2.0). Vendors
+  `dist/anuenue.cyr` as `src/vendor/anuenue.cyr` (re-synced by its
+  `scripts/sync-anuenue.sh`; at 1.3.6 as of 2026-10-14) for `/theme
+  rainbow`, reading `hsv_rainbow`. The bundle's code is unchanged since
+  then, so every v1.4.x cut is a no-op for it; re-check at any change to
+  `src/hsv.cyr`. *(Listed at v1.4.4; this section said "None yet" since
+  M0 — the pipeline consumers below are still to come.)*
 
-Anticipated at v0.7+:
+Anticipated pipeline consumers:
 - `agnoshi` — MOTD pipeline composition
 - `iam` — default login splash chain (`iam | anuenue`)
 - end-user shells — bash / zsh / agnoshi interactive use
@@ -1015,11 +1067,11 @@ re-learning.
 
 ## Next
 
-**v1.4.4 — the v1.4.x closeout + P(-1) sweep — is actionable now.** Its known
-refactor: split `tests/anuenue.tcyr`'s `main()` into per-cut functions, so the
-next unit group does not land on the miscompile v1.4.3 hit. v1.4.5, the cyrius
-6.7.x move that brings sakshi 2.5.10 through the snapshot (−60 144 B measured in
-a trial), waits on the 6.7.11 tag and is the arc's last patch — it re-runs the
-closeout's build-level gates itself. v1.5.0 (adoption) and v1.6.0 (the
-pipe-decorator family) are gated on things anuenue cannot do itself. Every item
-and its gate: [roadmap.md § Release map](roadmap.md#release-map).
+**v1.4.5 — the cyrius 6.7.x move that brings sakshi 2.5.10 through the
+snapshot** (−60 144 B measured in a trial) — waits on the 6.7.11 tag and is
+the arc's last patch; it re-runs the closeout's build-level gates and
+fault-check's capability-surface layer itself. v1.5.0 (adoption — the two
+open v1.0 acceptance items; thoth's library use is noted against the
+downstream gate) and v1.6.0 (the pipe-decorator family) are gated on things
+anuenue cannot do itself. Every item and its gate:
+[roadmap.md § Release map](roadmap.md#release-map).

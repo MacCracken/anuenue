@@ -94,8 +94,14 @@ echo
 case "$RC" in
     0)
         ok "every allocation guard held with no heap available"
-        echo "allocfail-check: PASS"
-        exit 0
+        # v1.4.4: the NOMEM route must also SAY so — on stderr, through
+        # anuenue_fail's no-allocation fallback.
+        if grep -q 'anuenue: out of memory parsing the command line' "$WORK/err"; then
+            ok "NOMEM is reported on stderr with no heap to report with"
+            echo "allocfail-check: PASS"
+            exit 0
+        fi
+        bad "NOMEM returned exit 1 but printed nothing recognisable on stderr"
         ;;
     1)
         bad "a guard did not hold — see the FAIL line(s) above"

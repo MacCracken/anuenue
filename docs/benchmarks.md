@@ -594,6 +594,38 @@ Cross-checked outside the harness: 10 MB of ASCII through `--color=24bit`,
 
 - **1.4.3 binary**: **226 624 bytes**, the same total as v1.4.2.
 
+## v1.4.4 — v1.4.x closeout + P(-1) sweep
+
+### Release ratchet — v1.4.3 vs v1.4.4
+
+The per-cluster path did not change. The cut's work is in animation setup (the
+H-01 row count, once per run), the EAGAIN wait (H-02, taken only on a
+non-blocking descriptor) and the animation pre-tag (H-05). A rebuilt v1.4.3
+binary against v1.4.4, `RUNS=11`, **five** interleaved rounds per mode,
+medians of the rounds, ns/byte. A first three-round run at load average ~11
+(other compiles on the host) swung ±10% with mixed signs and was discarded;
+these ran at load 5–7.
+
+| Mode | corpus | v1.4.3 | v1.4.4 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 15.59 | **15.60** | +0.1% |
+| | ascii w/ LFs | 20.22 | **20.24** | +0.1% |
+| | utf8 mixed | 20.73 | **20.70** | −0.1% |
+| 256 | ascii no-LF | 15.42 | **15.51** | +0.6% |
+| | ascii w/ LFs | 20.20 | **20.27** | +0.3% |
+| | utf8 mixed | 20.62 | **20.62** | 0.0% |
+| 16 | ascii no-LF | 15.34 | **15.40** | +0.4% |
+| | ascii w/ LFs | 20.19 | **20.13** | −0.3% |
+| | utf8 mixed | 20.59 | **20.53** | −0.3% |
+
+**Flat** — every row within ±0.6%. Micro (`tests/anuenue.bcyr`): the table emit
+is 9 ns in every mode, `hsv_rainbow` 8–9, `tty_fg_rgb_buf` 22, the same as
+v1.4.3.
+
+- **1.4.4 binary**: **235 800 bytes**, +9 176 B — `fd_wait_ready` (H-02),
+  then H-01's width table, row count and size query, plus H-05; see
+  [`state.md` § Binary](development/state.md#binary).
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -622,7 +654,8 @@ Cross-checked outside the harness: 10 MB of ASCII through `--color=24bit`,
 | v1.4.0  | 48.56‖              | 9§               | 23§                 | 210 696      | cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept |
 | v1.4.1  | 46.74¤              | 8§               | 21§                 | 222 520      | cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed |
 | v1.4.2  | 47.41¤              | 8§               | 22§                 | 226 624      | stderr hygiene: one line per failure; parse errors name a sanitized token |
-| **v1.4.3** | **15.40**¤       | 9§               | 22§                 | **226 624**  | **escape-table word copy: 9 ns per escape in every mode; −68% end to end** |
+| v1.4.3  | 15.40¤              | 9§               | 22§                 | 226 624      | escape-table word copy: 9 ns per escape in every mode; −68% end to end |
+| **v1.4.4** | **15.60**¤       | 8§               | 22§                 | **235 800**  | **v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -644,8 +677,8 @@ shipped; neither touches the per-cluster hot path.
 
 ¤ v1.4.1 measured back-to-back with a rebuilt v1.4.0 on a quieter host (load
 1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
-v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), and v1.4.3
-against a rebuilt v1.4.2 (47.72).
+v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), v1.4.3
+against a rebuilt v1.4.2 (47.72), and v1.4.4 against a rebuilt v1.4.3 (15.59).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

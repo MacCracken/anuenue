@@ -45,7 +45,9 @@ Three mechanisms, none of them optional:
    (`SK_OUT_FILE`), UDP (`SK_OUT_UDP`), ring-buffer and hook targets; anuenue
    selects none of them. File and network targets would breach the capability
    bound in CLAUDE.md ("no file I/O, no network"), and anuenue's syscall surface
-   stays read/write/brk/exit.
+   stays read/write/mmap/exit. (This read `brk` until v1.4.4; the stdlib heap has
+   been mmap-backed since cyrius 6.1.19. `-v` itself adds `clock_gettime` and
+   one `nanosleep`, sakshi's clock calibration.)
 
 2. **Silence is the default, and it is anuenue's default, not sakshi's.**
    sakshi's own default level is `SK_INFO` — inheriting it would have put info

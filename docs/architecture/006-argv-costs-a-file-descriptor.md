@@ -5,7 +5,9 @@ argv: `open(2)`, `read(2)`, `close(2)`. `main()` calls it before anything else,
 and `cmdit_parse` depends on it.
 
 This is already noted in `src/main.cyr`'s header as a capability-surface fact —
-it is the one open/close in a program that is otherwise read/write/brk/exit.
+it is the one open/close in a program that is otherwise read/write/mmap/exit
+(the colour auto-detection's `/proc/self/environ` read aside — see ADR 0001's
+table).
 What is *not* obvious is the consequence for testing.
 
 ## The consequence

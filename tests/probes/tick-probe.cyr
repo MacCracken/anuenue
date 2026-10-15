@@ -1,0 +1,48 @@
+# tests/probes/tick-probe.cyr — D-01, the zero-tick guard in _frame_wait
+# (v1.4.4).
+#
+# WHY THIS EXISTS
+#
+# _frame_wait sleeps one frame interval in slices of ANUENUE_TICK_MS and
+# stops when the remaining time reaches 0. A zero (or negative) slice
+# would never reduce it: an infinite loop inside animation, with the
+# exit signals blocked, killable only by SIGKILL. v1.3.2 added
+# `if (slice <= 0) { slice = 1; }` and recorded it as UNPROVEN, because
+# ANUENUE_TICK_MS is a module constant no flag can reach — deleting the
+# guard kept every test green.
+#
+# This probe reaches it from the module layer: it sets ANUENUE_TICK_MS to
+# 0 and to a negative value, then calls _frame_wait with no signalfd and
+# no deadline. With the guard, each call takes ANUENUE_FRAME_MS one-
+# millisecond slices and returns. Without it, the call never returns, and
+# scripts/fault-check.sh's timeout reports the hang.
+#
+# Like the other probes it calls no args_init and reads no file.
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+# Write a cstr to stdout. No allocation.
+fn tout(s): i64 {
+    syscall(1, 1, s, strlen(s));
+    return 0;
+}
+
+# Probe entry: two _frame_wait calls with a non-positive tick. Prints one
+# line per call that returned; returns 0. A hang is the failure signal.
+fn main(): i64 {
+    alloc_init();
+    ANUENUE_TICK_MS = 0;
+    var r0 = _frame_wait(0 - 1, 0);
+    if (r0 == 0) { tout("tick 0: returned\n"); }
+    ANUENUE_TICK_MS = 0 - 5;
+    var r1 = _frame_wait(0 - 1, 0);
+    if (r1 == 0) { tout("tick -5: returned\n"); }
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

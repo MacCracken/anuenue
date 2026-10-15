@@ -147,6 +147,35 @@ done
 [ "$D" -eq 0 ] && ok "escape-stripped output equals input ($N comparisons)"
 
 # Animation must survive the same corpus structurally.
+# H-05 (v1.4.4): animation must render every byte too. Through v1.4.3 an
+# extending codepoint at the very start of the input, or straight after
+# an LF, was tagged into no cluster (or into the LF's, which renders as
+# reset + LF only) and vanished from every frame. Strip the escapes and
+# the frame's CR, and the first frame must be the input.
+echo "[robustness] animation renders every byte (H-05)"
+python3 -I - "$BIN" <<'PYEOF' > "$WORK/h5.out" 2>&1 || true
+import re, subprocess, sys
+BIN = sys.argv[1]
+for name, data in (("after-LF", b"a\n\xcc\x81b\n"),
+                   ("leading", b"\xcc\x81ab\n"),
+                   ("leading-no-LF", b"\xcc\x81\xcc\x81x"),
+                   ("mixed", "e\u0301\n\u0301\u200d\U0001F308\nok\n".encode())):
+    out = subprocess.run([BIN, "-a", "-d", "1", "-i", "400", "--color=16"],
+                         input=data, capture_output=True).stdout
+    # Frames are separated by the cursor-up climb, or — input without an
+    # LF climbs nothing — by the CR that ends each frame.
+    frame = re.split(rb"\x1b\[\d+A|\r", out)[0]
+    frame = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", frame)
+    print("H5", name, "ok" if frame == data else "bad", frame[:40])
+PYEOF
+for _h in after-LF leading leading-no-LF mixed; do
+    if grep -q "^H5 $_h ok" "$WORK/h5.out"; then
+        ok "H-05: animation keeps every byte ($_h)"
+    else
+        bad "H-05: animation dropped bytes ($_h): $(grep "^H5 $_h " "$WORK/h5.out")"
+    fi
+done
+
 echo "[robustness] animation survives the malformed corpus"
 D=0
 for f in "$WORK"/mal/*.in; do
@@ -415,6 +444,67 @@ if [ "$2" -eq 0 ]; then
     ok "animation slurp survives a non-blocking stdin"
 else
     bad "animation on a non-blocking stdin exited $2"
+fi
+
+# H-02 (v1.4.4): waiting is BLOCKING, not polling. A non-blocking
+# descriptor whose peer stalls used to cost a 1 ms sleep-and-retry —
+# about 1 000 wakeups a second, 30 ms of CPU every 4 s, for as long as
+# the stall lasted. Both directions now wait in poll(2). Measured here
+# as CPU time over a 3 s stall: stdin on all three routes, then stdout
+# (a reader that stops reading until anuenue is blocked, then drains —
+# and every byte must still arrive).
+python3 - "$BIN" <<'PYEOF' > "$WORK/stall.out" 2>&1 || true
+import os, subprocess, sys, fcntl, time, select, signal
+BIN = sys.argv[1]
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+def cpu_ms(pid):
+    f = open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()
+    return (int(f[11]) + int(f[12])) * 1000 // os.sysconf("SC_CLK_TCK")
+for name, args in (("filter", ["--color=24bit"]), ("passthru", ["--color=none"]),
+                   ("slurp", ["-a", "-d", "1", "--color=24bit"])):
+    r, w = os.pipe()
+    fcntl.fcntl(r, fcntl.F_SETFL, os.O_NONBLOCK)
+    p = subprocess.Popen([BIN] + args, stdin=r, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.close(r); os.write(w, b"one line\n"); time.sleep(0.3)
+    c0 = cpu_ms(p.pid); time.sleep(3.0); c1 = cpu_ms(p.pid)
+    p.kill(); p.wait(); os.close(w)
+    print("STDIN", name, c1 - c0)
+# stdout: 2 MB of input, a non-blocking stdout pipe nobody reads at first
+data = b"rainbow output backpressure\n" * 75000
+r, w = os.pipe()
+fcntl.fcntl(w, fcntl.F_SETFL, os.O_NONBLOCK)
+p = subprocess.Popen([BIN, "--color=none"], stdin=subprocess.PIPE, stdout=w, stderr=subprocess.DEVNULL)
+os.close(w)
+def feed():
+    try:
+        p.stdin.write(data); p.stdin.close()
+    except OSError:
+        pass
+import threading
+t = threading.Thread(target=feed); t.start()
+time.sleep(0.5)
+c0 = cpu_ms(p.pid); time.sleep(3.0); c1 = cpu_ms(p.pid)
+got = 0
+while True:
+    d = os.read(r, 1 << 16)
+    if not d: break
+    got += len(d)
+rc = p.wait(); t.join()
+print("STDOUT", c1 - c0, rc, got, len(data))
+PYEOF
+for _rt in filter passthru slurp; do
+    _c=$(grep "^STDIN $_rt " "$WORK/stall.out" | awk '{print $3}')
+    if [ -n "$_c" ] && [ "$_c" -le 5 ]; then
+        ok "H-02: a stalled non-blocking stdin blocks ($_rt: ${_c} ms CPU in 3 s)"
+    else
+        bad "H-02: a stalled non-blocking stdin costs CPU ($_rt: '${_c}' ms in 3 s)"
+    fi
+done
+set -- $(grep '^STDOUT' "$WORK/stall.out" || echo "STDOUT 99 99 0 1")
+if [ "$2" -le 5 ] && [ "$3" -eq 0 ] && [ "$4" -eq "$5" ]; then
+    ok "H-02: a stalled non-blocking stdout blocks (${2} ms CPU in 3 s), then delivers all $4 bytes"
+else
+    bad "H-02: stalled non-blocking stdout: ${2} ms CPU, rc=$3, delivered $4 of $5"
 fi
 
 # ...and a REAL read failure must still be reported, or the retry loop

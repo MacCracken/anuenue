@@ -10,6 +10,9 @@ cyrius bench tests/anuenue.bcyr                # hot-path micro-benchmarks
 cyrius fuzz                                    # six fuzz harnesses (~1.45M assertions)
 sh scripts/golden-check.sh                     # determinism + NO_COLOR equivalence
 sh scripts/animate-smoke.sh                    # animation structural guard
+sh scripts/robustness-check.sh                 # adversarial bytes / argv / descriptors
+sh scripts/pty-check.sh                        # real pty: colour detection, sized-terminal animation
+sh scripts/fault-check.sh                      # gdb fault injection + per-route syscall allowlist
 sh scripts/perf-bench.sh                       # end-to-end per-byte overhead ratchet
 ```
 

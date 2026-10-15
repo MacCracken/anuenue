@@ -117,7 +117,7 @@ Every project runs a security audit pass before release — see [first-party-sta
 
 1. **Input validation** — argv flags validated; stdin bytes treated as untrusted
 2. **Buffer safety** — every `var buf[N]` verified; N is **bytes**; line-buffer is bounded
-3. **Syscall review** — read/write/exit only; no surprise syscalls
+3. **Syscall review** — no surprise syscalls. Measured, not read: `scripts/fault-check.sh` records every syscall of each route under gdb and fails on anything outside its allowlist. Adding a syscall is a decision: update the allowlist and ADR 0001's table together
 4. **No command injection** — anuenue never `exec()`s anything; verify this stays true
 5. **UTF-8 robustness** — invalid byte sequences must not panic, must not over-read
 
@@ -165,7 +165,7 @@ Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of
 - All `var` declarations are function-scoped — no block scoping
 - Max limits per compilation unit: 4,096 variables, 1,024 functions, 256 initialized globals
 - **`var` is function-scoped, not block-scoped** — two `var x` in different `if`/`while` bodies of the same function is a `duplicate variable` compile error. Prefix helper locals in long functions (e.g. test bodies) to avoid collisions
-- **Keep functions small; put each new unit-test group in its own function.** At v1.4.3, appending one more group to `tests/anuenue.tcyr`'s `main()` crashed the suite with SIGSEGV in an unrelated early group, on cyrius 6.7.9–6.7.11. The same lines pass in a function of their own. Not the local count, an array local or code size alone. Filed upstream (roadmap § Upstream). Until it is fixed, a large function is a miscompile risk, not only a style issue.
+- **Keep functions small; put each new unit-test group in its own function.** At v1.4.3, appending one more group to `tests/anuenue.tcyr`'s `main()` crashed the suite with SIGSEGV in an unrelated early group, on cyrius 6.7.9–6.7.11. The same lines pass in a function of their own. Not the local count, an array local or code size alone. Filed as a cyrius issue (roadmap § Upstream). Until it is fixed, a large function is a miscompile risk, not only a style issue.
 - **Do not rely on implicit literal→`Str` coercion across a function boundary.** A string literal is coerced at a call site whose parameter is typed `Str`, but *not* in return-expression position (`return f(K, "lit")` does not coerce, `f(K, "lit");` does). Convert explicitly with `str_new(cstr, strlen(cstr))` at the boundary — see [ADR 0004](docs/adr/0004-stderr-only-observability.md)
 
 ## Dependencies (durable map; versions in state.md)
@@ -188,7 +188,7 @@ HSV→RGB math is inline in `src/hsv.cyr` (~30 lines incl. phase-wrap + 6-sector
 - **Tag filter**: release workflow triggers on `tags: ['[0-9]*']` — semver-only.
 - **Version-verify gate**: release asserts `VERSION == cyrius.cyml version == git tag` before building.
 - **Workflow layout**:
-  - `.github/workflows/ci.yml` — install (upstream `install.sh`), verify-layout, deps, DCE build, lint, test, golden-check, animate-smoke, fuzz, observe-check, distlib-drift, version-consistency
+  - `.github/workflows/ci.yml` — install (upstream `install.sh`), verify-layout, deps, DCE build, lint, test, golden-check, animate-smoke, fuzz, allocfail-check, pty-check, signal-check, fault-check (installs gdb), robustness-check, observe-check, distlib-drift, version-consistency
   - `.github/workflows/release.yml` — version gate → CI gate → DCE build → artifacts
 
 ## Docs

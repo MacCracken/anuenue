@@ -8,8 +8,8 @@
 #
 # Capability surface delta from M1: args_init() opens
 # `/proc/self/cmdline` (open(2) + read(2) + close(3)) once at
-# startup. After that the filter is read(0)/write(1)/brk(12) only,
-# same as M1. The open/close is bounded to argv parsing — not user
+# startup. After that the filter is read(0)/write(1) only, on a heap
+# mmap'd once by alloc_init (brk until cyrius 6.1.19), same as M1. The open/close is bounded to argv parsing — not user
 # data — and is the standard AGNOS-userland argv discipline (every
 # first-party tool does the same via lib/args.cyr).
 #
@@ -179,23 +179,12 @@ fn main(): i64 {
         # correct if cmdit ever gains a pre-parse verbosity probe.
         anuenue_log_kv_int(SK_ERROR, "argument parse failed", "cmdit-err", err);
 
-        # cmdit 1.4.0 (v1.4.1): two parse failures are not something the user
+        # cmdit 1.4.0 (v1.4.1): NOMEM and ARGV are not something the user
         # typed, so they are runtime failures (exit 1) with no usage dump.
-        #   NOMEM — cmdit_new's alloc failed and `fs` is 0. cmdit 1.2.4 crashed
-        #           on the 0 handle; 1.4.0 guards every entry point. Unproven:
-        #           alloc_init's first chunk always holds the handle, so no
-        #           external limit reaches it (prlimit --as finds no window).
-        #   ARGV  — the stdlib could not read the whole command line: over
-        #           2 MiB (reachable after `ulimit -s unlimited`) or no /proc.
-        #           cmdit 1.2.4 parsed the readable prefix and returned OK, so a
-        #           trailing flag was dropped silently at exit 0.
-        if (err == CMDIT_ERR_NOMEM) {
-            return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED,
-              "out of memory parsing the command line");
-        }
-        if (err == CMDIT_ERR_ARGV) {
-            return anuenue_fail(STIK_ERR_IO, "could not read the full command line");
-        }
+        # The routing lives in src/observe.cyr (v1.4.4) so the allocation
+        # probe can drive it under a genuinely exhausted heap.
+        var prf = anuenue_parse_runtime_failure(err);
+        if (prf != 0) { return prf; }
 
         # Everything else is a usage error. One flat lookup rather than a
         # nested if/else chain: the codes are disjoint, and the chain had grown

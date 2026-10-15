@@ -43,7 +43,7 @@ NO_COLOR=1 echo "AGNOS" | ./build/anuenue      # byte-identical passthrough
 | `-p`  | `--freq <N>`      | int      | Phase step per cluster (default 7) |
 | `-s`  | `--seed <N>`      | int      | Starting hue phase (deterministic) |
 | `-F`  | `--offset <N>`    | int      | Additive phase offset (Ruby-lolcat compat) |
-| `-a`  | `--animate`       | —        | Buffer input, repaint with phase shift per frame |
+| `-a`  | `--animate`       | —        | Buffer input, repaint with phase shift per frame (a block taller than the terminal is drawn once) |
 | `-d`  | `--duration <N>`  | int      | Animation duration in seconds (0 = until SIGINT) |
 | `-S`  | `--speed <N>`     | int      | Animation phase advance per frame (default 1) |
 | `-n`  | `--no-color`      | —        | Force MONO passthrough (byte-identical to `cat`) |
@@ -66,31 +66,33 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.4.3
+### Quality bar at v1.4.4
 
-- **437** unit assertions across 56 groups (`cyrius test`)
+- **484** unit assertions across 59 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **27** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
   and one stderr line per failure
-- **38** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **46** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
   clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
   positionals), parse-error lines that echo argv sanitized and bounded, and
-  no escape-copy scratch byte ever reaching stdout
-- **1,483,587** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
-- **0** HIGH+ security audit findings open — five audits, latest
-  [`docs/audit/2026-10-12-v140-delta.md`](docs/audit/2026-10-12-v140-delta.md)
-- **14** PTY checks + **18** signal/pacing checks + **15** allocation-failure
-  checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
-  `scripts/allocfail-check.sh` — the last runs every guarded `alloc` site under
-  a genuinely exhausted heap)
+  no escape-copy scratch byte ever reaching stdout, a stalled non-blocking peer
+  costing no CPU, and animation keeping every byte
+- **1,491,882** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
+- **0** HIGH+ security audit findings open — six audits, latest
+  [`docs/audit/2026-10-14-v14x-delta.md`](docs/audit/2026-10-14-v14x-delta.md); no guard recorded as unproven
+- **25** PTY checks (animation on sized terminals, played into a terminal
+  model) + **18** signal/pacing + **23** allocation-failure + **17**
+  fault-injection checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
+  `scripts/allocfail-check.sh`, `scripts/fault-check.sh` — the last injects
+  syscall faults under gdb and gates the per-route syscall surface)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 15.4 ns/byte ASCII no-LF in every colour mode at v1.4.3 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
+- **Perf**: 15.6 ns/byte ASCII no-LF in every colour mode at v1.4.4 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics
@@ -137,11 +139,11 @@ $ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
 - [`CLAUDE.md`](CLAUDE.md) — durable rules for working in this repo (Claude Code or human)
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — forward plan: the 1.4.x arc through the 1.x minors
 - [`docs/development/state.md`](docs/development/state.md) — current state (volatile)
-- [`docs/adr/`](docs/adr/) — architecture decision records (`0001` pipe-purity, `0002` HSV-inline, `0003` grapheme-cluster cycling, `0004` stderr-only observability)
+- [`docs/adr/`](docs/adr/) — architecture decision records (`0001` pipe-purity, `0002` HSV-inline, `0003` grapheme-cluster cycling, `0004` stderr-only observability, `0005` display width for animation)
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build / run / develop
 - [`docs/guides/integrating-anuenue.md`](docs/guides/integrating-anuenue.md) — downstream-consumer integration manual
 - [`docs/examples/`](docs/examples/) — eight runnable shell examples covering the full flag surface
-- [`docs/audit/`](docs/audit/) — audit reports (v1.0 baseline 2026-05-22; latest the 2026-10-12 v1.4.0 delta)
+- [`docs/audit/`](docs/audit/) — audit reports (v1.0 baseline 2026-05-22; latest the 2026-10-14 v1.4.x delta)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — per-byte overhead trend across releases
 - [`CHANGELOG.md`](CHANGELOG.md) — release log (Keep a Changelog format)
 

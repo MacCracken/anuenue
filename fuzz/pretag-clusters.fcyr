@@ -10,6 +10,13 @@
 #   - Cluster start offsets are non-decreasing
 #   - Never writes past ctab[max_clusters] (sentinel slot is +1)
 #   - Never reads past buf[n_bytes - 1]
+#   - v1.4.4: COVERAGE — the first cluster starts at byte 0, so no byte
+#     before it goes unrendered; and an LF cluster is exactly the LF,
+#     because _render_frame writes only reset + LF for one. Both were
+#     broken through v1.4.3 (H-05): an extending codepoint at the start
+#     of the input opened no cluster, and one after an LF folded into the
+#     LF's — animation silently dropped it. The harness checked only
+#     ranges and monotonicity, so it could not see the loss.
 #
 # Adversarial inputs covered:
 #   - All-ASCII (boring, sanity floor)
@@ -67,6 +74,54 @@ fn _check_invariants(buf, n_bytes, ctab, max_clusters, n_clusters) {
         assert(curr >= prev, "cluster offsets not monotonic");
         i = i + 1;
     }
+
+    # v1.4.4 coverage: rendering starts at byte 0, and every LF cluster
+    # is the LF alone.
+    if (n_clusters > 0) {
+        assert(load64(ctab) == 0, "the first cluster does not start at byte 0 — leading bytes dropped");
+    }
+    var j = 0;
+    while (j < n_clusters) {
+        var off = load64(ctab + j * 8);
+        if (load8(buf + off) == 10) {
+            assert(load64(ctab + (j + 1) * 8) == off + 1, "an LF cluster carries more than the LF — bytes dropped");
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+# v1.4.4 — token corpus. Random sequences of the shapes that exercise
+# cluster boundaries: ASCII, LF, a combining acute (U+0301), a precomposed
+# e-acute, ZWJ (U+200D) and a regional indicator (U+1F1EF). Random bytes
+# almost never produce "LF then a valid combining mark"; this does.
+fn fuzz_pretag_tokens(seed, n_tokens) {
+    _fuzz_seed(seed);
+    var buf = alloc(n_tokens * 4 + 4);
+    var ctab = alloc((n_tokens * 4 + 5) * 8);
+    if (buf == 0 || ctab == 0) { return 1; }
+    var n = 0;
+    var t = 0;
+    while (t < n_tokens) {
+        var k = _fuzz_next() % 6;
+        if (k == 0) { store8(buf + n, 97); n = n + 1; }
+        if (k == 1) { store8(buf + n, 10); n = n + 1; }
+        if (k == 2) { store8(buf + n, 0xCC); store8(buf + n + 1, 0x81); n = n + 2; }
+        if (k == 3) { store8(buf + n, 0xC3); store8(buf + n + 1, 0xA9); n = n + 2; }
+        if (k == 4) {
+            store8(buf + n, 0xE2); store8(buf + n + 1, 0x80); store8(buf + n + 2, 0x8D);
+            n = n + 3;
+        }
+        if (k == 5) {
+            store8(buf + n, 0xF0); store8(buf + n + 1, 0x9F); store8(buf + n + 2, 0x87);
+            store8(buf + n + 3, 0xAF);
+            n = n + 4;
+        }
+        t = t + 1;
+    }
+    var nc = _pretag_clusters(buf, n, ctab, n + 1);
+    _check_invariants(buf, n, ctab, n + 1, nc);
+    assert(load64(ctab + nc * 8) == n, "token corpus: not every byte was tagged");
     return 0;
 }
 
@@ -198,6 +253,9 @@ fn main(): i64 {
         fuzz_pretag_long_cluster(seed * 2939, 100,    16);
         fuzz_pretag_long_cluster(seed * 2399, 1000,   16);
         fuzz_pretag_long_cluster(seed * 1933, 16000,  16);
+
+        # v1.4.4: cluster-boundary token corpus (LF + combining marks).
+        fuzz_pretag_tokens(seed * 1609, 2000);
 
         seed = seed + 1;
     }

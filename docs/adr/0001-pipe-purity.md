@@ -44,11 +44,20 @@ Concretely, this means anuenue's capability surface is:
 | `read(0, …)`             | stdin — the only input source                                |
 | `write(1, …)`            | stdout — the only "real" output                              |
 | `write(2, …)`            | stderr — usage / errors (only on `--help` / `--version` / parse failure) |
-| `brk(12)`                | bump allocator backing the read buffer + line buffer         |
+| `mmap(9)`                | the heap — one anonymous chunk at startup, the stdlib allocator's (backs the read buffer + line buffer) |
 | `exit(60)`               | program termination                                          |
-| `open(2)` + `close(3)`   | **bounded** — only `/proc/self/cmdline` (argv parse) and `/proc/self/environ` (NO_COLOR / COLORTERM / TERM lookup at startup) |
-| `ioctl(16, TIOCGWINSZ)`  | TTY probe via darshana's `tty_isatty`                        |
-| `rt_sigprocmask` / `signalfd4` / `nanosleep` | animation mode only — cursor-restore on SIGINT |
+| `open(2)` + `close(3)`   | **bounded** — only `/proc/self/cmdline` (argv parse, every run) and `/proc/self/environ` (NO_COLOR / COLORTERM / TERM, only when colour is auto-detected) |
+| `ioctl(16, TIOCGWINSZ)`  | TTY probe via darshana's `tty_isatty` (auto-detection only); in animation, the terminal's size (v1.4.4, ADR 0005) |
+| `rt_sigprocmask` / `signalfd4` / `fcntl` / `close` / `poll` / `clock_gettime` | animation mode only — the exit signalfd, frame pacing (`sleep_ms` is `poll(NULL, 0, ms)`) and the deadline |
+| `poll(7)` on fd 0 / 1    | only when a caller hands anuenue a non-blocking stdin or stdout and the peer stalls — waiting instead of retrying (v1.4.4, H-02) |
+| `clock_gettime` / `nanosleep` | `-v` / `--log-level` only — sakshi's timestamps and its one-time clock calibration |
+
+*Re-measured at v1.4.4* by catching every syscall of each route under gdb
+(the harness behind `scripts/fault-check.sh`). Until then this table listed
+`brk(12)` for the heap — true when it was written, but the stdlib allocator
+has used anonymous `mmap` chunks since cyrius 6.1.19, and no route issues
+`brk` at all (H-03 in the [v1.4.x audit delta](../audit/2026-10-14-v14x-delta.md)).
+It also omitted animation's `fcntl`, `poll` and `clock_gettime`.
 
 No `connect`, no `fork`, no `execve`, no `unlink`, no `mkdir`, no
 `socket`, no `mmap` of user-supplied paths. Anything beyond the above
@@ -76,7 +85,7 @@ line:
    `NO_COLOR=1`, stdout-not-TTY, etc). This is *more* pipe-pure than
    the filter — no escape generation, no per-character work — but it's
    a distinct code path that has to be kept in sync with the filter's
-   capability surface (it shares the same `read` / `write` / `brk` /
+   capability surface (it shares the same `read` / `write` / `mmap` /
    `exit` set).
 
 Both exceptions are caught by `tests/anuenue.tcyr` (animation buffer

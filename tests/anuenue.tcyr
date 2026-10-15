@@ -20,9 +20,9 @@ include "src/version_str.cyr"
 # main(): appended to main(), these exact lines made the suite die with
 # SIGSEGV in its third group, long before they run — on cyrius 6.7.9,
 # 6.7.10 and 6.7.11 alike, while the same lines pass here. Not the local
-# count, an array local or code size (each probed). Filed as upstream in
-# docs/development/roadmap.md; v1.4.4's refactor splits main() the same
-# way. Returns 0.
+# count, an array local or code size (each probed). Filed as cyrius
+# issue 2026-10-14-anuenue-growing-a-large-fn-segfaults-an-earlier-call;
+# v1.4.4 split the rest of main() the same way. Returns 0.
 fn test_word_copy(): i64 {
     test_group("v1.4.3 — the escape word copy: footprint, scratch, geometry");
     # _emit_phase_esc writes [pos, pos + 24) whatever elen is, so every
@@ -77,11 +77,8 @@ fn test_word_copy(): i64 {
     return 0;
 }
 
-# Unit-suite entry: runs every test_group below in order and returns
-# assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
-fn main(): i64 {
-    alloc_init();
-
+# M1 (v0.2.0): smoke, hsv_rainbow geometry, filter line-buffer constants. Returns 0.
+fn test_m1_hsv_geometry(): i64 {
     # ---- smoke ------------------------------------------------------
     test_group("smoke");
     assert(1, "true is true");
@@ -174,34 +171,25 @@ fn main(): i64 {
     assert_eq(load64(&rgb + 16), 255, "phase -255 → magenta B");
 
     # ---- byte-cost arithmetic for the filter loop -------------------
-    # The flush-reserve threshold ANUENUE_FLUSH_RESERVE = 22 must be
-    # ≥ max(escape) + 1 (payload byte) + 4 (trailing reset). The
-    # worst-case escape happens when all three channels encode as 3
-    # digits each — emitted via tty_fg_rgb_buf below. If darshana
-    # ever grows the escape envelope, this test catches it before
-    # the filter loop can scribble past the line buffer.
+    # docs/architecture/001. Every write loop checks AFTER an iteration:
+    # `pos + FLUSH_RESERVE > LINE_BUF` flushes, appending a 4-byte SGR
+    # reset first. So from the top of an iteration (pos <= LINE_BUF -
+    # RESERVE) the widest reach is one escape (the 24-byte entry budget)
+    # + one codepoint (4) + the reset (4) = 32: RESERVE must be at least
+    # that. (v1.4.4 corrected this group, which still described the
+    # v0.3.0 reserve of 22 and an 18-byte escape, and asserted
+    # RESERVE >= 22.) The largest escape darshana can compose is 19
+    # bytes, all three channels 3 digits; anuenue's rainbow never
+    # reaches it — one channel is always 0 — and measures 17.
     test_group("filter geometry — flush reserve sizing");
     var ebuf[32];
     var ei = 0;
     while (ei < 32) { store8(&ebuf + ei, 0); ei = ei + 1; }
     var ep = tty_fg_rgb_buf(&ebuf, 0, 255, 255, 255);
     assert_eq(ep, 19, "max fg escape = 19 bytes (ESC[38;2;255;255;255m)");
-    # Round-trip the inequality the filter loop uses:
-    # `pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF` triggers flush,
-    # so a buffer with pos == ANUENUE_LINE_BUF - ANUENUE_FLUSH_RESERVE
-    # still has room for `max_escape + payload + reset` = 19 + 1 + 4
-    # = 24 bytes... but reserve is 22. The filter doesn't append the
-    # next char until AFTER this check fires, so the actual
-    # invariant is: after the trigger, we flush, pos resets to 0,
-    # then the next escape+byte writes from offset 0 — no overflow.
-    # Reserve must only cover the LAST char + reset already in the
-    # buffer at flush time, which is escape+byte+reset = 24, hmm.
-    # Re-check: the loop appends escape+byte FIRST (consuming up to
-    # 18 bytes), THEN tests whether to flush (with margin for the
-    # NEXT iteration's escape+byte+reset). So at trigger time we
-    # need: 18 (just-written) + 4 (reset on flush) ≤ reserve. 22 fits.
-    # Below: enforce 22 >= 18 + 4.
-    assert(ANUENUE_FLUSH_RESERVE >= 18 + 4, "reserve ≥ max escape + reset");
+    assert(ep <= ANUENUE_ESC_TABLE_ENTRY_SIZE - 8, "the largest composable escape fits the 24-byte budget");
+    assert(ANUENUE_FLUSH_RESERVE >= (ANUENUE_ESC_TABLE_ENTRY_SIZE - 8) + 4 + 4,
+      "reserve >= escape budget + codepoint + reset (24 + 4 + 4)");
 
     # ---- filter constants are sane ---------------------------------
     test_group("filter constants — sanity");
@@ -212,11 +200,15 @@ fn main(): i64 {
     # the force-flush inside the loop drains incrementally. The real
     # invariant is "the flush-reserve guard is meaningful": the buf
     # is large enough that flushes amortize the per-flush syscall
-    # cost over ≥100 characters. With reserve=22, LINE_BUF=32768 ⇒
-    # ~1700 chars between flushes — well over the floor.
+    # cost over ≥100 characters. With reserve 32 and LINE_BUF 32768,
+    # ~1 700 truecolor characters fit between flushes.
     assert(ANUENUE_LINE_BUF > ANUENUE_FLUSH_RESERVE * 100, "LINE_BUF amortizes ≥100 chars per flush");
     assert(ANUENUE_LINE_BUF > ANUENUE_FLUSH_RESERVE, "LINE_BUF > FLUSH_RESERVE (no underflow in guard)");
+    return 0;
+}
 
+# M2 (v0.3.0): the flag surface through cmdit_parse_argv. Returns 0.
+fn test_m2_flags(): i64 {
     # ---- v0.3.0 — M2 flag-parser coverage (migrated to cmdit) -------
     # Exercises `cmdit_parse_argv` over synthetic argv arrays. cmdit's
     # own parser contract is asserted in its tests/cmdit.tcyr; here we
@@ -326,7 +318,11 @@ fn main(): i64 {
     # Synthetic byte buffers cover each path through utf8_seq_len
     # without touching stdin. The decode round-trip ensures the
     # codepoints emerge as expected at canonical samples.
+    return 0;
+}
 
+# M3 (v0.4.0): UTF-8 sequence detection, decode, and the grapheme classifiers. Returns 0.
+fn test_m3_utf8(): i64 {
     test_group("M3 utf8_seq_len — 1/2/3/4-byte detection");
     var u1[4];
     store8(&u1 + 0, 0x41);        # 'A' — ASCII
@@ -407,7 +403,11 @@ fn main(): i64 {
     assert_eq(cp_is_regional_indicator(0x1F1E5), 0, "U+1F1E5 → no");
     assert_eq(cp_is_regional_indicator(0x1F200), 0, "U+1F200 → no");
     assert_eq(cp_is_regional_indicator(0x1F308), 0, "🌈 → no");
+    return 0;
+}
 
+# M5 (v0.6.0): the phase-cached escape table. Returns 0.
+fn test_m5_phase_cache(): i64 {
     # ---- v0.6.0 — M5 perf pass --------------------------------------
     # Phase-cached escape buffer. The fast path replaces
     # `hsv_rainbow + tty_fg_rgb_buf` per cluster with a memcpy from
@@ -506,7 +506,11 @@ fn main(): i64 {
     # detect_color_mode dispatcher reads getenv + isatty so it
     # can't be unit-tested deterministically here — golden-check.sh
     # owns the NO_COLOR / --no-color / --color=none acceptance.
+    return 0;
+}
 
+# M6 (v0.7.0): colour-mode parsing, RGB quantization, 256 / 16 escape framing. Returns 0.
+fn test_m6_color(): i64 {
     test_group("M6 color — mode enum + override parser");
     assert_eq(ANUENUE_COLOR_MONO, 0, "MONO enum value");
     assert_eq(ANUENUE_COLOR_16,   1, "COLOR_16 enum value");
@@ -623,7 +627,11 @@ fn main(): i64 {
     # commit. What we *can* lock down here: the pure functions that
     # turn the buffered input into a cluster table the renderer
     # walks per frame.
+    return 0;
+}
 
+# M4 (v0.5.0): animation constants, cluster pre-tagging, -a / -d / -S parsing. Returns 0.
+fn test_m4_animate(): i64 {
     test_group("M4 animate — constants sanity");
     # Defaults the flag layer falls back to.
     assert(ANUENUE_DEFAULT_DURATION_S > 0, "default duration positive (0 reserved for 'until SIGINT')");
@@ -785,7 +793,11 @@ fn main(): i64 {
     assert_eq(cmdit_parse_argv(fs_c, 3, &argv_c), CMDIT_OK, "--animate --duration=0 parses clean");
     assert_eq(cmdit_get_bool(fs_c, f_c_animate), 1, "--animate → true");
     assert_eq(cmdit_get_int(fs_c, f_c_duration), 0, "duration = 0 ('until SIGINT' sentinel)");
+    return 0;
+}
 
+# M8 (v0.8.0 audit): the unbounded long-combiner cluster. Returns 0.
+fn test_m8_long_cluster(): i64 {
     test_group("M8 audit — _pretag_clusters long-combiner chain");
     # docs/audit/2026-05-22-audit.md § Finding 1: a base codepoint
     # followed by many combining marks is ONE cluster in the
@@ -820,7 +832,11 @@ fn main(): i64 {
             assert_eq(clen, 1023, "this single cluster spans 1023 bytes (would overrun a smaller line buffer pre-fix)");
         }
     }
+    return 0;
+}
 
+# v1.0 GA: the --version literal matches VERSION. Returns 0.
+fn test_version_literal(): i64 {
     test_group("M2 — version literal consistency");
     # _VERSION_STR_ANUENUE is auto-generated by scripts/version-
     # bump.sh; assert the literal format so a hand-edit (or a stale
@@ -840,7 +856,11 @@ fn main(): i64 {
     # v1.2.1. These groups cover the pure, testable parts of the
     # wiring; the emitting parts (sakshi records themselves) are
     # covered end-to-end by scripts/observe-check.sh.
+    return 0;
+}
 
+# v1.2.1: the sakshi / agnostik observability wiring. Returns 0.
+fn test_v121_observe(): i64 {
     test_group("v1.2.1 observe — log-level parse");
     assert_eq(anuenue_log_parse("off"),   ANUENUE_LOG_P_OFF,   "\"off\" parses");
     assert_eq(anuenue_log_parse("fatal"), ANUENUE_LOG_P_FATAL, "\"fatal\" parses");
@@ -952,7 +972,11 @@ fn main(): i64 {
     # One group per finding in docs/audit/2026-08-25-audit.md. Each
     # asserts the FIXED behaviour, so a revert fails here rather than
     # in the field.
+    return 0;
+}
 
+# v1.2.2 P(-1) audit regressions (A-01 / A-02 / A-04 / A-05). Returns 0.
+fn test_v122_audit(): i64 {
     test_group("v1.2.2 A-01 — cp_is_extending survives a failed table alloc");
     # The table is lazily built on first use. Assert it initialises and
     # that the classifier answers correctly on both sides of a range
@@ -1046,7 +1070,11 @@ fn main(): i64 {
     assert_eq(load64(aud_ct + aud_c * 8) < aud_n, 1, "sentinel is short of the input length");
 
     # ---- v1.3.0 — animation slot ----------------------------------
+    return 0;
+}
 
+# v1.3.0 animation slot: sliced frame wait, -i bounds, the exit mask. Returns 0.
+fn test_v130_animation(): i64 {
     test_group("v1.3.0 B-02 — frame wait is sliced, not one long sleep");
     # sleep_ms is poll(NULL, 0, ms) on Linux/macOS and poll(2)'s timeout
     # is a 32-bit int, so a large millisecond count truncates. Measured:
@@ -1090,7 +1118,11 @@ fn main(): i64 {
     assert_eq(TTY_SIGMASK_EXIT & 16384, 16384, "SIGTERM bit set");
 
     # ---- v1.3.3 — P-1 sweep regressions ---------------------------
+    return 0;
+}
 
+# v1.3.3 sweep: the escape cache keyed on mode (E-02), every escape fits its entry. Returns 0.
+fn test_v133_escape_cache(): i64 {
     test_group("v1.3.3 E-02 — the escape cache is keyed on colour mode");
     # The table's CONTENTS are mode-specific, so a cache keyed only on
     # "has a table been built" hands back stale escapes after a mode
@@ -1145,7 +1177,11 @@ fn main(): i64 {
     # Restore the module default so later groups are unaffected.
     ANUENUE_COLOR_MODE = ANUENUE_COLOR_TRUE;
     _phase_esc_init();
+    return 0;
+}
 
+# v1.3.4: EPIPE is a pipeline end, not a failure (E-03). Returns 0.
+fn test_v134_epipe(): i64 {
     test_group("v1.3.4 E-03 — EPIPE is a normal pipeline end, not a failure");
     # Two outcomes share anuenue_write_all's -1 return and they are not
     # the same event. EPIPE means the consumer closed the pipe
@@ -1171,7 +1207,11 @@ fn main(): i64 {
       "clearing the flag restores the error path");
 
     # ---- v1.4.0 — darshana 1.3.0 ------------------------------------
+    return 0;
+}
 
+# v1.4.0: the exit signalfd through darshana. Returns 0.
+fn test_v140_signalfd(): i64 {
     test_group("v1.4.0 — the exit signalfd is darshana's, and gives back what it took");
     # The darshana consumer survey (2026-10-12) found two defects in the
     # hand-rolled v1.3.6 open, both reproduced against that code before
@@ -1224,7 +1264,11 @@ fn main(): i64 {
     assert_eq(_sig_blocked_now() & TTY_SIGMASK_EXIT, sfd_before | 1,
       "and INT/TERM are back to their state before the open");
     if ((sfd_before & 1) == 0) { sys_sigprocmask(SIG_UNBLOCK, &sfd_hup, 0); }
+    return 0;
+}
 
+# v1.4.1: cmdit 1.4.0's parse failures as main.cyr routes them. Returns 0.
+fn test_v141_cmdit(): i64 {
     test_group("v1.4.1 — cmdit 1.4.0's parse failures, as main.cyr routes them");
     # A boolean given a value is an error, not ON. cmdit 1.2.4 stored 1 and
     # ignored the value, so `--no-color=0` disabled colour.
@@ -1248,7 +1292,11 @@ fn main(): i64 {
     assert_eq(CMDIT_ERR_UNEXPECTED_VALUE, 11, "UNEXPECTED_VALUE == 11");
     assert_eq(CMDIT_ERR_NOMEM, 12, "NOMEM == 12");
     assert_eq(CMDIT_ERR_ARGV, 13, "ARGV == 13");
+    return 0;
+}
 
+# v1.4.2: argv tokens echoed in diagnostics, bounded and sanitized. Returns 0.
+fn test_v142_argv_echo(): i64 {
     test_group("v1.4.2 — argv tokens echoed in diagnostics are bounded and sanitized");
     assert_eq(ANUENUE_ERR_ARG_MAX, 64, "the cap matches anuenue_eprint_arg's 64-byte buffer");
     assert_eq(anuenue_arg_cut("--bogus", 7), 7, "a short token is echoed whole");
@@ -1302,8 +1350,182 @@ fn main(): i64 {
     assert_eq(anuenue_arg_attached("--animate="), 1, "--animate= carries an empty value");
     assert_eq(anuenue_arg_attached("-p"), 0, "-p does not");
     assert_eq(anuenue_arg_attached(0), 0, "a 0 token does not");
+    return 0;
+}
 
+# Fill `buf` with `n` copies of byte `b` starting at `at`. Returns at + n.
+fn _t_fill(buf, at, n, b): i64 {
+    var k = 0;
+    while (k < n) { store8(buf + at + k, b); k = k + 1; }
+    return at + n;
+}
+
+# Pretag `n` bytes of `buf` into `ctab` and return _block_rows at `cols`.
+fn _t_rows(buf, n, ctab, cols): i64 {
+    var nc = _pretag_clusters(buf, n, ctab, 4096);
+    return _block_rows(buf, ctab, nc, cols);
+}
+
+# v1.4.4 — H-01: animation climbs PHYSICAL rows (display width, wrapped
+# at the terminal's columns), and the practical-subset width table behind
+# it (ADR 0005). Returns 0.
+fn test_v144_rows(): i64 {
+    test_group("v1.4.4 H-01 — display columns of a cluster's base codepoint");
+    assert_eq(anuenue_cp_cols(0x41), 1, "ASCII is 1 column");
+    assert_eq(anuenue_cp_cols(0xE9), 1, "Latin-1 e-acute is 1");
+    assert_eq(anuenue_cp_cols(0x4E2D), 2, "CJK ideograph is 2");
+    assert_eq(anuenue_cp_cols(0x3042), 2, "Hiragana is 2");
+    assert_eq(anuenue_cp_cols(0xAC00), 2, "Hangul syllable is 2");
+    assert_eq(anuenue_cp_cols(0xFF21), 2, "fullwidth Latin is 2");
+    assert_eq(anuenue_cp_cols(0x1F308), 2, "emoji pictograph is 2");
+    assert_eq(anuenue_cp_cols(0x1F1EF), 2, "regional indicator is 2");
+    assert_eq(anuenue_cp_cols(0x2603), 1, "text-presentation symbol stays 1");
+    # The review's list: UAX #11 W in the BMP symbol blocks, which v1.4.4's
+    # first, hand-written table called 1.
+    assert_eq(anuenue_cp_cols(0x2705), 2, "U+2705 white heavy check mark is 2");
+    assert_eq(anuenue_cp_cols(0x2728), 2, "U+2728 sparkles is 2");
+    assert_eq(anuenue_cp_cols(0x26A1), 2, "U+26A1 high voltage is 2");
+    assert_eq(anuenue_cp_cols(0x2B50), 2, "U+2B50 star is 2");
+    assert_eq(anuenue_cp_cols(0x274C), 2, "U+274C cross mark is 2");
+    assert_eq(anuenue_cp_cols(0x2615), 2, "U+2615 hot beverage is 2");
+    assert_eq(anuenue_cp_cols(0x1F004), 2, "U+1F004 mahjong tile is 2");
+    assert_eq(anuenue_cp_cols(0x1F321), 1, "U+1F321 thermometer is UAX #11 neutral: 1");
+    assert_eq(anuenue_cp_cols(0x20000), 2, "CJK Extension B is 2");
+    assert_eq(anuenue_cp_cols(0x10FFFF), 1, "the last codepoint is 1");
+    assert_eq(anuenue_cp_cols(0x115F), 2, "range edge: U+115F inside");
+    assert_eq(anuenue_cp_cols(0x1160), 1, "range edge: U+1160 outside");
+    assert_eq(anuenue_cp_cols(0x303E), 2, "range edge: U+303E inside");
+    assert_eq(anuenue_cp_cols(0x303F), 1, "range edge: U+303F outside");
+
+    test_group("v1.4.4 H-01 — rows the renderer climbs, per terminal width");
+    var rb = alloc(1024);
+    var rt = alloc(4097 * 8);
+    var n = 0;
+    # "abc\n"
+    n = _t_fill(rb, 0, 3, 97); store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "one short line: 1 row");
+    assert_eq(_t_rows(rb, n, rt, 0), 1, "unknown width: the LF count");
+    # 80 x + LF: exactly fills 80 columns — pending-wrap, still 1 row
+    n = _t_fill(rb, 0, 80, 120); store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "a line of exactly 80 at 80 columns is 1 row");
+    # 81 x + LF
+    n = _t_fill(rb, 0, 81, 120); store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 2, "81 columns wraps to 2 rows");
+    assert_eq(_t_rows(rb, n, rt, 0), 1, "unknown width: still the LF count");
+    # then "ab\n": 2 + 1
+    store8(rb + n, 97); store8(rb + n + 1, 98); store8(rb + n + 2, 10); n = n + 3;
+    assert_eq(_t_rows(rb, n, rt, 80), 3, "wrapped line + short line: 3 rows");
+    # 100 x, no LF, at 40 columns: 3 rows, climb 2 (the CR stays on the last)
+    n = _t_fill(rb, 0, 100, 120);
+    assert_eq(_t_rows(rb, n, rt, 40), 2, "partial line over 3 rows climbs 2");
+    n = _t_fill(rb, 0, 2, 97);
+    assert_eq(_t_rows(rb, n, rt, 40), 0, "short partial line climbs 0");
+    # 40 x U+4E2D (E4 B8 AD) + LF: 80 columns
+    var ci = 0;
+    n = 0;
+    while (ci < 40) {
+        store8(rb + n, 0xE4); store8(rb + n + 1, 0xB8); store8(rb + n + 2, 0xAD);
+        n = n + 3;
+        ci = ci + 1;
+    }
+    store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "40 wide ideographs fill 80 columns: 1 row");
+    assert_eq(_t_rows(rb, n, rt, 79), 2, "at 79 the 40th cannot fit the last column: 2 rows");
+    # ESC [31m + 80 x + ESC [0m + LF: the escapes take no columns
+    n = 0;
+    store8(rb + 0, 27); store8(rb + 1, 91); store8(rb + 2, 51); store8(rb + 3, 49); store8(rb + 4, 109);
+    n = _t_fill(rb, 5, 80, 120);
+    store8(rb + n, 27); store8(rb + n + 1, 91); store8(rb + n + 2, 48); store8(rb + n + 3, 109);
+    store8(rb + n + 4, 10); n = n + 5;
+    # The renderer's own escape cancels each input ESC, so "[31m" and
+    # "[0m" print: 4 + 80 + 3 = 87 columns.
+    assert_eq(_t_rows(rb, n, rt, 80), 2, "an input CSI's parameters print: 87 columns, 2 rows");
+    # OSC 0;title BEL + 80 x + LF
+    store8(rb + 0, 27); store8(rb + 1, 93); store8(rb + 2, 48); store8(rb + 3, 59);
+    n = _t_fill(rb, 4, 30, 116);
+    store8(rb + n, 7); n = n + 1;
+    n = _t_fill(rb, n, 80, 120);
+    store8(rb + n, 10); n = n + 1;
+    # "]0;" + 30 + 80 = 113 printing columns (the BEL takes none).
+    assert_eq(_t_rows(rb, n, rt, 80), 2, "an input OSC's body prints: 113 columns, 2 rows");
+    # An ESC with nothing after it on the line must not swallow the LF —
+    # v1.4.4's first cut lost every LF inside an unterminated sequence.
+    store8(rb + 0, 97); store8(rb + 1, 27); store8(rb + 2, 10);
+    store8(rb + 3, 98); store8(rb + 4, 27); store8(rb + 5, 10);
+    assert_eq(_t_rows(rb, 6, rt, 80), 2, "a bare ESC before an LF still ends the line");
+    store8(rb + 0, 27); store8(rb + 1, 93); store8(rb + 2, 48); store8(rb + 3, 59); store8(rb + 4, 10);
+    store8(rb + 5, 120); store8(rb + 6, 10);
+    assert_eq(_t_rows(rb, 7, rt, 80), 2, "an unterminated OSC does not swallow the LFs after it");
+    # 12 TABs + LF: tabs stop at the last column, they do not wrap
+    n = _t_fill(rb, 0, 12, 9); store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "TABs clamp at the last column: 1 row");
+    # 80 x (e + U+0301): combining marks take no columns
+    n = 0;
+    ci = 0;
+    while (ci < 80) {
+        store8(rb + n, 101); store8(rb + n + 1, 0xCC); store8(rb + n + 2, 0x81);
+        n = n + 3;
+        ci = ci + 1;
+    }
+    store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "80 e-plus-combining clusters are 80 columns: 1 row");
+    # CR mid-line returns to column 0: 60 x CR 60 x LF is 60 columns wide
+    n = _t_fill(rb, 0, 60, 120); store8(rb + n, 13); n = n + 1;
+    n = _t_fill(rb, n, 60, 120); store8(rb + n, 10); n = n + 1;
+    assert_eq(_t_rows(rb, n, rt, 80), 1, "a CR mid-line returns to column 0");
+
+    test_group("v1.4.4 H-05 — an extender with nothing to extend is its own cluster");
+    # "a" LF U+0301 "b" LF: through v1.4.3 the U+0301 folded into the LF's
+    # cluster, which renders as reset + LF only, and was dropped.
+    store8(rb + 0, 97); store8(rb + 1, 10); store8(rb + 2, 0xCC); store8(rb + 3, 0x81);
+    store8(rb + 4, 98); store8(rb + 5, 10);
+    var h5n = _pretag_clusters(rb, 6, rt, 4096);
+    assert_eq(h5n, 5, "a, LF, U+0301, b, LF: 5 clusters");
+    assert_eq(load64(rt + 1 * 8), 1, "the LF cluster starts at byte 1");
+    assert_eq(load64(rt + 2 * 8), 2, "and ends there: U+0301 opens cluster 2");
+    # U+0301 "a" "b" LF: through v1.4.3 no cluster opened for the leading
+    # mark, so rendering started at byte 2.
+    store8(rb + 0, 0xCC); store8(rb + 1, 0x81); store8(rb + 2, 97); store8(rb + 3, 98);
+    store8(rb + 4, 10);
+    h5n = _pretag_clusters(rb, 5, rt, 4096);
+    assert_eq(load64(rt), 0, "a leading extender is tagged: rendering starts at byte 0");
+    assert_eq(h5n, 4, "U+0301, a, b, LF: 4 clusters");
+    # An extender after a real base still folds into it.
+    store8(rb + 0, 101); store8(rb + 1, 0xCC); store8(rb + 2, 0x81); store8(rb + 3, 10);
+    assert_eq(_pretag_clusters(rb, 4, rt, 4096), 2, "e + U+0301 is still one cluster");
+    return 0;
+}
+
+# Unit-suite entry: runs every cut's groups in order and returns
+# assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
+#
+# One function per milestone or cut (v1.4.4). Through v1.4.3 every group
+# since M1 lived in this one function; at v1.4.3 growing it by one more
+# group made the suite die with SIGSEGV in an unrelated early group (filed
+# as cyrius issue 2026-10-14-anuenue-growing-a-large-fn-segfaults-an-
+# earlier-call). A new cut's groups go in a new function, called below in
+# order.
+fn main(): i64 {
+    alloc_init();
+
+    test_m1_hsv_geometry();
+    test_m2_flags();
+    test_m3_utf8();
+    test_m5_phase_cache();
+    test_m6_color();
+    test_m4_animate();
+    test_m8_long_cluster();
+    test_version_literal();
+    test_v121_observe();
+    test_v122_audit();
+    test_v130_animation();
+    test_v133_escape_cache();
+    test_v134_epipe();
+    test_v140_signalfd();
+    test_v141_cmdit();
+    test_v142_argv_echo();
     test_word_copy();
+    test_v144_rows();
 
     return assert_summary();
 }

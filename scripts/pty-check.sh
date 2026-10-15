@@ -31,11 +31,13 @@
 #
 # WHAT THIS DELIBERATELY DOES NOT CLAIM
 #
-# It does not read terminal state back. `script` transcribes bytes; it
-# does not emulate a terminal, so there is no "is the cursor visible"
-# to query. The assertions here are about the byte stream and the
-# process, which is what is actually observable. Reading back real
-# terminal state would need a terminal emulator in the harness.
+# Gates 0-4 do not read terminal state back. `script` transcribes bytes;
+# it does not emulate a terminal, so there is no "is the cursor visible"
+# to query, and those assertions are about the byte stream and the
+# process. Gate 5 (v1.4.4) adds the one piece of terminal state that
+# matters to animation — where the cursor lands and how much scrolls —
+# by feeding the transcript to scripts/term-model.py, a model of the few
+# operations animation emits. It still does not read cursor visibility.
 #
 # Usage:
 #   sh scripts/pty-check.sh
@@ -51,7 +53,12 @@ if [ ! -x "$BIN" ]; then
 fi
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"; pkill -9 -x anuenue >/dev/null 2>&1 || true' EXIT INT TERM
+# The process name pgrep / pkill match: BIN's basename, cut to the 15
+# characters the kernel keeps in comm. Through v1.4.3 this was the literal
+# `anuenue`, so `BIN=build/anuenue-dce sh scripts/pty-check.sh` — the
+# usage above — failed gate 4 with "animation process never appeared".
+BIN_NAME=$(basename "$BIN" | cut -c1-15)
+trap 'rm -rf "$WORK"; pkill -9 -x "$BIN_NAME" >/dev/null 2>&1 || true' EXIT INT TERM
 
 FAIL=0
 ok()   { echo "  ok: $1"; }
@@ -179,7 +186,7 @@ PTY_JOB=$!
 APID=""
 i=0
 while [ "$i" -lt 40 ]; do
-    APID=$(pgrep -x anuenue 2>/dev/null | head -1 || true)
+    APID=$(pgrep -x "$BIN_NAME" 2>/dev/null | head -1 || true)
     [ -n "$APID" ] && break
     i=$((i + 1))
     sleep 0.1
@@ -202,7 +209,7 @@ else
     if kill -0 "$PTY_JOB" >/dev/null 2>&1; then
         bad "animation did not exit within 6s of SIGINT"
         kill -9 "$PTY_JOB" >/dev/null 2>&1 || true
-        pkill -9 -x anuenue >/dev/null 2>&1 || true
+        pkill -9 -x "$BIN_NAME" >/dev/null 2>&1 || true
     else
         ok "animation exited after SIGINT"
         python3 - "$WORK/sig.out" > "$WORK/sig.res" 2>/dev/null <<'PY' || true
@@ -228,6 +235,99 @@ PY
             bad "SGR reset missing or out of order after SIGINT: $sres"
         fi
     fi
+fi
+
+# --- gate 5: animation on a terminal it must fit (H-01, v1.4.4) -----
+#
+# Re-anchoring used to climb one row per LF. A line wider than the
+# terminal wraps into several rows, and a block taller than it scrolls,
+# so the climb fell short and every frame scrolled a copy of the block
+# into scrollback — ~60 times a second. anuenue now reads the terminal's
+# size and climbs PHYSICAL rows, and draws a block that cannot fit once.
+#
+# Each case sizes the pty with stty(1), records the animation, and plays
+# the transcript into scripts/term-model.py at the same size. Correct:
+# no scrolling after the first frame, and an animation (several frames)
+# exactly when the block fits.
+echo "[pty-check] animation on a sized terminal re-anchors exactly"
+if ! command -v python3 >/dev/null 2>&1; then
+    skip "python3 unavailable — no terminal model"
+else
+    # The width table first: anuenue_cp_cols for every codepoint, against
+    # UAX #11 in Python's unicodedata. Only codepoints that can start a
+    # cluster are compared (assigned, not combining / format), and the
+    # regional indicators are 2 by decision (ADR 0005).
+    if cyrius build tests/probes/width-probe.cyr "$WORK/widthprobe" >/dev/null 2>&1; then
+        "$WORK/widthprobe" > "$WORK/widths.bin"
+        _wres=$(python3 -I - "$WORK/widths.bin" <<'PYEOF'
+import sys, unicodedata as u
+got = open(sys.argv[1], "rb").read()
+bad = []
+for cp in range(0x40000):
+    cat = u.category(chr(cp))
+    if cat in ("Cn", "Cs", "Co", "Mn", "Me", "Cf"):
+        continue
+    want = 2 if (u.east_asian_width(chr(cp)) in ("W", "F") or 0x1F1E6 <= cp <= 0x1F1FF) else 1
+    if cp < 0x1100:
+        want = 1
+    if got[cp] - 48 != want:
+        bad.append(cp)
+print("%d %d %s" % (len(got), len(bad), " ".join("U+%04X" % c for c in bad[:8])))
+PYEOF
+)
+        set -- $_wres
+        if [ "$1" = "262144" ] && [ "$2" = "0" ]; then
+            ok "width table: anuenue_cp_cols matches UAX #11 at every cluster-starting codepoint to U+3FFFF"
+        else
+            bad "width table: $2 codepoints differ from UAX #11 (first: ${3:-}) — regenerate with scripts/gen-wide-table.py"
+        fi
+    else
+        bad "width probe failed to build"
+    fi
+
+    python3 -I - "$WORK" <<'PYEOF'
+import sys
+w = sys.argv[1]
+open(w + "/fit3.in", "w").write("AGNOS rainbow\nline two\nline three\n")
+open(w + "/wide.in", "w").write("".join(("wide line %d " % i) + "x" * 150 + "\n" for i in range(5)))
+open(w + "/cjk.in", "w").write("".join(("\u65e5\u672c %d " % i) + "\u3042" * 50 + "\n" for i in range(4)))
+open(w + "/tall.in", "w").write("".join("row %02d of a tall block\n" % i for i in range(40)))
+open(w + "/partial.in", "w").write("x" * 130)
+# Escapes in the INPUT: anuenue's own escape cancels each input ESC, so
+# the parameters print. v1.4.4's first cut counted them as zero-width and
+# lost the LFs inside an unterminated sequence; these are the review's
+# reproductions.
+open(w + "/csi.in", "w").write(("\x1b[31m" + "x" * 80 + "\x1b[0m\n") * 3)
+open(w + "/osc.in", "w").write("\x1b]0;title\n" + "".join("line %d\n" % i for i in range(5)))
+open(w + "/bare-esc.in", "w").write("line\x1b\n" * 5)
+# UAX #11 wide symbols at the end of an 80-column line (the review's MOTD
+# case): 76 + 4 x 2 = 84 columns, so each line is 2 rows.
+open(w + "/emoji.in", "w").write(("x" * 76 + "\u2705\u2728\u26a1\u2b50\n") * 3)
+PYEOF
+    # name input rows cols expect(anim|once)
+    for _case in "fits fit3 24 80 anim" "wraps-but-fits wide 24 80 anim" \
+                 "wide-cjk cjk 24 40 anim" "partial-line-wraps partial 10 40 anim" \
+                 "taller-than-terminal tall 24 80 once" "wraps-too-tall wide 10 80 once" \
+                 "input-csi csi 24 80 anim" "input-osc-unterminated osc 24 80 anim" \
+                 "input-bare-esc bare-esc 24 80 anim" "wide-symbols emoji 24 80 anim"; do
+        set -- $_case
+        in_pty "stty rows $3 cols $4; $BIN -a -d 1 -i 150 --color=24bit < $WORK/$2.in" > "$WORK/sized.out"
+        _m=$(python3 -I scripts/term-model.py "$3" "$4" "$WORK/sized.out")
+        _fr=$(printf '%s' "$_m" | sed -n 's/.*frames=\([0-9]*\).*/\1/p')
+        _s1=$(printf '%s' "$_m" | sed -n 's/.*scrolled_first=\([0-9]*\).*/\1/p')
+        _st=$(printf '%s' "$_m" | sed -n 's/.*scrolled_total=\([0-9]*\).*/\1/p')
+        if [ -z "$_fr" ]; then
+            bad "$1 ($3x$4): the model read nothing — '$_m'"
+        elif [ "$_st" -ne "$_s1" ]; then
+            bad "$1 ($3x$4): $((_st - _s1)) rows scrolled after the first frame ($_fr frames)"
+        elif [ "$5" = "anim" ] && [ "$_fr" -gt 1 ]; then
+            ok "$1 ($3x$4): $_fr frames, nothing scrolled after the first"
+        elif [ "$5" = "once" ] && [ "$_fr" -eq 1 ]; then
+            ok "$1 ($3x$4): drawn once, nothing smeared"
+        else
+            bad "$1 ($3x$4): $_fr frames, expected $5"
+        fi
+    done
 fi
 
 echo

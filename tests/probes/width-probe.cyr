@@ -1,0 +1,35 @@
+# tests/probes/width-probe.cyr — anuenue_cp_cols for every codepoint
+# (v1.4.4, ADR 0005).
+#
+# Prints one byte per codepoint from U+0000 to U+3FFFF — '1' or '2', the
+# columns anuenue_cp_cols gives it as the base of a cluster — so
+# scripts/pty-check.sh can compare the whole generated table with Python's
+# unicodedata, codepoint by codepoint, rather than trusting the generator.
+# Like the other probes it calls no args_init and reads no file.
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+# Probe entry: 4 096-byte batches of '1' / '2' to stdout. Returns 0.
+fn main(): i64 {
+    alloc_init();
+    var out = alloc(4096);
+    if (out == 0) { return 1; }
+    var cp = 0;
+    while (cp < 0x40000) {
+        var k = 0;
+        while (k < 4096) {
+            store8(out + k, 48 + anuenue_cp_cols(cp + k));
+            k = k + 1;
+        }
+        syscall(1, 1, out, 4096);
+        cp = cp + 4096;
+    }
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
