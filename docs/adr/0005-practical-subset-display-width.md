@@ -73,7 +73,9 @@ cannot fit the terminal once, and do not animate it.**
     renderer writes its own escape before every cluster, and an input ESC
     is a cluster of its own. So the terminal sees the input's ESC
     immediately followed by anuenue's, which cancels it, and the input
-    sequence's parameters print as text;
+    sequence's parameters print as text. From v1.4.5 the input's SGR colour
+    codes are stripped before animation runs, so this rule covers every
+    *other* sequence;
   - TAB moves to the next multiple of 8 without wrapping;
   - CR returns to column 0;
   - a malformed sequence shows as one U+FFFD.

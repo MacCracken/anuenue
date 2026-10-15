@@ -439,8 +439,9 @@ fn _cluster_cols_mb(buf, off, clen): i64 {
 # the input sequence's parameters — the `[31m` of `ESC [31m` — print as
 # text. The count follows what the terminal shows. (v1.4.4's first cut
 # skipped CSI / OSC bodies as zero-width and lost every LF inside an
-# unterminated one; the review caught it. Passing input escapes through
-# intact is a separate question — roadmap § v1.x.)
+# unterminated one; the review caught it.) From v1.4.5 the input's SGR
+# colour codes are stripped before this runs, so what reaches here is
+# every OTHER escape sequence, which still behaves as described.
 #
 # `cols` <= 0 means the width is unknown: the result is the LF count,
 # exactly what v1.4.3 climbed.
@@ -854,11 +855,17 @@ fn anuenue_animate(duration_secs, speed): i64 {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "phase escape table allocation failed");
     }
 
-    var n_bytes = _animate_slurp_stdin(in_buf, ANUENUE_ANIMATE_INPUT_MAX);
-    if (n_bytes < 0) {
+    var n_read = _animate_slurp_stdin(in_buf, ANUENUE_ANIMATE_INPUT_MAX);
+    if (n_read < 0) {
         return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
     }
-    ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n_bytes;
+    ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n_read;
+    # v1.4.5: the input's colour codes go before anything is tagged —
+    # anuenue owns the colour here. The whole input is in memory, so
+    # nothing is held. (The byte cap below still reads n_read: it is
+    # about what was read, not what is left.)
+    var an_held[8];
+    var n_bytes = anuenue_sgr_strip(in_buf, n_read, 1, &an_held);
     if (n_bytes == 0) {
         # No input to animate. Quietly exit 0 — same shape as
         # `cat /dev/null | anuenue` (which exits 0 from the filter
@@ -874,7 +881,7 @@ fn anuenue_animate(duration_secs, speed): i64 {
     # 200 KB file animated as its first 8 192 clusters with nothing
     # said. Warn on both, so `-v` / `--log-level=warn` explains the
     # missing text instead of leaving the user to guess.
-    if (n_bytes >= ANUENUE_ANIMATE_INPUT_MAX) {
+    if (n_read >= ANUENUE_ANIMATE_INPUT_MAX) {
         anuenue_log_kv_int(SK_WARN, "animation input truncated at the byte cap; text beyond it is not rendered",
           "byte-cap", ANUENUE_ANIMATE_INPUT_MAX);
     }

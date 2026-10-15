@@ -75,6 +75,22 @@ priority chain (M6 / v0.7.0; see
 6. **`TERM` heuristics** → COLOR_256 (for `*-256color`) or COLOR_16
    (default fallback).
 
+### Colour codes already in the input
+
+On the colour routes — the filter, one-shot text, animation — anuenue owns the
+colour, so **SGR colour codes in the input are removed** (v1.4.5) and the text
+they wrapped gets the rainbow like everything else.
+
+```sh
+ls --color=always | anuenue   # through v1.4.4: `[01;34m` printed as text; now clean
+```
+
+Exactly SGR is removed: `ESC [ <digits ; :> m`, up to 128 bytes. Every other
+escape sequence, and every other byte, passes as before. A sequence split
+across a read is still recognised. MONO (below) keeps the input's codes
+byte for byte. To keep a span of your own output out of the rainbow, see the
+v1.5.0 marker on the roadmap.
+
 ### MONO is a passthrough
 
 `ANUENUE_COLOR_MODE == MONO` short-circuits the entire filter

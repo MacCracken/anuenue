@@ -28,37 +28,39 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.4.** The v1.x contract — exit codes, output shape, capability surface —
+**v1.4.5.** The v1.x contract — exit codes, output shape, capability surface —
 has been frozen since GA and is unbroken; the flag set has only ever grown. Six
 audits have run, the latest the [v1.4.x delta](../audit/2026-10-14-v14x-delta.md),
-all with zero HIGH+ open, and since v1.4.4 **no guard is recorded as unproven**.
-The one 1.4.x slot left waits on the cyrius 6.7.11 tag; the 1.5+ minors are
-gated on things anuenue cannot do itself (a consumer landing, a sibling filter
-appearing).
+all with zero HIGH+ open, and no guard is recorded as unproven. v1.4.5 strips
+the input's own colour codes on the colour routes (the delta's H-06, decided
+2026-10-14). Next: v1.4.6 waits on the cyrius 6.7.11 tag; v1.5.0, the
+no-colour marker, is actionable.
 
 ## Release map
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.4.5](#v145--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
-| [v1.5.0](#v150--adoption) | Adoption | a consumer integration lands |
+| [v1.4.6](#v146--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
+| [v1.5.0](#v150--the-no-colour-marker) | The no-colour marker (+ adoption, if a consumer has landed) | none — actionable |
 | [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family | a second pipe-decorator wants a rainbow |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
 
-The 1.4.x order was fixed at v1.4.2: the toolchain move is the arc's last
-patch, after the v1.4.4 closeout, so v1.4.5 re-runs the closeout's build-level
-gates itself — see that slot.
+The toolchain move stays the 1.4.x arc's last patch: it moved from v1.4.5 to
+v1.4.6 when v1.4.5 took the input colour codes (2026-10-14). It lands after the
+v1.4.4 closeout, so it re-runs the closeout's build-level gates itself — see
+that slot.
 
 ---
 
-## v1.4.5 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
+## v1.4.6 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
 
 > **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
 > the latest tag as of 2026-10-14). Take the latest 6.7.x tag at the time of
 > the cut; 6.7.11 is the first that carries sakshi 2.5.10.
 >
-> **The arc's last patch, after the closeout.** Because it lands after v1.4.4,
+> **The arc's last patch, after the closeout** (renumbered from v1.4.5 when
+> v1.4.5 took the input colour codes). Because it lands after v1.4.4,
 > it re-runs the closeout's build-level steps itself: full test suite, benchmark
 > baseline, downstream check (thoth's vendored `dist/anuenue.cyr`), version
 > verify, and the clean build (`rm -rf build && cyrius deps && CYRIUS_DCE=1
@@ -94,13 +96,48 @@ Work:
 
 ---
 
-## v1.5.0 — Adoption
+## v1.5.0 — The no-colour marker
 
-> **Status:** gated on a consumer integration. The minor is cut when its first
-> item is ready; patches continue on 1.4.x until then.
+> **Status:** actionable — format chosen 2026-10-14. A minor because it adds
+> surface.
 
-The two v1.0 acceptance items still open — eight of ten closed at GA. Neither is
-code anuenue can write; both close retroactively once an integration lands.
+v1.4.5 made anuenue own the colour on its colour routes: the input's colour
+codes are stripped. The counterpart is a way for the PRODUCER to keep some text
+out of the rainbow — a logo, a warning, a prompt — without leaving anuenue's
+pipeline. The format, chosen by the user: an ECMA-48 **application program
+command** pair.
+
+```
+ESC _ anuenue:off ESC \     ← text from here is passed through untinted
+ESC _ anuenue:on  ESC \     ← the rainbow resumes
+```
+
+APC is the standard's slot for application-specific commands; xterm-family
+terminals ignore it, so a producer's output still renders cleanly when anuenue
+is not in the pipe. *Known caveat:* the Linux text console does not implement
+APC and may print the payload there.
+
+To settle in the slot (each is a stdout-shape decision, so it is decided and
+written into an ADR before the code):
+
+- **Inside an off-span**, the producer's own SGR colour codes pass through
+  intact (the span is the producer's), or are stripped like everywhere else?
+- **The rainbow's phase** pauses over the span, or keeps advancing as if the
+  span were tinted?
+- **An unmatched marker** — `off` with no `on` runs to the end of the input; a
+  stray `on` is a no-op?
+- **MONO** (`NO_COLOR`, `--color=none`): markers stripped, or passed through
+  byte-exact like everything else on that route?
+- **Animation**: an off-span stays still while the rest scrolls, and H-01's row
+  count counts it like any other text.
+
+Gates, at minimum: the markers stripped on every colour route and never shown;
+off-span bytes byte-exact; a marker split across the 4096-byte read (the v1.4.5
+carry); unmatched markers; the fuzz and pty gates over marked input.
+
+**Adoption rides along if it is ready.** The two v1.0 acceptance items still
+open — eight of ten closed at GA — are not code anuenue can write; both close
+retroactively once an integration lands, in this minor or the next.
 
 - **Dogfooded** — `iam | anuenue` MOTD or `bnrmr | anuenue` banners running in a
   real AGNOS pipeline for at least one minor-cycle window.
@@ -144,7 +181,6 @@ Pinned to the first minor after the trigger fires.
 
 | Item | Trigger | Source |
 |------|---------|--------|
-| **Pass escape sequences in the input through intact** | A consumer pipes coloured text (`ls --color=always \| anuenue`). Today anuenue's own escape before every cluster cancels each input ESC, so `ESC [31m` prints as `[31m`, on every route; v1.4.4's review measured it (audit H-06). Options: strip input SGR (Ruby lolcat's choice), or treat a whole input sequence as one zero-width, untinted cluster. Either changes stdout bytes, so it needs an owner. | [v1.4.x audit delta H-06](../audit/2026-10-14-v14x-delta.md) |
 | **Follow a resize mid-animation; animate a block taller than the terminal** | A consumer asks. v1.4.4 (H-01) reads the size once, before the first frame, and draws a block that cannot fit once. Following SIGWINCH means a signalfd mask change and a re-read per frame; animating an oversized block means a clipping policy (which rows?) nobody has specified. | [ADR 0005 § Consequences, § Alternatives](../adr/0005-practical-subset-display-width.md) |
 | **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. A behaviour change, so a minor. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
 
@@ -165,8 +201,9 @@ Recorded so they are not re-raised as findings.
   read/write/mmap, and turn the default-disposition `anuenue | head -1` from exit
   141 into exit 0. ([v1.4.0 audit delta](../audit/2026-10-12-v140-delta.md))
 - **darshana's `tty_sanitize_buf` on the filter path** (1.2.0). anuenue's
-  contract is byte preservation; `robustness-check.sh` asserts all 256 byte
-  values pass through. Neutralising control bytes in stdin would break the
+  contract is byte preservation — every byte but the input's own SGR colour
+  codes, which v1.4.5 strips on the colour routes; `robustness-check.sh`
+  asserts all 256 byte values pass through. Neutralising control bytes in stdin would break the
   contract it exists to keep. (Diagnostics are not the stream: since v1.4.2 it
   sanitizes the argv tokens that parse-error lines echo to stderr.)
 - **A fixed input corpus inside `tests/anuenue.bcyr`** (decided at v1.4.3, the
@@ -192,7 +229,7 @@ Re-checked at every bump of the dep named.
 - **cyrius: `args_init` cuts the command line at 2 MiB** (one read of
   `/proc/self/cmdline` into a fixed buffer). Filed upstream 2026-10-14. Since
   v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
-  parsing a prefix; the fix is the stdlib's. See v1.4.5 for what changes here
+  parsing a prefix; the fix is the stdlib's. See v1.4.6 for what changes here
   when it lands.
 - **cyrius: growing a large function miscompiles code far from the growth.**
   At v1.4.3, appending one more group (about forty lines, nine locals, a 40-byte

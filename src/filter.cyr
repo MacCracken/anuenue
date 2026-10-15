@@ -464,6 +464,121 @@ fn cp_is_regional_indicator(cp) {
     return 0;
 }
 
+# ---- input colour codes (v1.4.5) ---------------------------------
+#
+# On the colour routes — filter, one-shot text, animation — anuenue owns
+# the colour, so SGR sequences in the INPUT (`ESC [ <params> m`) are
+# removed before the rainbow is applied. Through v1.4.4 they were not,
+# and could not survive anyway: anuenue writes its own escape before
+# every cluster, an input ESC is a cluster of its own, and the terminal
+# sees the input's ESC cancelled by anuenue's — so `ls --color=always |
+# anuenue` printed `[01;34m` as text (audit H-06, recorded at v1.4.4; the
+# user's decision 2026-10-14: strip).
+#
+# Exactly SGR: ESC, '[', zero or more parameter bytes in 0x30..0x3B
+# (digits, ':' and ';' — so colon sub-parameters too), then 'm'. A
+# private marker ('?' '<' '=' '>') or an intermediate byte makes it
+# something else, and anything that is not an SGR passes as before.
+# The MONO route is untouched: there anuenue adds no colour, and
+# `NO_COLOR` passthrough stays byte-exact.
+#
+# ANUENUE_SGR_MAX bounds the sequence, ESC through 'm'. A longer run of
+# parameters is not treated as colour, so a hostile `ESC [` followed by
+# megabytes of digits costs a bounded look-ahead, not a held buffer.
+enum AnuenueSgr {
+    ANUENUE_SGR_MAX = 128;
+}
+
+# Input SGR sequences removed so far (reported under -v).
+var ANUENUE_SGR_STRIPPED = 0;
+
+# Length of the SGR sequence at `buf + s` (an ESC) within `n` bytes: the
+# length (> 0) when it is one, 0 when it is not, -1 when the buffer ends
+# before that is decided (only possible within ANUENUE_SGR_MAX bytes).
+fn _sgr_len(buf, s, n): i64 {
+    if (s + 1 >= n) { return 0 - 1; }
+    if (load8(buf + s + 1) != 91) { return 0; }            # not ESC [
+    var k = s + 2;
+    var res = 0 - 2;                                       # -2: still scanning
+    while (res == (0 - 2)) {
+        if (k - s >= ANUENUE_SGR_MAX) {
+            res = 0;                                       # too long to be colour
+        } else {
+            if (k >= n) {
+                res = 0 - 1;                               # undecided at the end
+            } else {
+                var c = load8(buf + k);
+                if (c == 109) {
+                    res = k - s + 1;                       # 'm': a complete SGR
+                } else {
+                    if (c < 48) { res = 0; }
+                    if (c > 59) { res = 0; }
+                    k = k + 1;
+                }
+            }
+        }
+    }
+    return res;
+}
+
+# Remove the complete SGR sequences from `buf[0, n)` in place. Returns
+# the length of the bytes that are now decided. When `final` is 0 and the
+# buffer ends inside what may still become an SGR (at most
+# ANUENUE_SGR_MAX - 1 bytes), those bytes are moved to just after the
+# decided ones and their count is stored through `out_partial`, for the
+# caller to carry into the next read — the same shape as the UTF-8 carry.
+# When `final` is 1 nothing is held: an unfinished sequence is ordinary
+# bytes. Bytes before the first ESC are never copied, so input with no
+# ESC costs one scan.
+#
+# Used where the whole input is already in memory — anuenue_render_bytes
+# and the animation slurp. The streaming filter does not call it: it
+# drops SGRs inline in its own byte loop (same _sgr_len decision), because
+# a second pass over every chunk measured +1.7 ns/byte.
+fn anuenue_sgr_strip(buf, n, final, out_partial): i64 {
+    store64(out_partial, 0);
+    var r = 0;
+    var scanning = 1;
+    while (scanning == 1) {
+        if (r >= n) {
+            scanning = 0;
+        } else {
+            if (load8(buf + r) == 27) {
+                scanning = 0;
+            } else {
+                r = r + 1;
+            }
+        }
+    }
+    var w = r;
+    while (r < n) {
+        var b = load8(buf + r);
+        var len = 0;
+        if (b == 27) { len = _sgr_len(buf, r, n); }
+        if (len > 0) {
+            ANUENUE_SGR_STRIPPED = ANUENUE_SGR_STRIPPED + 1;
+            r = r + len;
+            continue;
+        }
+        if (len < 0) {
+            if (final == 0) {
+                var held = n - r;
+                var h = 0;
+                while (h < held) {
+                    store8(buf + w + h, load8(buf + r + h));
+                    h = h + 1;
+                }
+                store64(out_partial, held);
+                return w;
+            }
+        }
+        store8(buf + w, b);
+        w = w + 1;
+        r = r + 1;
+    }
+    return w;
+}
+
 # ---- anuenue_filter ------------------------------------------------
 #
 # The pipe-purity proof. Reads stdin in ANUENUE_READ_CHUNK chunks,
@@ -589,24 +704,48 @@ fn anuenue_filter(): i64 {
         while (in_chunk == 1 && i < n) {
             var b = load8(read_buf + i);
 
-            if (b == 10) {
-                # LF — its own non-extending cluster. Pre-advance
-                # if any prior cluster exists (same rule as for any
-                # other non-extending codepoint), then reset SGR,
-                # emit the LF, flush the line, drop RI candidacy
-                # and the ZWJ latch (newline breaks any open
-                # ZWJ sequence).
-                if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
-                pos = tty_sgr_reset_buf(line_buf, pos);
-                store8(line_buf + pos, 10);
-                pos = pos + 1;
-                if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
-                pos = 0;
-                saw_any = 1;
-                prev_unpaired_ri = 0;
-                prev_was_zwj = 0;
-                i = i + 1;
-                continue;
+            # C0 controls first, behind one comparison, so a printable byte
+            # still costs the two tests it did through v1.4.4 (b == 10,
+            # b < 0x80 there; b < 0x20, b < 0x80 here). v1.4.5 added the
+            # ESC case: an input colour code is dropped here, inline — a
+            # separate strip pass over each chunk measured +1.7 ns/byte
+            # (+11%) on ASCII, and an ESC test on every ASCII byte +0.3. An
+            # SGR the chunk cuts off is left for the carry below, exactly
+            # like a truncated UTF-8 sequence. Same decision as
+            # anuenue_sgr_strip: _sgr_len.
+            if (b < 0x20) {
+                if (b == 10) {
+                    # LF — its own non-extending cluster. Pre-advance
+                    # if any prior cluster exists (same rule as for any
+                    # other non-extending codepoint), then reset SGR,
+                    # emit the LF, flush the line, drop RI candidacy
+                    # and the ZWJ latch (newline breaks any open
+                    # ZWJ sequence).
+                    if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+                    pos = tty_sgr_reset_buf(line_buf, pos);
+                    store8(line_buf + pos, 10);
+                    pos = pos + 1;
+                    if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
+                    pos = 0;
+                    saw_any = 1;
+                    prev_unpaired_ri = 0;
+                    prev_was_zwj = 0;
+                    i = i + 1;
+                    continue;
+                }
+
+                if (b == 27) {
+                    var sgr = _sgr_len(read_buf, i, n);
+                    if (sgr > 0) {
+                        ANUENUE_SGR_STRIPPED = ANUENUE_SGR_STRIPPED + 1;
+                        i = i + sgr;
+                        continue;
+                    }
+                    if (sgr < 0) {
+                        in_chunk = 0;
+                        continue;
+                    }
+                }
             }
 
             # ASCII short-circuit (M5 perf pass). For b < 0x80 the
@@ -715,10 +854,11 @@ fn anuenue_filter(): i64 {
             i = i + seqlen;
         }
 
-        # If the inner loop exited early on a truncated sequence,
-        # `i` points at its leading byte. Copy the trailing 1..3
-        # partial bytes to the head of read_buf so the next
-        # file_read appends after them.
+        # If the inner loop exited early, `i` points at what it could not
+        # decide yet: a truncated UTF-8 sequence (1..3 bytes) or, from
+        # v1.4.5, an input SGR still open at the end of the chunk (at most
+        # ANUENUE_SGR_MAX - 1 bytes). Copy it to the head of read_buf so
+        # the next file_read appends after it.
         if (i < n) {
             carry_len = n - i;
             var ji = 0;
@@ -746,7 +886,11 @@ fn anuenue_filter(): i64 {
 # so the stdin filter loop can never terminate there; rendering an
 # argv-supplied buffer makes anuenue one-shot usable, mirroring
 # `bnrmr TEXT`. On a real TTY pipeline the filter path stays canonical.
-fn anuenue_render_bytes(src, len): i64 {
+fn anuenue_render_bytes(src, len_in): i64 {
+    # v1.4.5: the input's colour codes go first. The whole text is in
+    # memory, so nothing is held (`final` 1).
+    var rb_held[8];
+    var len = anuenue_sgr_strip(src, len_in, 1, &rb_held);
     var line_buf = alloc(ANUENUE_LINE_BUF);
     if (line_buf == 0) {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "render line buffer allocation failed");

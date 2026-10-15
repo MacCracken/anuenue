@@ -37,6 +37,14 @@ argv. There is no file-input mode, no config file, no plugin loader, no
 theme system, no palette beyond the integer HSV rainbow, and no output
 styles beyond ANSI foreground colour.
 
+*Amended at v1.4.5:* the stream is preserved byte for byte except for one
+class. On the colour routes the input's own SGR colour codes (`ESC [ params m`)
+are removed, because anuenue owns the colour there. They never rendered anyway:
+anuenue's per-cluster escape cancelled each input ESC. MONO passthrough is still
+byte-identical to `cat`. The removal holds at most an unfinished sequence, under
+128 bytes, across a read, the same bounded carry as a split UTF-8 sequence. So
+the no-buffering rule above holds.
+
 Concretely, this means anuenue's capability surface is:
 
 | Syscall                  | Why                                                          |

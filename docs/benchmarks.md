@@ -626,6 +626,47 @@ v1.4.3.
   then H-01's width table, row count and size query, plus H-05; see
   [`state.md` § Binary](development/state.md#binary).
 
+## v1.4.5 — input colour codes stripped
+
+### The design the ratchet chose
+
+v1.4.5 strips the input's SGR colour codes on the colour routes. Three ways of
+doing it on the streaming filter path were measured against a rebuilt v1.4.4
+(`RUNS=11`, interleaved rounds, medians, ascii no-LF):
+
+| Design | truecolor | 256 | 16 |
+|---|---:|---:|---:|
+| a separate strip pass over each 4096-byte chunk | +11.5% | +11.3% | +11.4% |
+| an ESC test at the top of the ASCII branch | +2.1% | +1.4% | +2.2% |
+| **ESC tested with LF behind one `b < 0x20` (shipped)** | **+0.8%** | **+0.4%** | **0.0%** |
+
+The pass cost ~1.7 ns/byte: a load, compare and branch for every byte,
+before the filter loads the same byte again. The shipped design gives a
+printable byte the same two comparisons v1.4.4 made: `b == 10, b < 0x80`
+there, `b < 0x20, b < 0x80` here.
+
+### Release ratchet — v1.4.4 vs v1.4.5
+
+Ten interleaved rounds (the second five in reversed order), medians, ns/byte,
+load average 0.2–2:
+
+| Mode | corpus | v1.4.4 | v1.4.5 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 15.30 | **15.43** | +0.8% |
+| | ascii w/ LFs | 19.84 | **19.86** | +0.1% |
+| | utf8 mixed | 20.45 | **20.30** | −0.7% |
+| 256 | ascii no-LF | 15.24 | **15.30** | +0.4% |
+| | ascii w/ LFs | 19.93 | **19.98** | +0.3% |
+| | utf8 mixed | 20.37 | **20.38** | +0.1% |
+| 16 | ascii no-LF | 15.19 | **15.20** | 0.0% |
+| | ascii w/ LFs | 19.97 | **19.93** | −0.2% |
+| | utf8 mixed | 20.30 | **20.14** | −0.8% |
+
+**Flat** — every row within ±0.8%, mixed signs. Micro rows are unchanged; the
+table emit is 8–9 ns.
+
+- **1.4.5 binary**: **235 848 bytes**, +48 B.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -655,7 +696,8 @@ v1.4.3.
 | v1.4.1  | 46.74¤              | 8§               | 21§                 | 222 520      | cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed |
 | v1.4.2  | 47.41¤              | 8§               | 22§                 | 226 624      | stderr hygiene: one line per failure; parse errors name a sanitized token |
 | v1.4.3  | 15.40¤              | 9§               | 22§                 | 226 624      | escape-table word copy: 9 ns per escape in every mode; −68% end to end |
-| **v1.4.4** | **15.60**¤       | 8§               | 22§                 | **235 800**  | **v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep** |
+| v1.4.4  | 15.60¤              | 8§               | 22§                 | 235 800      | v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep |
+| **v1.4.5** | **15.43**¤       | 8§               | 22§                 | **235 848**  | **input colour codes stripped on the colour routes; flat by design** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -678,7 +720,8 @@ shipped; neither touches the per-cluster hot path.
 ¤ v1.4.1 measured back-to-back with a rebuilt v1.4.0 on a quieter host (load
 1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
 v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), v1.4.3
-against a rebuilt v1.4.2 (47.72), and v1.4.4 against a rebuilt v1.4.3 (15.59).
+against a rebuilt v1.4.2 (47.72), v1.4.4 against a rebuilt v1.4.3 (15.59),
+and v1.4.5 against a rebuilt v1.4.4 (15.30).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

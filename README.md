@@ -50,6 +50,10 @@ NO_COLOR=1 echo "AGNOS" | ./build/anuenue      # byte-identical passthrough
 | `-C`  | `--force-color`   | —        | Emit colour even when stdout isn't a TTY |
 | `-c`  | `--color <mode>`  | str      | `auto` / `24bit` / `256` / `16` / `none` |
 
+Colour codes already in the input (`ls --color=always | anuenue`) are replaced by
+the rainbow on every colouring route; `--no-color` / `NO_COLOR` pass them through
+untouched (v1.4.5).
+
 **Colour-mode priority chain**: `--color` → `--no-color` → `NO_COLOR` env → stdout-not-TTY (unless `--force-color`) → `COLORTERM` → `TERM`.
 
 ### UTF-8 / grapheme behavior
@@ -66,23 +70,24 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.4.4
+### Quality bar at v1.4.5
 
-- **484** unit assertions across 59 groups (`cyrius test`)
+- **506** unit assertions across 60 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **27** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
   and one stderr line per failure
-- **46** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **60** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
   clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
   positionals), parse-error lines that echo argv sanitized and bounded, and
   no escape-copy scratch byte ever reaching stdout, a stalled non-blocking peer
-  costing no CPU, and animation keeping every byte
-- **1,491,882** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
+  costing no CPU, animation keeping every byte, and the input's colour codes
+  stripped on the colour routes (never on MONO)
+- **1,521,882** fuzz assertions per run across 7 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open — six audits, latest
   [`docs/audit/2026-10-14-v14x-delta.md`](docs/audit/2026-10-14-v14x-delta.md); no guard recorded as unproven
 - **25** PTY checks (animation on sized terminals, played into a terminal
@@ -92,7 +97,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
   syscall faults under gdb and gates the per-route syscall surface)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 15.6 ns/byte ASCII no-LF in every colour mode at v1.4.4 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
+- **Perf**: 15.4 ns/byte ASCII no-LF in every colour mode at v1.4.5 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics

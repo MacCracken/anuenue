@@ -1,0 +1,176 @@
+# anuenue fuzz — v1.4.5 anuenue_sgr_strip (input colour codes).
+#
+# Target:
+#   anuenue_sgr_strip(buf, n, final, out_partial) → decided length
+#
+# Invariants:
+#   - the decided length and the held tail fit in the input: 0 <= w,
+#     0 <= held, w + held <= n; with final = 1 nothing is held
+#   - the result equals an independently written reference stripper
+#     (_ref_strip below) — a complete SGR (ESC [ params(0x30..0x3B) m, at
+#     most ANUENUE_SGR_MAX bytes) is removed, every other byte kept in order
+#   - CHUNKED == WHOLE: stripping the input in two pieces, the first with
+#     final = 0 and its held tail prepended to the second (exactly the
+#     filter's carry), gives the same bytes as stripping it in one piece.
+#     This is the property the 4096-byte read boundary depends on.
+#
+# Inputs: random sequences over a pool of the bytes that matter (ESC, '[',
+# digits, ';', ':', 'm', private markers, final bytes, text, LF), lengths
+# up to 300, split at every kind of point.
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 0x7FFFFFFF;
+}
+
+# One byte from the pool, weighted towards escape-sequence material.
+fn _pool_byte(): i64 {
+    var k = _fuzz_next() % 16;
+    if (k <= 2) { return 27; }         # ESC
+    if (k <= 4) { return 91; }         # [
+    if (k == 5) { return 109; }        # m
+    if (k == 6) { return 109; }
+    if (k == 7) { return 59; }         # ;
+    if (k == 8) { return 58; }         # :
+    if (k == 9) { return 48 + _fuzz_next() % 10; }   # digit
+    if (k == 10) { return 48 + _fuzz_next() % 10; }
+    if (k == 11) { return 63; }        # ? (private marker)
+    if (k == 12) { return 65; }        # A (a non-m final)
+    if (k == 13) { return 10; }        # LF
+    if (k == 14) { return 93; }        # ] (OSC)
+    return 120;                        # x
+}
+
+# Reference stripper, written independently of src/filter.cyr: scan the
+# parameters with no length limit, then keep the sequence unless it ended
+# in 'm' within ANUENUE_SGR_MAX bytes. Writes to `dst`; returns its length.
+fn _ref_strip(src, n, dst): i64 {
+    var w = 0;
+    var r = 0;
+    while (r < n) {
+        var end = 0 - 1;
+        if (load8(src + r) == 27) {
+            if (r + 1 < n) {
+                if (load8(src + r + 1) == 91) {
+                    var k = r + 2;
+                    var scanning = 1;
+                    while (scanning == 1) {
+                        if (k >= n) {
+                            scanning = 0;
+                        } else {
+                            var c = load8(src + k);
+                            if (c == 109) {
+                                if (k - r + 1 <= ANUENUE_SGR_MAX) { end = k + 1; }
+                                scanning = 0;
+                            } else {
+                                if (c >= 48) {
+                                    if (c <= 59) { k = k + 1; } else { scanning = 0; }
+                                } else {
+                                    scanning = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (end > 0) {
+            r = end;
+        } else {
+            store8(dst + w, load8(src + r));
+            w = w + 1;
+            r = r + 1;
+        }
+    }
+    return w;
+}
+
+# Byte-compare `a` and `b` over `n` bytes; 1 if equal.
+fn _same(a, b, n): i64 {
+    var k = 0;
+    var eq = 1;
+    while (k < n) {
+        if (load8(a + k) != load8(b + k)) { eq = 0; }
+        k = k + 1;
+    }
+    return eq;
+}
+
+# One random input of `n` bytes: whole against the reference, then split
+# at `cut` and carried. Returns 0.
+fn fuzz_sgr_one(n, cut, input, whole, ref, piece, out) {
+    var i = 0;
+    while (i < n) { store8(input + i, _pool_byte()); i = i + 1; }
+
+    # Whole, final: equals the reference.
+    i = 0;
+    while (i < n) { store8(whole + i, load8(input + i)); i = i + 1; }
+    var hv[8];
+    var w = anuenue_sgr_strip(whole, n, 1, &hv);
+    var rn = _ref_strip(input, n, ref);
+    assert(load64(&hv) == 0, "final strip held bytes");
+    assert(w >= 0, "negative decided length");
+    assert(w <= n, "decided length exceeds the input");
+    assert(w == rn, "whole strip length differs from the reference");
+    assert(_same(whole, ref, rn) == 1, "whole strip bytes differ from the reference");
+
+    # Chunked: [0, cut) with final 0, then held + [cut, n) with final 1.
+    i = 0;
+    while (i < cut) { store8(piece + i, load8(input + i)); i = i + 1; }
+    var w1 = anuenue_sgr_strip(piece, cut, 0, &hv);
+    var held = load64(&hv);
+    assert(held >= 0, "negative held count");
+    assert(w1 + held <= cut, "decided + held exceeds the chunk");
+    assert(held < ANUENUE_SGR_MAX, "held more than an SGR can be");
+    i = 0;
+    while (i < w1) { store8(out + i, load8(piece + i)); i = i + 1; }
+    # The second piece: the held tail, then the rest of the input.
+    i = 0;
+    while (i < held) { store8(piece + i, load8(piece + w1 + i)); i = i + 1; }
+    i = 0;
+    while (i < n - cut) { store8(piece + held + i, load8(input + cut + i)); i = i + 1; }
+    var w2 = anuenue_sgr_strip(piece, held + n - cut, 1, &hv);
+    i = 0;
+    while (i < w2) { store8(out + w1 + i, load8(piece + i)); i = i + 1; }
+    assert(w1 + w2 == rn, "chunked strip length differs from whole");
+    assert(_same(out, ref, rn) == 1, "chunked strip bytes differ from whole");
+    return 0;
+}
+
+# Harness entry: 3 000 random inputs, every cut point kind. Returns
+# assert_summary() so a broken invariant fails `cyrius fuzz`.
+fn main(): i64 {
+    alloc_init();
+    var input = alloc(512);
+    var whole = alloc(512);
+    var ref   = alloc(512);
+    var piece = alloc(1024);
+    var out   = alloc(1024);
+    if (input == 0) { return 1; }
+    _fuzz_seed(1469);
+    var it = 0;
+    while (it < 3000) {
+        var n = 1 + _fuzz_next() % 300;
+        var cut = _fuzz_next() % (n + 1);
+        fuzz_sgr_one(n, cut, input, whole, ref, piece, out);
+        it = it + 1;
+    }
+    println("fuzz_sgr_strip: reference and chunked-equals-whole invariants held");
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

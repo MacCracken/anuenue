@@ -39,6 +39,10 @@
 #   8. Parse-error lines name the offending token (v1.4.2) — and since
 #      that token is argv headed for a terminal, it is echoed sanitized
 #      (no ESC / BEL / C0 / C1 survives) and bounded (64 bytes + "...").
+#  10. The input's colour codes are stripped on the colour routes and
+#      nothing else is (v1.4.5): SGR gone on filter / one-shot / animation
+#      in every mode, MONO byte-exact, the 4096-byte read boundary inside
+#      a sequence, the 128-byte bound, and non-SGR sequences intact.
 #   9. The escape word copy's scratch never reaches stdout (v1.4.3).
 #      _emit_phase_esc writes 24 bytes per escape, zero past the escape;
 #      a leaked scratch byte would be a NUL, so NUL-free input must give
@@ -713,6 +717,95 @@ done
 if [ "$_nul_pass" -eq 18 ]; then
     ok "no NUL on stdout: filter (3 corpora), one-shot and animation (2), x 3 modes"
 fi
+
+# --- gate 10: input colour codes are stripped (v1.4.5) --------------
+#
+# anuenue owns the colour on the filter, one-shot and animation routes,
+# so an SGR in the input (ESC [ params m) is removed before the rainbow
+# goes on. Through v1.4.4 it was kept and broken — anuenue's own escape
+# cancelled each input ESC, and `ls --color=always | anuenue` printed
+# `[01;34m` as text (audit H-06). Everything that is NOT a complete SGR
+# must still pass byte for byte, and MONO is untouched.
+echo "[robustness] input colour codes are stripped, nothing else (v1.4.5)"
+python3 -I - "$BIN" <<'PYEOF' > "$WORK/sgr.out" 2>&1 || true
+import re, subprocess, sys
+BIN = sys.argv[1]
+OURS = re.compile(rb"\x1b\[(?:0|9[0-7]|38;5;\d+|38;2;\d+;\d+;\d+)m")  # anuenue's own SGRs
+def run(args, data, stdin=True):
+    return subprocess.run([BIN] + args, input=data if stdin else None,
+                          capture_output=True).stdout
+def plain(out):
+    return OURS.sub(b"", out)
+ls_like = b"total 3\n\x1b[0m\x1b[01;34mbin\x1b[0m  \x1b[01;32mrun.sh\x1b[0m  notes.txt\n"
+want = b"total 3\nbin  run.sh  notes.txt\n"
+for mode in ("24bit", "256", "16"):
+    print("FILTER", mode, "ok" if plain(run(["--color=" + mode], ls_like)) == want else "bad")
+    one = run(["--color=" + mode, "a\x1b[31mb\x1b[0mc"], b"", stdin=False)
+    print("ONESHOT", mode, "ok" if plain(one) == b"abc\n" else "bad")
+    an = run(["-a", "-d", "1", "-i", "400", "--color=" + mode], b"a\x1b[1;31mb\x1b[0m\n")
+    frame = re.split(rb"\x1b\[\d+A", an)[0]
+    frame = re.sub(rb"\x1b\[\?25[lh]", b"", plain(frame))
+    print("ANIM", mode, "ok" if frame == b"ab\n" else "bad")
+mono = run(["--color=none"], ls_like)
+print("MONO", "ok" if mono == ls_like else "bad")
+# The read boundary, at every offset of the 5-byte ESC [ 31 m across 4096.
+fails = 0
+for k in range(0, 6):
+    data = b"a" * (4096 - k) + b"\x1b[31mRED\x1b[0m\n"
+    if plain(run(["--color=16"], data)) != b"a" * (4096 - k) + b"RED\n":
+        fails += 1
+# A 19-byte truecolor SGR at every offset across the boundary, and a
+# 128-byte one (the largest carry: 127 bytes held into the next read).
+tc = b"\x1b[38;2;255;0;10m"
+for k in range(0, len(tc) + 1):
+    data = b"a" * (4096 - k) + tc + b"RED\n"
+    if plain(run(["--color=16"], data)) != b"a" * (4096 - k) + b"RED\n":
+        fails += 1
+big = b"\x1b[" + b"1;" * 62 + b"1m"                   # 128 bytes
+for k in (1, 64, 127):
+    data = b"a" * (4096 - k) + big + b"X\n"
+    if plain(run(["--color=16"], data)) != b"a" * (4096 - k) + b"X\n":
+        fails += 1
+print("BOUNDARY", "ok" if fails == 0 else "bad %d" % fails)
+# Dribbled: one byte per write, so the open SGR is carried across many
+# tiny reads.
+import time
+p = subprocess.Popen([BIN, "--color=16"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+for byte in b"a\x1b[38;2;1;2;3mb\x1b[0mc\n":
+    p.stdin.write(bytes([byte])); p.stdin.flush(); time.sleep(0.002)
+p.stdin.close()
+dribble = plain(p.stdout.read()); p.wait()
+print("DRIBBLE", "ok" if dribble == b"abc\n" else "bad %r" % dribble)
+# The bound: 129 bytes is kept whole; 128 is stripped.
+over = b"\x1b[" + b"1" * 126 + b"m"
+at = b"\x1b[" + b"1" * 125 + b"m"
+print("BOUND", "ok" if plain(run(["--color=16"], over + b"x\n")) == over + b"x\n"
+      and plain(run(["--color=16"], at + b"x\n")) == b"x\n" else "bad")
+# Non-SGR sequences and broken SGRs pass byte for byte.
+keep = b"\x1b[2J\x1b[?25l\x1b]0;t\x07\x1b[>4;1m\x1b[31\nz\n"
+print("KEEP", "ok" if plain(run(["--color=16"], keep)) == keep else "bad")
+PYEOF
+for _k in "FILTER 24bit" "FILTER 256" "FILTER 16" "ONESHOT 24bit" "ONESHOT 256" "ONESHOT 16" \
+          "ANIM 24bit" "ANIM 256" "ANIM 16"; do
+    if grep -q "^$_k ok" "$WORK/sgr.out"; then
+        ok "input SGR stripped: $_k"
+    else
+        bad "input SGR not stripped: $_k ($(grep "^$_k " "$WORK/sgr.out"))"
+    fi
+done
+for _k in MONO BOUNDARY DRIBBLE BOUND KEEP; do
+    if grep -q "^$_k ok" "$WORK/sgr.out"; then
+        case $_k in
+            MONO)     ok "MONO keeps the input's colour codes byte for byte" ;;
+            BOUNDARY) ok "an SGR split across the 4096-byte read is stripped, at every offset (5, 19 and 128 bytes)" ;;
+            DRIBBLE)  ok "an SGR arriving one byte per write is stripped" ;;
+            BOUND)    ok "128 bytes is an SGR, 129 is ordinary text" ;;
+            KEEP)     ok "non-SGR sequences and broken SGRs pass byte for byte" ;;
+        esac
+    else
+        bad "$_k: $(grep "^$_k " "$WORK/sgr.out" || head -3 "$WORK/sgr.out")"
+    fi
+done
 
 echo
 if [ "$FAIL" -eq 0 ]; then

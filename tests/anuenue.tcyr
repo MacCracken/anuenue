@@ -1496,6 +1496,66 @@ fn test_v144_rows(): i64 {
     return 0;
 }
 
+# Copy cstr `src` into `buf`, strip it with `final`, and return 1 when the
+# result is exactly cstr `want` (and the held tail is `held`).
+fn _t_sgr(buf, src, final, want, held): i64 {
+    var n = strlen(src);
+    var k = 0;
+    while (k < n) { store8(buf + k, load8(src + k)); k = k + 1; }
+    var hv[8];
+    var m = anuenue_sgr_strip(buf, n, final, &hv);
+    if (load64(&hv) != held) { return 0; }
+    if (m != strlen(want)) { return 0; }
+    k = 0;
+    while (k < m) {
+        if (load8(buf + k) != load8(want + k)) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# v1.4.5 — the input's colour codes are stripped on the colour routes
+# (audit H-06). Returns 0.
+fn test_v145_sgr(): i64 {
+    test_group("v1.4.5 — input SGR colour codes are stripped, nothing else");
+    var sb = alloc(512);
+    assert_eq(_t_sgr(sb, "\x1b[31mred\x1b[0m", 1, "red", 0), 1, "a colour and a reset are stripped");
+    assert_eq(_t_sgr(sb, "a\x1b[mb", 1, "ab", 0), 1, "ESC [ m (no parameters) is an SGR");
+    assert_eq(_t_sgr(sb, "\x1b[01;34mdir", 1, "dir", 0), 1, "ls --color's bold-blue is stripped");
+    assert_eq(_t_sgr(sb, "\x1b[38;2;255;0;10mX", 1, "X", 0), 1, "a truecolor SGR is stripped");
+    assert_eq(_t_sgr(sb, "\x1b[38:2::255:0:10mX", 1, "X", 0), 1, "colon sub-parameters are SGR too");
+    assert_eq(_t_sgr(sb, "no escapes at all", 1, "no escapes at all", 0), 1, "text without ESC is untouched");
+    assert_eq(_t_sgr(sb, "\x1b[2Jx", 1, "\x1b[2Jx", 0), 1, "a non-SGR CSI (ED) passes");
+    assert_eq(_t_sgr(sb, "\x1b[?25lx", 1, "\x1b[?25lx", 0), 1, "a private-mode CSI passes");
+    assert_eq(_t_sgr(sb, "\x1b[>4;1mx", 1, "\x1b[>4;1mx", 0), 1, "ESC [ > ... m is not SGR (modifyOtherKeys)");
+    assert_eq(_t_sgr(sb, "\x1b]0;t\x07x", 1, "\x1b]0;t\x07x", 0), 1, "an OSC passes");
+    assert_eq(_t_sgr(sb, "a\x1b", 1, "a\x1b", 0), 1, "a lone ESC at the end of the input is kept (final)");
+    assert_eq(_t_sgr(sb, "a\x1b[31", 1, "a\x1b[31", 0), 1, "an unfinished SGR at the end of the input is kept (final)");
+    assert_eq(_t_sgr(sb, "a\x1b[31\nb", 1, "a\x1b[31\nb", 0), 1, "a broken SGR (LF inside) is kept");
+    # Not final: an SGR still open at the end is held for the next read.
+    assert_eq(_t_sgr(sb, "ab\x1b[3", 0, "ab", 3), 1, "an open SGR at a chunk end is held (ESC [ 3: 3 bytes)");
+    assert_eq(load8(sb + 2), 27, "the held bytes sit just after the decided ones");
+    assert_eq(_t_sgr(sb, "ab\x1b", 0, "ab", 1), 1, "a lone ESC at a chunk end is held");
+    assert_eq(_t_sgr(sb, "ab\x1b[2J", 0, "ab\x1b[2J", 0), 1, "a decided non-SGR is not held");
+    # The bound: 2 + 126 digits + 'm' is 129 bytes, one over ANUENUE_SGR_MAX.
+    sb = alloc(512);
+    var bk = 0;
+    store8(sb, 27); store8(sb + 1, 91);
+    while (bk < 126) { store8(sb + 2 + bk, 49); bk = bk + 1; }
+    store8(sb + 128, 109);
+    var bh[8];
+    assert_eq(anuenue_sgr_strip(sb, 129, 1, &bh), 129, "a 129-byte SGR is over the bound: kept");
+    store8(sb + 127, 109);
+    assert_eq(anuenue_sgr_strip(sb, 128, 1, &bh), 0, "a 128-byte SGR is within it: stripped");
+    store8(sb, 27); store8(sb + 1, 91);
+    bk = 0;
+    while (bk < 300) { store8(sb + 2 + bk, 49); bk = bk + 1; }
+    assert_eq(anuenue_sgr_strip(sb, 302, 0, &bh), 302, "300 digits after ESC [ are never held");
+    assert_eq(load64(&bh), 0, "and nothing is held for them");
+    assert_eq(ANUENUE_SGR_MAX, 128, "the bound is 128 bytes, ESC through m");
+    return 0;
+}
+
 # Unit-suite entry: runs every cut's groups in order and returns
 # assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
 #
@@ -1526,6 +1586,7 @@ fn main(): i64 {
     test_v142_argv_echo();
     test_word_copy();
     test_v144_rows();
+    test_v145_sgr();
 
     return assert_summary();
 }

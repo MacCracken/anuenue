@@ -373,6 +373,9 @@ fn main(): i64 {
     }
 
     anuenue_log_kv_int(SK_INFO,  "complete", "bytes-in",  ANUENUE_BYTES_IN);
+    if (ANUENUE_SGR_STRIPPED > 0) {
+        anuenue_log_kv_int(SK_DEBUG, "input colour codes stripped", "count", ANUENUE_SGR_STRIPPED);
+    }
     anuenue_log_kv_int(SK_DEBUG, "complete", "exit-code", rc);
     anuenue_span_exit();
     return rc;
