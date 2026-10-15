@@ -59,7 +59,11 @@ cannot fit the terminal once, and do not animate it.**
   The table is **generated**: `scripts/gen-wide-table.py` writes it from
   Python's `unicodedata`. `scripts/pty-check.sh` gate 5 compares
   `anuenue_cp_cols` with that same oracle at every cluster-starting
-  codepoint up to U+3FFFF.
+  codepoint up to U+3FFFF. The comparison only holds on the same Unicode
+  version, because East Asian Width changes between versions. So the header
+  names the Unicode and Python versions, and CI installs that Python. (On
+  v1.4.4's first CI run the runner's older Python reported 188
+  codepoints of drift.)
 
   Combining marks take no columns *because they never start a cluster*: the
   ADR 0003 classifier already folds them into their base.
