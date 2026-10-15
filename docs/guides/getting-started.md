@@ -3,11 +3,11 @@
 ## Build
 
 ```sh
-cyrius deps                                    # resolve sibling deps (darshana, sakshi, agnostik)
+cyrius deps                                    # resolve deps (darshana, cmdit, agnostik; sakshi is stdlib)
 cyrius build src/main.cyr build/anuenue        # compile (add CYRIUS_DCE=1 for release builds)
 cyrius test                                    # run [build].test + tests/*.tcyr
 cyrius bench tests/anuenue.bcyr                # hot-path micro-benchmarks
-cyrius fuzz                                    # five fuzz harnesses (~1.35M assertions)
+cyrius fuzz                                    # six fuzz harnesses (~1.45M assertions)
 sh scripts/golden-check.sh                     # determinism + NO_COLOR equivalence
 sh scripts/animate-smoke.sh                    # animation structural guard
 sh scripts/perf-bench.sh                       # end-to-end per-byte overhead ratchet

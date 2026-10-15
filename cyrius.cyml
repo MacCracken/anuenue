@@ -28,26 +28,36 @@ modules = ["src/hsv.cyr"]
 # extended, and anuenue is its second worked migration (after kii). "args" stays
 # (cmdit_argv/cmdit_parse call args_init/argc/argv); "io" stays (cmdit_parse
 # references getenv via cmdit_finalize).
-stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "bench", "args", "chrono"]
+#
+# "sakshi" — the canonical error/tracing crate per first-party-standards — is a
+# stdlib module from v1.4.1, not a [deps.sakshi] git pin. The toolchain snapshot
+# folds a sakshi release (6.7.9 ships 2.5.8), and a git tag that disagreed with it
+# was a `./lib/ shadows version-pinned` build warning, so the pin could only ever
+# restate the snapshot's version. Now the `cyrius` pin above is the one source of
+# truth for it: a toolchain bump moves sakshi, and there is no second number to
+# keep in step. Re-check the `# Version:` header of lib/sakshi.cyr at each bump.
+stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "bench", "args", "chrono", "sakshi"]
 
 # CLI / argument parsing — cmdit (the sovereign getopt-long lib; the stdlib flags
 # parser productized + extended). Local sibling path + pinned tag, per AGNOS
 # dep-lockin discipline. cmdit_help_flags (added 1.1.0) is the table-only renderer
 # anuenue's rich help (brand intro + Examples block) wraps around the flag list.
-# 1.2.4 is the P-1 audit cut: the completion-script program-name injection fix
-# plus three memory-safety/contract fixes. anuenue is not exposed to any of them
-# (it passes a literal prog name and never calls cmdit_completions), so the bump
-# is dist-bytes hygiene rather than a required fix.
+# 1.4.0 (from 1.2.4) changes what anuenue's cmdit_error switch can see: three
+# append-only codes are reachable — UNEXPECTED_VALUE (11, `--bool=value`, which
+# 1.2.4 parsed as ON whatever the value), NOMEM (12, a 0 handle from an OOM
+# cmdit_new, which 1.2.4 crashed on) and ARGV (13, a command line the stdlib could
+# not read whole, which 1.2.4 parsed as a prefix). src/main.cyr names each one.
+# cmdit_help_flags output is byte-identical; nothing else anuenue calls changed.
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 path = "../cmdit"
-tag = "1.2.4"
+tag = "1.4.0"
 modules = ["dist/cmdit.cyr"]
 
 # AGNOS first-party deps — pinned tags per `feedback_dep_lockin_sandhi_unlock`.
 # darshana provides the ANSI escape primitives anuenue emits per character.
-# sakshi is the canonical error/tracing crate per first-party-standards.
 # agnostik provides the shared Result/Error shapes sakshi consumers use.
+# (sakshi is a stdlib module — see the [deps] stdlib list above.)
 #
 # darshana: API frozen since 1.0.0, only additive since. anuenue calls twelve
 # symbols, all frozen: the composers tty_fg_rgb_buf / tty_fg_256_buf /
@@ -69,18 +79,15 @@ git = "https://github.com/MacCracken/darshana.git"
 tag = "1.3.0"
 modules = ["dist/darshana.cyr"]
 
-# sakshi 2.5.8 (from 2.5.1) because the toolchain moved, not for a fix anuenue
-# needs: the cyrius 6.7.9 stdlib snapshot ships sakshi 2.5.8, and a [deps.sakshi]
-# tag that disagrees with the snapshot is a build-time `./lib/ shadows
-# version-pinned` warning. 2.5.8 is the one tag that clears it. No API change.
-[deps.sakshi]
-git = "https://github.com/MacCracken/sakshi.git"
-path = "../sakshi"
-tag = "2.5.8"
-modules = ["dist/sakshi.cyr"]
-
+# agnostik 1.12.0 (from 1.6.0): no change to anything anuenue calls —
+# agnostik_err_new / _code / _print bodies, the STIK_ERR_* values and the
+# "<kind name>[: <msg>]" stderr line are all as at 1.6.0 (CODE_IO is still 1010).
+# 1.6.2 replaced the raw `syscall(318, ...)` that drew an aarch64 build warning
+# with sys_getrandom; 1.7.0 moved every private helper under `_stik_`, so no
+# vendored name can replace one of agnostik's. The bundle's sidecar now names
+# `boxed` itself and drops `tagged`.
 [deps.agnostik]
 git = "https://github.com/MacCracken/agnostik.git"
 path = "../agnostik"
-tag = "1.6.0"
+tag = "1.12.0"
 modules = ["dist/agnostik.cyr"]

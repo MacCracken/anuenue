@@ -21,7 +21,7 @@ guide lists them.
 | **Input** | Single stdin stream. Treated as untrusted bytes. UTF-8 is decoded, invalid sequences degrade gracefully per byte. |
 | **Output** | Single stdout stream. ANSI SGR foreground codes interspersed with the original bytes — *no* bold / italic / underline injection (per [ADR 0001](../adr/0001-pipe-purity.md)). |
 | **Errors** | All diagnostic text (usage, error messages) goes to stderr. The stdout stream is colourised input only — never polluted. |
-| **Exit codes** | `0` normal exit (incl. `--help` / `--version`); `1` filter runtime error (read error, alloc fail); `2` usage error (unknown flag, bad int value). |
+| **Exit codes** | `0` normal exit (incl. `--help` / `--version`); `1` runtime error (read error, alloc fail, and from v1.4.1 a command line that could not be read whole — over 2 MiB, or no descriptor for `/proc/self/cmdline`); `2` usage error (unknown flag, bad int value, and from v1.4.1 a boolean given `=value`). |
 | **State** | None on disk. No config file, no cache, no log. Re-running with the same flags + stdin produces byte-identical output (deterministic with `-s`). |
 | **Concurrency** | Safe to invoke from any number of pipelines simultaneously. No shared state, no lockfile, no inter-process coordination. |
 

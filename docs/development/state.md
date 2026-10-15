@@ -5,6 +5,43 @@
 
 ## Version
 
+**1.4.1** — cut 2026-10-14. **Dependency refresh to every latest tag:
+cmdit 1.4.0 + agnostik 1.12.0, sakshi to the stdlib**, and the repairs the
+cmdit move called for.
+
+*Pins*: cmdit 1.2.4 → **1.4.0**; agnostik 1.6.0 → **1.12.0**; darshana
+**1.3.0** (already latest). **sakshi has no git pin**: `[deps.sakshi]`
+dropped and `sakshi` added to `[deps].stdlib`, so its version is the
+toolchain snapshot's — 2.5.8 under cyrius 6.7.9, the same bytes as before.
+cyrius stays **6.7.9**: every latest dep tag pins it, 6.7.10 carries nothing
+anuenue needs, and 6.7.11 (sakshi 2.5.10, −60 144 B) is untagged — roadmap
+v1.4.2. `lib/` re-vendored from scratch; `dist/anuenue.deps` gone (agnostik
+1.12.0's sidecar now names the `boxed` cyrius used to credit to anuenue).
+
+*cmdit 1.4.0 made four argv states visible that 1.2.4 parsed clean at exit 0*,
+each reproduced on the v1.4.0 binary first: `--bool=value` stored ON whatever
+the value (`--no-color=0` disabled colour); a command line over 2 MiB parsed as
+its prefix (a trailing `--seed 99` vanished); `--nofile=3` dropped every flag
+(architecture 006's hazard); positionals past 128 vanished. Now a usage error
+(exit 2), a runtime failure (exit 1) twice, and all 200 rendered.
+`src/main.cyr`'s parse-error switch routes NOMEM / ARGV through
+`anuenue_fail` and names UNEXPECTED_VALUE; the chain became a flat lookup.
+NOMEM (cmdit_new's OOM) is ⚠ **unproven** — the first alloc chunk always holds
+the handle, so no external limit reaches it.
+
+*Found in passing*: `fuzz/flag-parser.fcyr`'s `solo_tokens[44]` held 88 bytes
+(a stack overrun in the harness), and its flag set had stopped at v0.7.0. Both
+fixed. Measured and filed, not fixed: every `anuenue_fail` line ends in a blank
+line (roadmap v1.4.3; on v1.4.0 too).
+
+stdout byte-identical to v1.4.0 for every input v1.4.0 handled correctly (138
+comparisons + goldens; `--help` and seven error paths identical on stderr).
+**410/410** unit assertions (was 402), robustness **29** checks (was 21), fuzz
+**1 450 668**, `cyrius audit` clean on all five stages, perf flat (46.74
+ns/byte truecolor ascii no-LF, +0.1%). Binary 210 696 → **222 520 B** (see
+[Binary](#binary)). Roadmap reorganised forward-facing, every open item pinned
+1.4.2 → 1.6.0.
+
 **1.4.0** — cut 2026-10-12. **cyrius 6.7.9 + darshana 1.3.0**, and the
 items darshana's consumer survey filed in the roadmap. Audit delta
 [`2026-10-12-v140-delta.md`](../audit/2026-10-12-v140-delta.md): 1 LOW +
@@ -283,7 +320,7 @@ PTY would let terminal state be *read back*. It does not —
 `script(1)` transcribes bytes and does not emulate a terminal.
 
 **1.3.0** — cut 2026-08-25. The animation slot from
-[roadmap.md § v1.3.0](roadmap.md#v130--animation-slot).
+the v1.3.0 roadmap (now in [CHANGELOG § 1.3.0](../../CHANGELOG.md#130--2026-08-25-animation-slot)).
 
 *Landed:* `-i` / `--interval <ms>` frame-interval override, and the
 re-measurement of the 2026-05-22 audit's INFO 8 + 9 — which turned out
@@ -480,7 +517,7 @@ scaffold. The public API contract (flag set, exit codes, capability
 surface, output shape) is frozen for the v1.x line.
 
 8 of 10 v1.0 acceptance criteria met at tag (see
-[roadmap.md § v1.0 acceptance scorecard](roadmap.md#v10-acceptance-scorecard)); **Dogfooded**
+[roadmap.md § v1.5.0](roadmap.md#v150--adoption) for the two still open); **Dogfooded**
 and **Downstream gate** are deferred to post-1.0 organic adoption.
 Both block on external consumer wiring — `agnoshi` MOTD pipeline
 composition or `iam`'s default login splash are the anticipated
@@ -729,7 +766,7 @@ It's the M5 ratchet — every minor cut from here forward re-runs
 it.
 
 Next slot is **v1.0.0 — GA tag** per
-[roadmap.md § Shipped](roadmap.md#shipped). Surface frozen at
+the pre-GA plan (now in [CHANGELOG](../../CHANGELOG.md)). Surface frozen at
 v0.8.0; capability baseline recorded by the M8 audit;
 documentation set complete. The remaining v1.0 acceptance items
 (*Dogfooded* + *Downstream gate*) need at least one external
@@ -741,9 +778,9 @@ in for a minor-cycle soak window. Tagged on user signal per
 
 - **Cyrius pin**: `6.7.9` (in `cyrius.cyml [package].cyrius`). History: `6.0.1` (scaffold → v1.0.0) → `6.0.56` (v1.1.0, agnos target) → `6.1.14` (v1.1.2) → `6.2.24` (v1.1.3) → `6.2.44` (v1.1.5) → `6.4.62` (v1.2.0) → `6.5.35` (v1.2.1) → `6.6.2` (v1.3.6) → `6.7.9` (v1.4.0).
 - **Re-vendoring `lib/` at a pin bump**: `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps` (v1.4.0). The `rm` is what drops files the new snapshot no longer ships — `lib sync` alone only adds and overwrites — and the lock is regenerated because it goes stale the moment the pin moves. Then `cyrius distlib --all`.
-- Pin-lag spectrum: darshana 1.3.0 (current) / cmdit 1.2.4 / sakshi 2.5.8 (= the 6.7.9 snapshot's) / agnostik 1.6.0 as of v1.4.0. Re-evaluate at each minor cut; sandhi-bump if a dep ships an upgrade we want. agnostik ≥ 1.6.3 removes the aarch64 `raw syscall 318` warning (not an anuenue target; not bumped).
-- **Tags are what builds (cyrius ≥ 6.7.6).** A `path` beside `git` + `tag` is a dev override read only under `CYRIUS_LOCAL=1` / `--local`; a default `cyrius deps` resolves the tag and checks its commit pin in `cyrius.lock`. Before 6.7.6 the `path` won — that is how the never-committed 2026-09-26 `lib/` came to hold darshana 1.1.2 under `tag = "1.1.1"`. darshana's `path` was removed at v1.4.0; cmdit / sakshi / agnostik keep theirs as overrides. When changing a tag, still `rm cyrius.lock && cyrius deps` and re-check the bundle's `# Version:` header.
-- **`CYRIUS_DCE=1` shrinks the binary again on x86_64.** 6.5.35 NOPed unreachable functions in place, so DCE and non-DCE builds were the same size; by 6.6.2 the x86_64 build compacts them out again. Measured at v1.4.0: 898 824 B without, **210 696 B** with. (aarch64 still NOPs in place — "compaction declined on aarch64 ELF".)
+- Pin-lag spectrum as of v1.4.1: darshana 1.3.0 / cmdit 1.4.0 / agnostik 1.12.0 — all three the latest tag. sakshi is a stdlib module (2.5.8, the 6.7.9 snapshot's) and lags only as far as the toolchain does: 6.7.10 ships 2.5.9 (cx support, native byte-identical), 6.7.11 ships 2.5.10. The toolchain itself lags one tag (6.7.10 released 2026-10-13); roadmap v1.4.2 takes 6.7.11 instead. Re-evaluate at each minor cut.
+- **Tags are what builds (cyrius ≥ 6.7.6).** A `path` beside `git` + `tag` is a dev override read only under `CYRIUS_LOCAL=1` / `--local`; a default `cyrius deps` resolves the tag and checks its commit pin in `cyrius.lock`. Before 6.7.6 the `path` won — that is how the never-committed 2026-09-26 `lib/` came to hold darshana 1.1.2 under `tag = "1.1.1"`. darshana's `path` was removed at v1.4.0; cmdit / agnostik keep theirs as overrides, and sakshi has no git entry at all from v1.4.1. When changing a tag, still `rm cyrius.lock && cyrius deps` and re-check the bundle's `# Version:` header.
+- **`CYRIUS_DCE=1` shrinks the binary again on x86_64.** 6.5.35 NOPed unreachable functions in place, so DCE and non-DCE builds were the same size; by 6.6.2 the x86_64 build compacts them out again. Measured at v1.4.1: 980 280 B without, **222 520 B** with (v1.4.0: 898 824 / 210 696). (aarch64 still NOPs in place — "compaction declined on aarch64 ELF".)
 
 ## Source
 
@@ -753,7 +790,7 @@ in for a minor-cycle soak window. Tagged on user signal per
 | `src/color.cyr` | ~330 | **NEW at M6 (v0.7.0)**. Color mode enum (`ANUENUE_COLOR_MONO`/`_16`/`_256`/`_TRUE`); override-string parser + enum mapping (`_color_override_from_str` / `_color_mode_from_override`); RGB quantization (`_channel_to_6`, `_rgb_to_256` xterm cube; `_rgb_to_16` bright-palette); `anuenue_detect_color_mode(no_color, force_color, override)` reading getenv + darshana 0.5.3's `tty_isatty`; `anuenue_passthrough()` MONO bypass (read/write loop, no escapes). Sandhi closeout at v0.7.1 removed the three `_*_compat` stand-ins. **v1.2.1** adds the `AnuenueColorReason` enum + `ANUENUE_COLOR_REASON` + `anuenue_color_reason_name` / `anuenue_color_mode_name`: all ten exits of `anuenue_detect_color_mode` now record which branch fired, so `-v` can answer *why* a mode was chosen. `anuenue_passthrough`'s failure paths route through `anuenue_fail`. |
 | `src/filter.cyr` | ~845 | `ANUENUE_*` constants + **`ANUENUE_ESC_TABLE_ENTRY_SIZE`** (M5). `hsv_rainbow` + `ANUENUE_PHASE_MOD` extracted at v0.9.0 — now live in `src/hsv.cyr`. M3: `utf8_seq_len` / `utf8_decode` / `cp_is_extending` (M5: binary-searched LUT) / `cp_is_regional_indicator`. M5: `_phase_esc_init()` / `_emit_phase_esc()` / `_PHASE_ESC_TABLE` (1 530 × 32 B heap; idempotent). **M6 (v0.7.0)**: `_phase_esc_init` branches on `ANUENUE_COLOR_MODE` to populate per-mode escapes (TRUECOLOR via `tty_fg_rgb_buf`, 256 via `tty_fg_256_buf`, 16 via `tty_sgr_buf`). `anuenue_filter()` keeps the M5 hot path; ASCII short-circuit unchanged. **Unaffected by the M8 audit fix** — writes one codepoint per iteration with the reserve check between, so the long-cluster overrun doesn't reach the filter path. **v1.4.0**: the phase-cached escape table re-measured and kept (deleting it: −15% truecolor, +33% 256, +42% 16); comments citing darshana's deleted `_ansi_emit_u8` and a "≈ 10 ns" table cost replaced with the measurement. |
 | `src/animate.cyr` | ~715 | M4 surface (animation: slurp + pretag + frame loop + signalfd). **v1.4.0**: the exit signalfd is darshana's — `_open_exit_signalfd` = `tty_open_signalfd(TTY_SIGMASK_EXIT)` + stdlib `fd_set_nonblocking`, `_signal_pending` = `tty_read_signal`, and the new `_close_exit_signalfd` (drain, then `tty_close_signalfd` of only the bits the open added — `_ANUENUE_SIG_ADDED`) is the last step of every exit from the frame loop. `ANUENUE_SFD_NONBLOCK` removed. M5: ASCII short-circuit in `_pretag_clusters`; `_render_frame` routes through `_emit_phase_esc`; `_phase_esc_init` shared with filter. M6: animation benefits from per-mode escapes via the same path; MONO never reaches animation (main.cyr dispatches to passthrough first). **M8 (v0.8.0) fix**: `_render_frame`'s cluster-bytes copy loop got an inline mid-cluster flush guard — when the reserve threshold trips before all cluster bytes are written, flush + re-emit the same `phase` escape so the next bytes render under the same colour. Closes the long-cluster heap overflow surfaced by the audit. |
-| `src/main.cyr` | ~350 | Entrypoint + flag dispatch. args_init / alloc_init / flags context (M6 added `-n` / `-C` / `-c` to the M2/M4 sets) / argv pack / flags_parse / **M6 colour-mode detect step writes `ANUENUE_COLOR_MODE`**; dispatch to print_version / print_usage / **anuenue_passthrough (MONO) or anuenue_animate (-a) or anuenue_filter**. |
+| `src/main.cyr` | ~370 | Entrypoint + flag dispatch. args_init / alloc_init / flags context (M6 added `-n` / `-C` / `-c` to the M2/M4 sets) / argv pack / flags_parse / **M6 colour-mode detect step writes `ANUENUE_COLOR_MODE`**; dispatch to print_version / print_usage / **anuenue_passthrough (MONO) or anuenue_animate (-a) or anuenue_filter**. **v1.4.1**: the parse-error switch is a flat lookup; cmdit 1.4.0's `NOMEM` / `ARGV` route through `anuenue_fail` as runtime failures (exit 1, no usage), `UNEXPECTED_VALUE` gets its own usage line. |
 | `src/observe.cyr` | ~460 | **NEW at v1.2.1.** The sakshi/agnostik wiring. Holds the `AnuenueExit` exit-code enum + `_eprint` (both moved from `main.cyr`), the `AnuenueLogParse` level scale and `anuenue_log_parse` / `_name`, `anuenue_observe_init` (pins sakshi to fd 2, sets the level, sets `ANUENUE_VERBOSE`), gated span wrappers, `anuenue_log_kv_str` / `_int` / `anuenue_log_version`, and `anuenue_fail` (agnostik kind → stderr line + sakshi record → exit code). **Depends on nothing from anuenue** — only sakshi, agnostik and the stdlib — which is why it is included *first* and every other module can call `anuenue_fail` without a cycle. The colour-reason codes live in `color.cyr` for the mirror-image reason. |
 | `src/version_str.cyr` | ~18 | **AUTO-GENERATED** by `scripts/version-bump.sh`. Holds `_VERSION_STR_ANUENUE` + `_VERSION_LEN_ANUENUE`. Never hand-edit; CI's Version consistency step asserts the literal matches `VERSION`. |
 | `src/test.cyr` | 15 | top-level test entry stub (referenced by `cyrius.cyml [build].test`). Actual tests live in `tests/anuenue.tcyr`. |
@@ -767,9 +804,28 @@ registry, post-v1.x).
 
 ## Binary
 
-- **Size (1.4.0)**: **210 696 bytes** (~206 KB), +6 384 B over v1.3.6's
-  **204 312 B**. Tracked every release; **not capped** — see the policy note.
-  Attributed by building each step on its own (all `CYRIUS_DCE=1`, x86_64):
+- **Size (1.4.1)**: **222 520 bytes** (~217 KB), +11 824 B over v1.4.0's
+  **210 696 B**. Tracked every release; **not capped** — see the policy note.
+  Attributed by building each step on its own (all `CYRIUS_DCE=1`, x86_64,
+  cyrius 6.7.9):
+
+  | Step | Binary | Δ |
+  |---|---:|---:|
+  | v1.4.0 (cmdit 1.2.4, agnostik 1.6.0, `[deps.sakshi]` 2.5.8) | 210 696 | — |
+  | cmdit → 1.4.0 | 219 936 | +9 240 |
+  | agnostik → 1.12.0 | 222 416 | +2 480 |
+  | sakshi → stdlib module (same 2.5.8 bytes) | 222 416 | 0 |
+  | anuenue: the parse-error switch | **222 520** | +104 |
+
+  cmdit is most of it — its bundle grew 1 638 → 2 800 lines across ten
+  releases (argv read once per process, positional and repeat arrays that
+  grow, the OOM guards). agnostik's bundle more than doubled (160 → 346 KB,
+  ~82 KB of it doc comments) but DCE keeps nearly all of that out. **Next
+  step down is queued**: sakshi 2.5.10's buffer fix measured −60 144 B in a
+  6.7.10 trial (223 872 → 163 728 B) and arrives with cyrius 6.7.11 —
+  roadmap v1.4.2.
+
+  v1.4.0's own attribution, against v1.3.6's **204 312 B**:
 
   | Step | Binary | Δ |
   |---|---:|---:|
@@ -811,25 +867,25 @@ registry, post-v1.x).
   was needed to produce them. If anuenue's *own* contribution ever
   grows sharply, that is the signal worth acting on, and it is visible
   in the per-step deltas without a global ceiling.
-- **Size history**: 1.4.0 = 210 696 B, 1.3.6 = 204 312 B, 1.3.5 = 814 488 B, 1.3.4 = 814 488 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 – 1.3.5 measure the whole binary (6.4.x / 6.5.x NOPed dead code in place — point 2 above); 1.3.6 onward are compacted again, so 1.3.6 / 1.4.0 compare with each other, not with the 1.2.x–1.3.5 rows.
+- **Size history**: 1.4.1 = 222 520 B, 1.4.0 = 210 696 B, 1.3.6 = 204 312 B, 1.3.5 = 814 488 B, 1.3.4 = 814 488 B, 1.3.3 = 814 480 B, 1.3.2 = 814 448 B, 1.3.1 = 814 448 B, 1.3.0 = 814 448 B, 1.2.2 = 809 984 B, 1.2.1 = 809 520 B, 1.2.0 = 389 648 B, 1.1.3 = 394 440 B, 1.0.0 = 351 200 B, 0.9.0 = 351 200 B, 0.8.0 = 351 200 B, 0.7.1 = 350 488 B, 0.7.0 = 349 832 B, 0.6.0 = 335 160 B, 0.5.0 = 334 120 B, 0.4.0 = 322 368 B, 0.3.0 = 317 216 B, 0.2.0 = 304 368 B. Figures up to 1.0.0 measured genuine DCE elimination; 1.2.0 – 1.3.5 measure the whole binary (6.4.x / 6.5.x NOPed dead code in place — point 2 above); 1.3.6 onward are compacted again, so 1.3.6 / 1.4.x compare with each other, not with the 1.2.x–1.3.5 rows.
 - **Output path**: `build/anuenue`
 
 ## Tests
 
 | File | Status |
 |------|--------|
-| `tests/anuenue.tcyr` | **402 assertions across 53 groups** at v1.4.0 (+18 / +1 group: the exit signalfd through darshana — CLOEXEC and O_NONBLOCK read back with `fcntl`, a real SIGINT reported and consumed, SIGINT + SIGTERM pending across the close, the mask restored, a pre-blocked SIGHUP left blocked; dropping the drain kills the test run, dropping `& ~prev` fails 3). v1.2.2 was **349 assertions across 46 groups** (v1.2.2: +41 across 4 groups, one per audit finding with a testable invariant — A-01 table init, A-02 clamp arithmetic incl. a pin that `i64::MAX * 1e9` really wraps, A-04 colour-value parsing incl. the BAD sentinel, A-05 cap behaviour incl. that the sentinel is the stop offset). v1.2.1 was **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
+| `tests/anuenue.tcyr` | **410 assertions across 54 groups** at v1.4.1 (+8 / +1 group: cmdit 1.4.0's parse failures as `src/main.cyr` routes them — `--no-color=0` is `UNEXPECTED_VALUE` and leaves the flag unset, the 0-handle contract the NOMEM branch rests on, and the three new codes' values). v1.4.0 was **402 across 53** (+18 / +1 group: the exit signalfd through darshana — CLOEXEC and O_NONBLOCK read back with `fcntl`, a real SIGINT reported and consumed, SIGINT + SIGTERM pending across the close, the mask restored, a pre-blocked SIGHUP left blocked; dropping the drain kills the test run, dropping `& ~prev` fails 3). v1.2.2 was **349 assertions across 46 groups** (v1.2.2: +41 across 4 groups, one per audit finding with a testable invariant — A-01 table init, A-02 clamp arithmetic incl. a pin that `i64::MAX * 1e9` really wraps, A-04 colour-value parsing incl. the BAD sentinel, A-05 cap behaviour incl. that the sentinel is the stop offset). v1.2.1 was **308 assertions across 42 groups** (v1.2.1: +66 across 7 new groups covering the sakshi/agnostik wiring — log-level parsing incl. case-sensitivity / empty string / null pointer, the parse-to-`SK_*` scale mapping, verbosity resolution, colour-reason recording, name-function totality, and the agnostik-kind → exit-code mapping). M1: smoke/HSV/geometry/constants (47). M2: flags (24 — was 27; the v1.1.4 `flags_*` → `cmdit_*` migration collapsed three separate parse-then-get checks into single return-code assertions, e.g. `flags_parse`+`flags_get_bool(f_help)` → one `cmdit_parse_argv(...) == CMDIT_HELP`). M3: utf8_seq_len/decode/cp_is_extending/cp_is_regional_indicator (30). M4: animate constants + _pretag_clusters + _count_lf_clusters + _input_ends_with_lf + -a/-d/-S flag parsing (42). M5: phase-cache idempotency, byte-identical round-trip, phase normalization, table layout (26). M6: mode enum + override parser + `_channel_to_6` bucket boundaries + `_rgb_to_256` canonical hues + `_rgb_to_16` bright-palette quantization + 256/16 escape framing + bounds rejection (69). **M8 (v0.8.0): "_pretag_clusters long-combiner chain" (4)** — A + 511 combiners → 1 cluster spanning 1023 bytes; locks the unbounded-cluster invariant the M8 audit fix relies on. End-to-end behaviour owned by golden + animate-smoke (+ M8 long-cluster section) + perf-bench. |
 | `tests/anuenue.bcyr` | **8 rows at v1.4.0**: the two M1 trend rows plus, per colour mode, `_emit_phase_esc` (the table) vs `hsv_rainbow` + the darshana composer — the comparison behind keeping the table (v1.4.0, loaded host: truecolor 43–45 vs 31–33 ns, 256 30–31 vs 37–38, 16 18 vs 24; `hsv_rainbow` 9, `tty_fg_rgb_buf` 23–28 at darshana 1.3.0, was 37 at 1.1.1). The "~10 ns/call" table figure below is not what the byte-copy loop costs (41–43 ns under cyrius 6.6.2). Previously: 2 micro-benchmarks. At v1.2.1: `hsv_rainbow` **8 ns/call**, `tty_fg_rgb_buf` **52 ns/call** — **not comparable to pre-v1.2.1 figures**: 6.5.35's `bench` harness measures and subtracts a timer floor (1.347 µs per clock read on the reference host) that the 6.4.62 harness did not. Pre-M5 the filter loop called both per cluster; M5+ uses `_emit_phase_esc` (~10 ns/call) instead. The micros still measure the table-build path. |
-| `fuzz/*.fcyr` (v0.9.0+) | **Six harnesses, 1 450 672 assertions per run at v1.4.0** (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `flag-value-parsers` 96 091, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. At v0.9.0: **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
+| `fuzz/*.fcyr` (v0.9.0+) | **Six harnesses, 1 450 668 assertions per run at v1.4.1** (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `flag-value-parsers` 96 091, `rgb-quantizers` 60 000, `flag-parser` 140), zero failures. v1.4.1's `flag-parser` change: the error-code invariant is a set check (every code must be one `src/main.cyr` names) rather than a range cmdit had outgrown; the flag set gained `-i` / `-v` / `--log-level`; a new group asserts every boolean given `=value` is `UNEXPECTED_VALUE`; and `solo_tokens[44]` (44 bytes holding 88) became `[112]`. v1.4.0 was 1 450 672 (`flag-parser` 144). At v0.9.0: **Five harnesses populated.** `flag-parser.fcyr` (M2), `utf8.fcyr` (M3), `pretag-clusters.fcyr` (M4), `emit-phase-esc.fcyr` (M5), `rgb-quantizers.fcyr` (M6). Each uses a Knuth-MMIX LCG for deterministic seed-driven exploration; each returns `assert_summary()` so failed invariants set a non-zero exit code. Combined: **1 354 581 assertions** as re-measured at v1.2.1 (`emit-phase-esc` 1 013 957, `utf8` 180 088, `pretag-clusters` 100 392, `rgb-quantizers` 60 000, `flag-parser` 144), zero failures. `cyrius fuzz` is the gate; runs in CI. Previous `tests/anuenue.fcyr` stub deleted (wrong path; `cyrius fuzz` looks at `fuzz/*.fcyr`). |
 | `tests/golden/*.out` | **Six fixtures**. M2/M3: `agnos-rainbow-s100` (238 B), `cjk-mixed-s0` (125 B), `combining-s0` (155 B), `zwj-flag-s0` (135 B). **M6: `agnos-rainbow-256-s100.out` (160 B), `agnos-rainbow-16-s100.out` (82 B)**. All six byte-identical across the M5/M6/M8 cuts — proves the mode-aware phase cache matches runtime exactly and that the M8 fix is local to the long-cluster path. Plus three MONO equivalence checks in golden-check.sh (`NO_COLOR=1 anuenue` / `--no-color` / `--color=none` all byte-identical to input). |
 | `scripts/animate-smoke.sh` | M4 (v0.5.0). Animation structural guard. M6: invokes with `--color=24bit` so the TTY-detection in M6 doesn't drop the test into MONO. **M8 (v0.8.0) extension**: long-cluster section runs the historical attack (base + 16 000 combining acutes), asserts clean exit and full byte preservation (~976 000 combiner bytes over 61 frames) through the mid-cluster flushes. **v0.9.0 extensions**: `--color=256` + `--color=16` per-mode sections — each asserts clean exit, non-empty output, full cursor lifecycle, and the per-mode SGR shape (CSI 38;5;Nm for 256, CSI 9[1-7]m for 16; explicit no-leak check that truecolor 38;2;… doesn't appear under `--color=256`). |
-| `scripts/robustness-check.sh` | **NEW at v1.2.2** (P-1 audit). Adversarial byte streams and adversarial argv against the real binary — the surfaces the unit suite and the seeded fuzz harnesses do not reach, and where four of the nine audit findings lived. Eleven checks: UTF-8 carry across the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1` — the property `carry_len` exists for, previously untested end to end); byte preservation under malformed UTF-8 (116 comparisons across overlong 2/3/4-byte forms, UTF-16 surrogates, >U+10FFFF, the 0xF5–0xFF range, lone continuations, EOF truncation, embedded NULs, all 256 byte values); every integer flag at both i64 extremes terminating with a documented exit code; and one process-level regression per finding. Runs in CI. |
+| `scripts/robustness-check.sh` | **NEW at v1.2.2** (P-1 audit). Adversarial byte streams and adversarial argv against the real binary — the surfaces the unit suite and the seeded fuzz harnesses do not reach, and where four of the nine audit findings lived. **29 checks at v1.4.1** (21 at v1.4.0; gate 7 added: four booleans given `=value`, 200 positionals, a 2.4 MB command line plus a 1.0 MB control, and `--nofile=3` — the argv states cmdit 1.2.4 parsed clean; all seven defect checks fail on the v1.4.0 binary). Eleven checks at v1.2.2: UTF-8 carry across the 4096-byte read boundary (52 comparisons, chunked vs `dd bs=1` — the property `carry_len` exists for, previously untested end to end); byte preservation under malformed UTF-8 (116 comparisons across overlong 2/3/4-byte forms, UTF-16 surrogates, >U+10FFFF, the 0xF5–0xFF range, lone continuations, EOF truncation, embedded NULs, all 256 byte values); every integer flag at both i64 extremes terminating with a documented exit code; and one process-level regression per finding. Runs in CI. |
 | `scripts/observe-check.sh` | **NEW at v1.2.1.** The observability gate, and the enforcement point for pipe-purity under diagnostics. Four gates: (1) stdout byte-identical across 144 corpus × colour-mode × verbosity combinations — the property a unit test cannot express, and the one that matters because a byte leaked onto fd 1 corrupts every pipeline `-v` is enabled in; (2) stderr empty in every default-verbosity run, including for wholly invalid UTF-8; (3) `-v` carries the fields a bug report needs (version, phase step, colour mode, colour **reason**, route, byte count) and never reports `reason=unset`; (4) the forced read failure (stdin closed → EBADF) prints the agnostik kind, logs `code=1010`, and still exits 1. Runs in CI. |
 | `scripts/signal-check.sh` | **NEW at v1.3.0**; **18 checks at v1.4.0** (was 12). The process signal mask across the exit signalfd's open and close (via `tests/probes/sigmask-probe.cyr`, `plain` and `preblocked` cases, normal and under `prlimit --nofile=3`), CLOEXEC / non-blocking on the fd, SIGTERM latency independent of `-i`, `-d` honoured at every `-i`, `-i` pacing and validation, and — v1.4.0 — two exit signals at once still exiting 0. |
 | `scripts/pty-check.sh` / `scripts/allocfail-check.sh` | **14** PTY checks (v1.3.1) and **15** allocation-failure probe checks (v1.3.4); unchanged at v1.4.0. |
 | `scripts/perf-bench.sh` | v1.4.0: `COLOR=256` / `COLOR=16` select the mode (default 24bit) — the table's value differs by mode, so a truecolor-only harness would have recommended deleting it. M5 (v0.6.0). End-to-end ASCII + UTF-8 per-byte overhead. M6: invokes with `--color=24bit` for the same reason. The M5 ratchet. Latest run at v1.2.1 (`RUNS=11`, idle host, final binary): ASCII no-LF **46.63 ns/byte**, ASCII w/ LFs **50.99**, UTF-8 mixed **41.77** — all under the 60 ns/byte cap. Measured head-to-head against a rebuilt v1.2.0 binary rather than against a historical figure. |
 
-Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring) → v1.2.2 **349** (+41, P-1 audit regressions) → v1.3.0 **364** (+15) → v1.3.3 **380** (+16) → v1.3.4 **384** (+4, E-03) → v1.4.0 **402** (+18: the darshana-signalfd group +19, the drain-cap pin +1, the two `ANUENUE_SFD_NONBLOCK` pins −2 with the constant).
+Assertion count history: M1 47 → M2 74 (+27) → M3 104 (+30) → M4 146 (+42) → M5 172 (+26) → M6 241 (+69) → M8 245 (+4) → v1.1.4 **242** (−3, cmdit migration) → v1.2.1 **308** (+66, observability wiring) → v1.2.2 **349** (+41, P-1 audit regressions) → v1.3.0 **364** (+15) → v1.3.3 **380** (+16) → v1.3.4 **384** (+4, E-03) → v1.4.0 **402** (+18: the darshana-signalfd group +19, the drain-cap pin +1, the two `ANUENUE_SFD_NONBLOCK` pins −2 with the constant) → v1.4.1 **410** (+8, cmdit 1.4.0's parse failures).
 
 ## Dependencies
 
@@ -838,9 +894,9 @@ Direct (declared in `cyrius.cyml`):
 | Dep | Tag | Role | Status |
 |-----|-----|------|--------|
 | `darshana` | **1.3.0** | ANSI escape generation + the animation exit-signal fd. Pin history: 0.5.1 (M1 truecolor `tty_fg_rgb_buf` / `tty_sgr_reset_buf`); 0.5.2 (M4 `tty_cursor_up(n)` / `tty_cursor_down(n)`); 0.5.3 (M6 sandhi closeout — `tty_isatty(fd)` / `tty_sgr_buf` / `tty_fg_256_buf`); 0.7.1 (v1.1.3 refresh); 0.9.0 (v1.1.x); 1.0.0 (v1.2.1 — the API freeze); 1.1.1 (v1.3.6); **1.3.0 (v1.4.0 — needs cyrius ≥ 6.7.2; `path` dropped)**. | Live. **Twelve symbols called**, all inside the frozen surface: filter path `tty_fg_rgb_buf` / `tty_fg_256_buf` / `tty_sgr_buf` / `tty_sgr_reset_buf`, colour detect `tty_isatty`, animation `tty_cursor_up` / `_hide` / `_show` / `tty_sgr_reset`, and from v1.4.0 the exit-signal lifecycle `tty_open_signalfd` / `tty_read_signal` / `tty_close_signalfd` (replacing a hand-rolled copy whose rollback unblocked the whole mask and whose fd lacked CLOEXEC). Evaluated and not used: `TTY_SIGMASK_PIPE`, `tty_sanitize_buf`, `tty_winsize_or`, `tty_sgr_list_buf`, `tty_bg_256_buf` — reasons in the [v1.4.0 audit delta](../audit/2026-10-12-v140-delta.md). |
-| `sakshi` | **2.5.8** | Errors / tracing / structured logging | **Wired at v1.2.1** (`src/observe.cyr`) — was a declared dep with zero call sites from M0 through v1.2.0. Uses `sakshi_set_output_fd` (pinned to fd 2), `sakshi_set_level` / `_get_level`, `sakshi_log_kv`, `sakshi_span_enter` / `_exit`, and the `SK_*` level enum. **Never** `sakshi_output_file` / `_udp` — those would breach the capability bound. Note `span_enter`/`_exit` are NOT level-gated inside sakshi, so anuenue routes them through gated wrappers. 2.5.8 at v1.4.0 because the cyrius 6.7.9 snapshot ships it (any other tag is a `./lib/ shadows version-pinned` build warning). |
-| `agnostik` | **1.6.0** | Shared Result / Error shapes | **Wired at v1.2.1** (`src/observe.cyr`) — same story. Uses `agnostik_err_new` / `_code` / `_print` and the `STIK_ERR_*` kind enum for the three real failure paths (stdin read, buffer alloc, escape-table alloc). Kind → exit code: `STIK_ERR_INVALID_ARGUMENT` → 2, everything else → 1. **Trap:** `agnostik_err_new(kind, message: Str)` needs a real `Str`; cyrius 6.5.35 does not coerce a literal in return-expression position, so `anuenue_fail` converts explicitly with `str_new`. |
-| `cmdit` | **1.2.4** | CLI / argument parsing (getopt-long; the stdlib `flags` parser productized + extended). Local sibling `../cmdit`. | **Adopted at v1.1.4** (the `flags` → cmdit migration; anuenue is cmdit's 2nd worked example after kii). `print_usage` uses `cmdit_help_flags` (the table-only renderer) to keep anuenue's custom help framing. **1.2.4 is the P-1 audit cut** — anuenue is exposed to none of its four findings (literal prog name to `cmdit_new`; never calls `cmdit_completions`), confirmed by a byte-identical CLI-surface diff. |
+| `sakshi` | **stdlib** (2.5.8 in cyrius 6.7.9) | Errors / tracing / structured logging | **A `[deps].stdlib` module from v1.4.1** — `[deps.sakshi]` dropped; the version is the toolchain snapshot's, so a `cyrius` bump is a sakshi bump (6.7.10 → 2.5.9, 6.7.11 → 2.5.10). **Wired at v1.2.1** (`src/observe.cyr`) — was a declared dep with zero call sites from M0 through v1.2.0. Uses `sakshi_set_output_fd` (pinned to fd 2), `sakshi_set_level` / `_get_level`, `sakshi_log_kv`, `sakshi_span_enter` / `_exit`, and the `SK_*` level enum. **Never** `sakshi_output_file` / `_udp` — those would breach the capability bound. Note `span_enter`/`_exit` are NOT level-gated inside sakshi, so anuenue routes them through gated wrappers. Pin history: 2.2.5 → 2.4.0 → 2.4.11 (v1.2.1) → 2.5.1 (v1.3.6) → 2.5.8 (v1.4.0, forced by the snapshot — any other tag was a `./lib/ shadows version-pinned` build warning, which is why v1.4.1 stopped pinning it). |
+| `agnostik` | **1.12.0** | Shared Result / Error shapes | **Wired at v1.2.1** (`src/observe.cyr`) — same story. Uses `agnostik_err_new` / `_code` / `_print` and the `STIK_ERR_*` kind enum for the three real failure paths (stdin read, buffer alloc, escape-table alloc). Kind → exit code: `STIK_ERR_INVALID_ARGUMENT` → 2, everything else → 1. **Trap:** `agnostik_err_new(kind, message: Str)` needs a real `Str`; cyrius 6.5.35 does not coerce a literal in return-expression position, so `anuenue_fail` converts explicitly with `str_new`. 1.6.0 → **1.12.0** at v1.4.1: nothing anuenue calls changed (bodies, `STIK_ERR_*` values, `CODE_IO` = 1010, the stderr line); 1.6.2 dropped the raw `syscall(318)`; 1.7.0 put private helpers under `_stik_`. |
+| `cmdit` | **1.4.0** | CLI / argument parsing (getopt-long; the stdlib `flags` parser productized + extended). Local sibling `../cmdit`. | **Adopted at v1.1.4** (the `flags` → cmdit migration; anuenue is cmdit's 2nd worked example after kii). `print_usage` uses `cmdit_help_flags` (the table-only renderer) to keep anuenue's custom help framing. **1.2.4 is the P-1 audit cut** — anuenue is exposed to none of its four findings (literal prog name to `cmdit_new`; never calls `cmdit_completions`), confirmed by a byte-identical CLI-surface diff. **1.4.0 at v1.4.1** (from 1.2.4): `cmdit_help_flags` byte-identical, but three codes became reachable — `UNEXPECTED_VALUE` (11, `--bool=value`), `NOMEM` (12, a 0 handle), `ARGV` (13, a command line not readable whole) — and positionals past 128 are kept. `src/main.cyr` names all three. |
 | Cyrius stdlib | n/a | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, **chrono (M4)** | Auto-resolved via `cyrius deps`. `args` added at M2; `flags` (added M2) **DROPPED at v1.1.4** when CLI parsing moved to `[deps.cmdit]`; `chrono` added at M4 for frame timing (`sleep_ms`) and deadline math (`clock_now_ns`). |
 
 No pre-release / pre-1.0 deps on the critical path. No external (non-AGNOS) deps.
@@ -900,13 +956,12 @@ re-learning.
 
 ## Next
 
-**Nothing is slotted.** The one measured, actionable item is the escape-table
-copy: a three-word copy of a table entry measured 9–10 ns against 18–45 ns for
-the byte loop, in every colour mode — the largest per-byte win in view, but
-it writes past the escape's length, so it needs architecture 001's geometry
-argument re-made and `fuzz/emit-phase-esc.fcyr`'s "writes exactly elen bytes"
-invariant restated before it lands. See
-[roadmap.md § Next](roadmap.md#next--measured-not-yet-slotted). Everything else
-waits on a trigger anuenue cannot pull — see
-[§ v1.x](roadmap.md#v1x--later-minors), including the two v1.0 acceptance items
-that block on external consumer wiring.
+**v1.4.2 is next in line but waits on an upstream tag**: cyrius 6.7.11, which
+brings sakshi 2.5.10 through the snapshot (−60 144 B measured in a trial) and
+new cyrlint overrun rules. **v1.4.3 (stderr hygiene) and v1.4.4 (the
+escape-table word copy) are actionable now**; if either is ready first it ships
+first and the numbers swap. v1.4.5 closes the arc with the closeout pass and the
+P(-1) sweep of the surfaces no audit has examined. v1.5.0 (adoption — the two
+open v1.0 acceptance items) and v1.6.0 (the pipe-decorator family) are gated on
+things anuenue cannot do itself. Every item and its gate:
+[roadmap.md § Release map](roadmap.md#release-map).

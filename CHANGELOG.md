@@ -4,6 +4,172 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-10-14 (cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib)
+
+The dependency refresh to every first-party dep's latest tag, and the repairs
+the cmdit move called for. cmdit 1.2.4 → 1.4.0 changed what anuenue's parse can
+return, and **four input classes that 1.2.4 parsed clean now fail or behave
+differently** — each reproduced on the v1.4.0 binary before it was handled (see
+*Changed — behaviour*). The toolchain stays at **cyrius 6.7.9**: every latest
+dep tag pins 6.7.9; 6.7.10, the latest tag, brings nothing anuenue needs; and the
+release worth taking, 6.7.11, is not tagged yet. It is
+[roadmap v1.4.2](docs/development/roadmap.md#v142--cyrius-6711--sakshi-2510-through-the-snapshot).
+
+**stdout is byte-identical to v1.4.0** for every input v1.4.0 handled
+correctly: 138 stdout + exit-code comparisons (7 corpora × 18 flag sets,
+positional text in four modes), the six goldens, and `--help` / `-h` plus seven
+usage and validation errors byte-identical on stderr as well.
+
+### Changed — dependency pins
+
+- **cmdit 1.2.4 → 1.4.0** (`bac07a5`). `cmdit_help_flags` output is
+  byte-identical; nothing else anuenue calls changed signature. The bundle's
+  `.deps` shrank to `args, alloc, string, io`, all already declared.
+- **agnostik 1.6.0 → 1.12.0** (`f03f086`). No change to anything anuenue calls:
+  the `agnostik_err_new` / `_code` / `_print` bodies, the `STIK_ERR_*` values
+  (`CODE_IO` is still 1010, which `observe-check.sh` greps), and the
+  `<kind name>[: <msg>]` stderr line are all as at 1.6.0. 1.6.2 replaced the raw
+  `syscall(318, …)` behind the aarch64 build warning the roadmap carried as
+  upstream; 1.7.0 put every private helper under `_stik_`, so no vendored name
+  can silently replace one of agnostik's (zero collisions with anuenue's names
+  either way, checked across all 1 568 top-level names).
+- **sakshi: `[deps.sakshi]` dropped; sakshi is a `[deps].stdlib` module.** The
+  toolchain snapshot folds a sakshi release, and a git tag that disagreed with it
+  was a `./lib/ shadows version-pinned` warning on every build — so the pin could
+  only ever restate the snapshot's version (v1.4.0 had to move it 2.5.1 → 2.5.8
+  for exactly that reason). Now the `cyrius` pin is the single source of truth.
+  Same bytes: `lib/sakshi.cyr` is the 6.7.9 snapshot's 2.5.8, unchanged.
+- darshana 1.3.0 is already the latest tag.
+- `lib/` re-vendored from scratch (`rm -rf lib cyrius.lock && cyrius lib sync
+  --full && cyrius deps`); `cyrius.lock` now commit-pins three git deps, not four.
+- **`dist/anuenue.deps` is gone.** Its one leaf, `boxed`, was cyrius's
+  misattribution of agnostik's need to anuenue's bundle (`src/hsv.cyr` calls
+  nothing). agnostik 1.12.0's sidecar names `boxed` itself, so the verify now
+  credits it to agnostik and `dist/anuenue.cyr` has no requires block. The cyrius
+  bug is still open upstream; it simply no longer reaches this bundle.
+
+### Changed — behaviour (four inputs cmdit 1.2.4 parsed clean)
+
+All four were silent at exit 0 on v1.4.0. Each is now either refused loudly or
+honoured, and `scripts/robustness-check.sh` gate 7 asserts the new behaviour.
+
+- **A boolean given `=value` is a usage error.** cmdit 1.2.4 stored 1 and ignored
+  the value, so **`--no-color=0` disabled colour** — the opposite of what was
+  typed — and `--animate=1`, `--force-color=`, `--help=x` and `--version=x` all
+  parsed as the bare flag. Now exit **2**, nothing on stdout,
+  `anuenue: boolean flags take no value (use --flag, not --flag=value)` plus
+  usage. **Migration:** drop the `=value`. No documented form ever used one, and
+  the accepted meaning was the defect, so this ships in a patch — the precedent
+  is recorded in [roadmap § v2.0](docs/development/roadmap.md#v20--reserved).
+- **A command line over 2 MiB is a runtime failure.** stdlib `args_init` reads
+  `/proc/self/cmdline` once into a fixed 2 MiB buffer, and an unprivileged
+  `ulimit -s unlimited` raises ARG_MAX past it. v1.4.0 parsed the prefix: 24 ×
+  100 KB of text then `--seed 99` exited 0 having rendered 35 MB of positional
+  text and dropped `--seed 99`. Now exit **1**, `anuenue: i/o error: could not
+  read the full command line`, no usage dump — it is not something the user
+  typed wrong. The stdlib cut itself is filed upstream (cyrius,
+  2026-10-14).
+- **An unreadable command line is the same failure.** Under `prlimit
+  --nofile=3` `args_init` cannot open `/proc/self/cmdline` and `argc()` is 0.
+  v1.4.0 parsed that as an empty argv: `--color=none --log-level=debug` were both
+  dropped and the default path ran (the hazard
+  [architecture 006](docs/architecture/006-argv-costs-a-file-descriptor.md)
+  documented). Now exit 1 with the message above. 006 is updated.
+- **One-shot TEXT mode keeps every positional.** cmdit 1.2.4 stopped storing at
+  128 and reported nothing: `anuenue $(seq 1 200)` printed 1–128. 1.4.0 grows the
+  array; all 200 render.
+
+And one state that is new but unreachable from outside: **cmdit_new's OOM** is a
+0 handle, which 1.2.4 dereferenced and 1.4.0 fails closed on as
+`CMDIT_ERR_NOMEM`. anuenue reports it as `resource exhausted: out of memory
+parsing the command line` at exit 1. ⚠ **Unproven**: `alloc_init`'s first chunk
+always holds the handle (the 16 MiB small-board fallback included), and no
+`prlimit --as` value between "`alloc_init` fails" and "everything fits" exists
+to drive it. The 0-handle contract it rests on is pinned in the unit suite; a
+fault-injection probe is filed under
+[roadmap v1.4.5](docs/development/roadmap.md#v145--v14x-closeout--p-1-sweep).
+
+### Fixed — `src/main.cyr`'s parse-error switch
+
+- **NOMEM and ARGV** go through `anuenue_fail` as runtime failures (exit 1,
+  `STIK_ERR_RESOURCE_EXHAUSTED` / `STIK_ERR_IO`). With the dep bump alone, both
+  reached the generic `argument parse error` line plus usage at exit 2 (measured
+  for ARGV) — a usage error for a state the user did not cause.
+- **UNEXPECTED_VALUE** gets its own line, as BUNDLED does.
+- **The if/else chain is now a flat lookup.** It would have been five levels
+  deep; the codes are disjoint, so each is one `if`. The roadmap's "declined:
+  flatten the `} } } }` chains" entry now covers only `src/filter.cyr`'s.
+
+### Fixed — `fuzz/flag-parser.fcyr`
+
+- **A stack overrun in the harness.** `var solo_tokens[44]` is 44 **bytes** (a
+  local `var x[N]` is N bytes) under a comment reading "11 flags × 4 patterns",
+  and the code stored 11 eight-byte pointers into it — 44 bytes past the end. Now
+  `solo_tokens[112]` for 14 tokens. Harness-only; nothing shipped was affected.
+- **The flag set had stopped at v0.7.0** — no `-i` / `--interval`, `-v` /
+  `--verbose` or `--log-level`, though the header said it mirrored the live set.
+  Added, to both the random pool and the solo walk.
+- **The error-code invariant was a range check** (`NONE ..
+  TOO_MANY_POSITIONAL`) that cmdit's append-only taxonomy had already outgrown.
+  It is now a set check: every code that comes back must be one `src/main.cyr`
+  names. A new group asserts every boolean given `=value` — including the auto
+  `--help` / `--version` — is `UNEXPECTED_VALUE`.
+
+### Added — tests
+
+- **Unit** (402 → **410** assertions, 53 → **54** groups): `--no-color=0` is
+  `UNEXPECTED_VALUE` and leaves the flag unset; `cmdit_parse(0)` /
+  `cmdit_error(0)` are `RESULT_ERR` / `NOMEM` (the NOMEM branch's contract); the
+  three new codes' values, so a renumbering fails here before it misroutes.
+- **`scripts/robustness-check.sh` gate 7** (21 → **29** checks): four booleans
+  given a value, 200 positionals, a 2.4 MB command line (with a 1.0 MB control
+  that must still parse — skipped if the stack hard limit forbids raising it),
+  and `--nofile=3`. Against the v1.4.0 binary, all seven defect checks fail and
+  the control passes.
+- **Fuzz** 1 450 672 → **1 450 668** assertions: `flag-parser` 144 → 140 (the
+  range check's two asserts per call became one set check, −30; three more solo
+  flags, +6; ten booleans with values, +20).
+
+### Performance
+
+The per-cluster path is unchanged, so the ratchet measures the dep moves. A
+rebuilt v1.4.0 binary against v1.4.1, `RUNS=11`, three interleaved rounds per
+mode, medians:
+
+| ascii no-LF, ns/byte | v1.4.0 | v1.4.1 | Δ |
+|---|---:|---:|---:|
+| truecolor (M5 metric) | 46.68 | **46.74** | +0.1% |
+| 256 | 34.33 | **34.52** | +0.6% |
+| 16 | 23.22 | **23.56** | +1.5% |
+
+Flat — all nine corpus × mode rows are within ±2% with mixed signs; full table in
+[`docs/benchmarks.md`](docs/benchmarks.md) § v1.4.1.
+
+**Binary** 210 696 → **222 520 B** (+11 824): cmdit +9 240 (its bundle grew
+1 638 → 2 800 lines), agnostik +2 480, sakshi-as-stdlib 0, anuenue +104. Non-DCE
+980 280 B.
+
+### Docs
+
+- **[`roadmap.md`](docs/development/roadmap.md) is forward-facing only.** The
+  completed v1.3.0–v1.4.0 slots, the shipped index and the eight closed v1.0
+  scorecard items are removed — their history is this file. Every remaining item
+  is pinned to a release: v1.4.2 (cyrius 6.7.11 + sakshi 2.5.10 through the
+  snapshot, −60 144 B measured in a trial), v1.4.3 (stderr hygiene), v1.4.4 (the
+  escape-table word copy), v1.4.5 (the arc's closeout and P(-1) sweep), v1.5.0
+  (adoption), v1.6.0 (the pipe-decorator family), and one trigger-gated v1.x item.
+  Two items are new from this cut's measurements: every `anuenue_fail` line ends
+  in a blank line (`agnostik_err_print` already writes the newline; on v1.4.0
+  too), and parse-error lines could name the offending token via cmdit 1.3's
+  `cmdit_err_token`.
+- **Upstream items**: the agnostik aarch64 warning and the distlib `boxed`
+  credit are gone (above). cmdit's negate-MIN refusal is unchanged in 1.4.0 and
+  untracked upstream. Two are new: the stdlib `args_init` 2 MiB cut, and
+  darshana's `tty_winsize` undefined on non-Linux targets in `cyrius distlib`'s
+  verify (a warning, present at v1.4.0 too; none is an anuenue target).
+- `CLAUDE.md`'s dependency map gains the cmdit row it never had and records
+  sakshi as a stdlib module; README, both guides and architecture 006 updated.
+
 ## [1.4.0] — 2026-10-12 (cyrius 6.7.9 + darshana 1.3.0)
 
 The cyrius 6.7 language minor and darshana's 1.2.0 / 1.3.0 additions, plus the
@@ -903,7 +1069,7 @@ was reachable from a pipe; that one is not, and it is the only way to test three
 behaviours that need a controlling terminal — `tty_isatty` taking the branch a
 pipe never takes, cursor restore being *readable back* rather than inferred from
 bytes, and SIGINT arriving as a real terminal signal. See
-[`roadmap.md` § v1.3.1](docs/development/roadmap.md#v131--pty-backed-animation).
+[§ 1.3.1](#131--2026-08-25-pty-backed-animation), which shipped it.
 
 
 ## [1.2.2] — 2026-08-25 (P-1 audit sweep)

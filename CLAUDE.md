@@ -40,7 +40,7 @@ Project was scaffolded with `cyrius init anuenue` on 2026-05-21. **Do not manual
 ## Quick Start
 
 ```sh
-cyrius deps                              # resolve sibling deps (darshana, sakshi, agnostik)
+cyrius deps                              # resolve deps (darshana, cmdit, agnostik; sakshi is stdlib)
 cyrius build src/main.cyr build/anuenue  # build
 cyrius test                              # [build].test + tests/*.tcyr
 cyrius bench tests/anuenue.bcyr          # benchmarks
@@ -172,9 +172,10 @@ Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of
 | Dep | Role | Notes |
 |-----|------|-------|
 | `darshana` | ANSI color escape generation (24-bit / 256 / 16-color fallback paths) | Substrate. anuenue should NEVER emit raw `\x1b[...m` — always via darshana. |
-| `sakshi` | Errors / tracing / structured logging | Canonical per first-party-standards. No inline error types. Wired at v1.2.1 via `src/observe.cyr`. **stderr only** — never `sakshi_output_file` / `_udp`, which would breach the capability bound. See [ADR 0004](docs/adr/0004-stderr-only-observability.md). |
+| `cmdit` | CLI / argument parsing (getopt-long; the stdlib `flags` parser productized) | Adopted at v1.1.4. Its error taxonomy is append-only: when a bump adds a code anuenue's flag set can reach, `src/main.cyr`'s parse-error switch names it and `fuzz/flag-parser.fcyr`'s set check grows with it. |
+| `sakshi` | Errors / tracing / structured logging | Canonical per first-party-standards. No inline error types. Wired at v1.2.1 via `src/observe.cyr`. A **stdlib module** from v1.4.1 (in `[deps].stdlib`, no `[deps.sakshi]` git pin): its version is whatever the pinned toolchain's snapshot ships, so a `cyrius` bump is a sakshi bump. **stderr only** — never `sakshi_output_file` / `_udp`, which would breach the capability bound. See [ADR 0004](docs/adr/0004-stderr-only-observability.md). |
 | `agnostik` | Shared Result / Error type shapes | Used wherever sakshi APIs surface. Every anuenue failure path returns through `anuenue_fail(kind, msg)`; kind → exit code is `STIK_ERR_INVALID_ARGUMENT` → 2, everything else → 1. |
-| Cyrius stdlib | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, flags, chrono | Auto-resolved by `cyrius deps`. `args` + `flags` added at M2; `chrono` at M4 for `sleep_ms` + `clock_now_ns`. |
+| Cyrius stdlib | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, chrono, sakshi | Auto-resolved by `cyrius deps`. `args` added at M2 (`flags` too, dropped for cmdit at v1.1.4); `chrono` at M4 for `sleep_ms` + `clock_now_ns`; `sakshi` at v1.4.1. |
 
 HSV→RGB math is inline in `src/hsv.cyr` (~30 lines incl. phase-wrap + 6-sector branch table; no `abaco` dep needed). See [ADR 0002](docs/adr/0002-hsv-inline-not-abaco.md) for the design + post-v1.0 revisit triggers.
 

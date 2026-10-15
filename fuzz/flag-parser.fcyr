@@ -7,9 +7,14 @@
 # Invariants (carried over from the M8 audit § Finding 5, re-stated for cmdit):
 #   - cmdit_parse_argv never panics on any argv array
 #   - the result code is one of the four documented values
-#   - cmdit_error is a valid CmditErr (0 .. TOO_MANY_POSITIONAL); this harness only
-#     drives the NONE/UNKNOWN/MISSING_VALUE/BAD_INT/BUNDLED subset (no required/enum/
-#     range/verb/positional gates registered)
+#   - cmdit_error is one of the codes src/main.cyr names: NONE / UNKNOWN /
+#     MISSING_VALUE / BAD_INT / BUNDLED / UNEXPECTED_VALUE. Nothing else is
+#     reachable through cmdit_parse_argv with anuenue's flag set (no required /
+#     enum / range / verb / positional / once gates registered; NOMEM and ARGV come
+#     from the handle and the process argv, not from the tokens). v1.4.1 tightened
+#     this from a range check (0 .. TOO_MANY_POSITIONAL), which cmdit 1.4.0's
+#     append-only taxonomy had already outgrown — a code main.cyr does not name
+#     reaches only its generic "argument parse error" line.
 #   - a clean parse (OK/HELP/VERSION) → cmdit_error == NONE; a RESULT_ERR → error != NONE
 #   - cmdit_get_int/bool/str return defaults for unspecified flags
 #
@@ -18,7 +23,9 @@
 # do NOT return 0. The pool exercises those tokens, so "clean parse" means
 # "rc != CMDIT_RESULT_ERR", not "rc == 0".
 #
-# This harness mirrors the live anuenue flag set (the auto h/V + p/s/F/a/d/S/n/C/c)
+# This harness mirrors the live anuenue flag set (the auto h/V + p/s/F/a/d/S/i/n/C/c/v
+# + --log-level; -i / -v / --log-level added at v1.4.1, when the harness was found to
+# have stopped at the v0.7.0 set)
 # so each random argv has a realistic shape but mostly nonsense values.
 
 include "src/observe.cyr"
@@ -90,6 +97,16 @@ fn _build_token_pool(pool) {
     store64(pool + 37 * 8, "filename");
     store64(pool + 38 * 8, "hello world");
     store64(pool + 39 * 8, "AGNOS");
+    # v1.4.1 — a boolean given a value (cmdit 1.4.0: CMDIT_ERR_UNEXPECTED_VALUE;
+    # 1.2.4 parsed every one of these as ON), plus the flags the pool lacked.
+    store64(pool + 40 * 8, "--no-color=0");
+    store64(pool + 41 * 8, "--animate=");
+    store64(pool + 42 * 8, "--help=x");
+    store64(pool + 43 * 8, "--verbose=1");
+    store64(pool + 44 * 8, "-i");
+    store64(pool + 45 * 8, "-v");
+    store64(pool + 46 * 8, "--log-level=debug");
+    store64(pool + 47 * 8, "--interval=0");
     return 0;
 }
 
@@ -107,6 +124,9 @@ fn _build_anuenue_flagset() {
     cmdit_bool(fs, 110, "no-color",       "no-color");
     cmdit_bool(fs,  67, "force-color",    "force-color");
     cmdit_str (fs,  99, "color",       "auto", "color");
+    cmdit_int (fs, 105, "interval",   16, "interval");
+    cmdit_bool(fs, 118, "verbose",        "verbose");
+    cmdit_str (fs,   0, "log-level",   "off", "log-level");
     return fs;
 }
 
@@ -115,7 +135,7 @@ fn _build_anuenue_flagset() {
 # are documented values, (c) they agree.
 fn fuzz_random_argv(seed, n_tokens) {
     _fuzz_seed(seed);
-    var pool[320];                             # 40 tokens × 8 bytes
+    var pool[384];                             # 48 tokens × 8 bytes
     _build_token_pool(&pool);
 
     var fs = _build_anuenue_flagset();
@@ -127,7 +147,7 @@ fn fuzz_random_argv(seed, n_tokens) {
     if (capped > 31) { capped = 31; }
     var i = 0;
     while (i < capped) {
-        var idx = _fuzz_next() % 40;
+        var idx = _fuzz_next() % 48;
         store64(&argv + (i + 1) * 8, load64(&pool + idx * 8));
         i = i + 1;
     }
@@ -139,9 +159,15 @@ fn fuzz_random_argv(seed, n_tokens) {
     assert(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
       "cmdit_parse_argv returned an undocumented result code");
 
-    # Invariant 2: err is a valid CmditErr (NONE .. TOO_MANY_POSITIONAL).
-    assert(err >= 0, "cmdit_error below CMDIT_ERR_NONE");
-    assert(err <= CMDIT_ERR_TOO_MANY_POSITIONAL, "cmdit_error above the taxonomy max");
+    # Invariant 2: err is a code src/main.cyr names (see the header).
+    var named = 0;
+    if (err == CMDIT_ERR_NONE)             { named = 1; }
+    if (err == CMDIT_ERR_UNKNOWN)          { named = 1; }
+    if (err == CMDIT_ERR_MISSING_VALUE)    { named = 1; }
+    if (err == CMDIT_ERR_BAD_INT)          { named = 1; }
+    if (err == CMDIT_ERR_BUNDLED)          { named = 1; }
+    if (err == CMDIT_ERR_UNEXPECTED_VALUE) { named = 1; }
+    assert(named == 1, "cmdit_error is a code src/main.cyr does not name");
 
     # Invariant 3: rc and err agree — a clean parse (OK/HELP/VERSION) has err==NONE;
     # a RESULT_ERR has a non-NONE error.
@@ -171,9 +197,12 @@ fn fuzz_empty_argv() {
 # missing" regressions. Note -h/-V/--help/--version short-circuit to
 # CMDIT_HELP/CMDIT_VERSION — still a clean parse (not RESULT_ERR).
 fn fuzz_each_flag_alone() {
-    var solo_tokens[44];                       # 11 flags × 4 patterns
+    # v1.4.1: was `solo_tokens[44]` — 44 BYTES (a local `var x[N]` is N bytes)
+    # under a comment reading "11 flags × 4 patterns", holding 11 eight-byte
+    # pointers. Every store past byte 44 landed outside the array.
+    var solo_tokens[112];                      # 14 tokens × 8 bytes
     var i = 0;
-    while (i < 11) { store64(&solo_tokens + i * 8, 0); i = i + 1; }
+    while (i < 14) { store64(&solo_tokens + i * 8, 0); i = i + 1; }
 
     # Bool-only flags: just present
     store64(&solo_tokens +  0 * 8, "-h");
@@ -189,9 +218,13 @@ fn fuzz_each_flag_alone() {
     store64(&solo_tokens +  9 * 8, "--force-color");
     # String flag with valid value
     store64(&solo_tokens + 10 * 8, "--color=auto");
+    # v1.4.1 — the three flags the harness lacked
+    store64(&solo_tokens + 11 * 8, "-v");
+    store64(&solo_tokens + 12 * 8, "--verbose");
+    store64(&solo_tokens + 13 * 8, "--log-level=debug");
 
     var idx = 0;
-    while (idx < 11) {
+    while (idx < 14) {
         var fs = _build_anuenue_flagset();
         var argv[16];
         store64(&argv + 0, "anuenue");
@@ -204,8 +237,40 @@ fn fuzz_each_flag_alone() {
     return 0;
 }
 
-# Harness entry: seeded random argv at three sizes, then the empty argv
-# and each flag alone.
+# v1.4.1 — every boolean, short or long, given `=value` (including an empty
+# one) is UNEXPECTED_VALUE, not ON. cmdit 1.2.4 parsed all of these as the flag
+# set, so `--no-color=0` disabled colour: the opposite of what was typed. The
+# auto --help / --version are booleans too, so `--help=x` is an error, not help.
+fn fuzz_bool_with_value() {
+    var bv_tokens[80];                         # 10 tokens × 8 bytes
+    store64(&bv_tokens + 0 * 8, "--animate=1");
+    store64(&bv_tokens + 1 * 8, "--animate=");
+    store64(&bv_tokens + 2 * 8, "--no-color=0");
+    store64(&bv_tokens + 3 * 8, "--no-color=false");
+    store64(&bv_tokens + 4 * 8, "--force-color=yes");
+    store64(&bv_tokens + 5 * 8, "--verbose=0");
+    store64(&bv_tokens + 6 * 8, "--help=x");
+    store64(&bv_tokens + 7 * 8, "--version=1");
+    store64(&bv_tokens + 8 * 8, "--help=");
+    store64(&bv_tokens + 9 * 8, "--verbose=");
+
+    var bv_i = 0;
+    while (bv_i < 10) {
+        var bv_fs = _build_anuenue_flagset();
+        var bv_argv[16];
+        store64(&bv_argv + 0, "anuenue");
+        store64(&bv_argv + 8, load64(&bv_tokens + bv_i * 8));
+        assert(cmdit_parse_argv(bv_fs, 2, &bv_argv) == CMDIT_RESULT_ERR,
+          "a boolean given =value parsed clean");
+        assert(cmdit_error(bv_fs) == CMDIT_ERR_UNEXPECTED_VALUE,
+          "a boolean given =value is not UNEXPECTED_VALUE");
+        bv_i = bv_i + 1;
+    }
+    return 0;
+}
+
+# Harness entry: seeded random argv at three sizes, then the empty argv,
+# each flag alone, and every boolean given a value.
 # Returns assert_summary() so a broken invariant fails `cyrius fuzz`.
 fn main(): i64 {
     alloc_init();
@@ -220,6 +285,7 @@ fn main(): i64 {
     }
     fuzz_empty_argv();
     fuzz_each_flag_alone();
+    fuzz_bool_with_value();
     println("fuzz_flag_parser: argv-error-code contract held");
     return assert_summary();
 }

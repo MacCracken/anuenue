@@ -487,6 +487,41 @@ acceptance.
 - **1.4.0 binary**: **210 696 bytes**, +6 384 B over v1.3.6's 204 312 B — almost
   all of it the toolchain (+6 040 B); see [`state.md` § Binary](development/state.md#binary).
 
+## v1.4.1 — cmdit 1.4.0 + agnostik 1.12.0
+
+### Release ratchet — v1.4.0 vs v1.4.1
+
+Nothing on the per-cluster path changed — the source change is
+`src/main.cyr`'s parse-error switch, which runs once and only on a failed
+parse — so this measures the cmdit and agnostik moves. The v1.4.0 binary
+(rebuilt from its tag, 210 696 B, the size `state.md` records) against
+v1.4.1, `RUNS=11`, three interleaved rounds per mode, medians of the rounds,
+ns/byte. A quieter host than v1.4.0's (load average 1–3 across the rounds), which
+is why v1.4.0 reads ~2 ns/byte below its own row in the trend.
+
+| Mode | corpus | v1.4.0 | v1.4.1 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 46.68 | **46.74** | +0.1% |
+| | ascii w/ LFs | 50.88 | **51.03** | +0.3% |
+| | utf8 mixed | 41.86 | **41.48** | −0.9% |
+| 256 | ascii no-LF | 34.33 | **34.52** | +0.6% |
+| | ascii w/ LFs | 38.42 | **38.92** | +1.3% |
+| | utf8 mixed | 33.24 | **33.32** | +0.2% |
+| 16 | ascii no-LF | 23.22 | **23.56** | +1.5% |
+| | ascii w/ LFs | 27.90 | **28.17** | +1.0% |
+| | utf8 mixed | 26.40 | **25.87** | −2.0% |
+
+**Flat** — every row within ±2%, mixed signs, at a timer resolution of 1 ms
+on ~64 ms runs. Truecolor ascii no-LF is the M5 metric: 46.74 ns/byte.
+
+Micro (`tests/anuenue.bcyr`, same host): `hsv_rainbow` 8 ns, `tty_fg_rgb_buf`
+21 ns; table vs composer 39 / 27 (truecolor), 26 / 34 (256), 16 / 21 (16) —
+the v1.4.0 ordering, slightly faster on the quieter host.
+
+- **1.4.1 binary**: **222 520 bytes**, +11 824 B over v1.4.0: cmdit +9 240 B,
+  agnostik +2 480 B, sakshi-as-stdlib 0 B, anuenue +104 B; see
+  [`state.md` § Binary](development/state.md#binary).
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -512,7 +547,8 @@ acceptance.
 | v1.3.4  | 46.64‡              | 8§               | 51§                 | 814 488      | Allocation-failure probe; E-03 EPIPE fix |
 | v1.3.5  | 46.90‡              | 8§               | 51§                 | 814 488      | F-01: transient read errors are not failures |
 | v1.3.6  | 48.53‖              | 8§               | 37§                 | 204 312      | Toolchain 6.6.2 + dep refresh. Figures measured at v1.4.0 from a rebuilt v1.3.6 binary; binary compacted by 6.6.x DCE |
-| **v1.4.0** | **48.56**‖       | 9§               | 23§                 | **210 696**  | **cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept** |
+| v1.4.0  | 48.56‖              | 9§               | 23§                 | 210 696      | cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept |
+| **v1.4.1** | **46.74**¤       | 8§               | 21§                 | **222 520**  | **cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -531,6 +567,9 @@ comparable to the rows above.
 hosts — compare the ‖ pair to each other. Their `tty_fg_rgb_buf` figures are
 darshana 1.1.1 (37 ns) and 1.3.0 (23 ns), the composer speed-up darshana 1.2.0
 shipped; neither touches the per-cluster hot path.
+
+¤ v1.4.1 measured back-to-back with a rebuilt v1.4.0 on a quieter host (load
+1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

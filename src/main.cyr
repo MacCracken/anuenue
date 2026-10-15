@@ -178,17 +178,41 @@ fn main(): i64 {
         # error means we never got. Kept anyway so the call site is
         # correct if cmdit ever gains a pre-parse verbosity probe.
         anuenue_log_kv_int(SK_ERROR, "argument parse failed", "cmdit-err", err);
-        if (err == CMDIT_ERR_UNKNOWN) {
-            _eprint("anuenue: unknown flag\n");
-        } else { if (err == CMDIT_ERR_MISSING_VALUE) {
-                _eprint("anuenue: flag missing value\n");
-            } else { if (err == CMDIT_ERR_BAD_INT) {
-                    _eprint("anuenue: bad integer value\n");
-                } else { if (err == CMDIT_ERR_BUNDLED) {
-                        _eprint("anuenue: bundled short flags not supported (use -x -y, not -xy)\n");
-                    } else {
-                        _eprint("anuenue: argument parse error\n");
-                    } } } }
+
+        # cmdit 1.4.0 (v1.4.1): two parse failures are not something the user
+        # typed, so they are runtime failures (exit 1) with no usage dump.
+        #   NOMEM — cmdit_new's alloc failed and `fs` is 0. cmdit 1.2.4 crashed
+        #           on the 0 handle; 1.4.0 guards every entry point. Unproven:
+        #           alloc_init's first chunk always holds the handle, so no
+        #           external limit reaches it (prlimit --as finds no window).
+        #   ARGV  — the stdlib could not read the whole command line: over
+        #           2 MiB (reachable after `ulimit -s unlimited`) or no /proc.
+        #           cmdit 1.2.4 parsed the readable prefix and returned OK, so a
+        #           trailing flag was dropped silently at exit 0.
+        if (err == CMDIT_ERR_NOMEM) {
+            return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED,
+              "out of memory parsing the command line");
+        }
+        if (err == CMDIT_ERR_ARGV) {
+            return anuenue_fail(STIK_ERR_IO, "could not read the full command line");
+        }
+
+        # Everything else is a usage error. One flat lookup rather than a
+        # nested if/else chain: the codes are disjoint, and the chain had grown
+        # to five levels when cmdit 1.4.0 added UNEXPECTED_VALUE — `--bool=value`,
+        # which 1.2.4 parsed as ON whatever the value (`--no-color=0` disabled
+        # colour). Codes this flag set cannot produce keep the generic line.
+        var perr_msg = "anuenue: argument parse error\n";
+        if (err == CMDIT_ERR_UNKNOWN)          { perr_msg = "anuenue: unknown flag\n"; }
+        if (err == CMDIT_ERR_MISSING_VALUE)    { perr_msg = "anuenue: flag missing value\n"; }
+        if (err == CMDIT_ERR_BAD_INT)          { perr_msg = "anuenue: bad integer value\n"; }
+        if (err == CMDIT_ERR_BUNDLED) {
+            perr_msg = "anuenue: bundled short flags not supported (use -x -y, not -xy)\n";
+        }
+        if (err == CMDIT_ERR_UNEXPECTED_VALUE) {
+            perr_msg = "anuenue: boolean flags take no value (use --flag, not --flag=value)\n";
+        }
+        _eprint(perr_msg);
         print_usage(fs);
         return ANUENUE_EXIT_USAGE;
     }

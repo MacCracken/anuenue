@@ -2,16 +2,18 @@
 
 > **Sequencing, not status.** What ships next, in what order, against what
 > gates. Current-state numbers (version, size, counts, pins) live in
-> [`state.md`](state.md); per-cut narrative lives in
+> [`state.md`](state.md); per-cut narrative — including everything this file
+> used to index (M0–M8, the v1.0 scorecard, the v1.1–v1.4.0 slots) — lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md).
 >
 > Slot headings never carry status — a `> **Status:**` line sits under them
 > instead, so the anchors other documents link to stay stable as work lands.
 >
-> Reorganised at v1.2.2. The pre-GA milestone plan (M0–M8) is finished and
-> collapsed into [§ Shipped](#shipped); everything below the fold is forward
-> work only. **Every open item in this file traces to a specific deferral in the
-> code, an ADR, or an audit report** — if it isn't here, it isn't planned.
+> **Forward-facing only** (reorganised at v1.4.1). A slot leaves this file when
+> it ships. **Every open item traces to a deferral in the code, an ADR, an audit
+> report, or a measurement, and every one is pinned to a release.** A
+> trigger-gated item whose trigger has not fired by its cut moves to the next
+> slot, explicitly, at that cut — it does not silently stay put.
 
 ## What anuenue is
 
@@ -26,295 +28,194 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.0.** The v1.x public API contract — exit codes, output shape, capability
-surface — has been frozen since GA and is unbroken; the flag set has only ever
-grown. Five audits have run, all closed with zero HIGH+ open, and **no
-accepted-but-unmeasured findings remain on the books** — the 2026-05-22 audit's
-last two were re-measured at v1.3.0 (they were B-01) and closed for good at
-v1.4.0, when the exit signalfd moved onto darshana. v1.4.0 moved the toolchain
-to cyrius 6.7.9 and darshana to 1.3.0 and worked the darshana consumer survey;
-stdout is byte-identical to v1.3.6.
+**v1.4.1.** The v1.x contract — exit codes, output shape, capability surface —
+has been frozen since GA and is unbroken; the flag set has only ever grown. Zero
+HIGH+ findings open across five audits. The 1.4.x arc below is all actionable or
+one upstream tag away; the 1.5+ minors are gated on things anuenue cannot do
+itself (a consumer landing, a sibling filter appearing).
 
-The v1.0 acceptance scorecard closed **8 of 10** at GA. The two open items are
-adoption properties, not code, and are tracked in
-[§ Adoption](#adoption--blocked-on-external-consumers) below.
+## Release map
 
----
+| Release | Slot | Gate |
+|---------|------|------|
+| [v1.4.2](#v142--cyrius-6711--sakshi-2510-through-the-snapshot) | cyrius 6.7.11 — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
+| [v1.4.3](#v143--stderr-hygiene) | stderr hygiene | none — actionable |
+| [v1.4.4](#v144--escape-table-word-copy) | Escape-table word copy | none — actionable |
+| [v1.4.5](#v145--v14x-closeout--p-1-sweep) | v1.4.x closeout + P(-1) sweep | last patch before v1.5.0 |
+| [v1.5.0](#v150--adoption) | Adoption | a consumer integration lands |
+| [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family | a second pipe-decorator wants a rainbow |
+| [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
+| [v2.0](#v20--reserved) | Reserved | nothing queued |
 
-## v1.3.0 — Animation slot
-
-> **Status: complete.**
-
-Animation was picked because every open deferral clustered there — the least
-exercised path in the tree: the only code that touches signals, the only code
-with input caps, and the only code no test drives through a real terminal.
-
-That read paid off immediately. Adding one flag surfaced **three latent
-defects**, two of which could leave a terminal unkillable.
-
-| Item | Outcome |
-|------|---------|
-| **`-i` / `--interval <ms>`** | Shipped. Rejects non-positive (usage error), clamps above `ANUENUE_MAX_INTERVAL_MS` — see [architecture 005](../architecture/005-timing-primitives-truncate.md) for why that clamp is a correctness bound. |
-| **Re-measure audit INFO 8 + 9** | Done — and they were a **real defect**, not the accepted non-issue three audits recorded. See B-01. |
-| **Fuzz the two rejecting parsers** | `fuzz/flag-value-parsers.fcyr` — totality, one-byte-mutation exactness, name totality over arbitrary i64, and `parse(name(p)) == p` round-trip. **+96 091 assertions.** |
-| **Populate `docs/architecture/`** | Six notes, one per invariant the v1.2.2 audit and this slot had to discover. Index at [`docs/architecture/`](../architecture/README.md). |
-| ~~PTY-backed animation test~~ | **Moved to [v1.3.1](#v131--pty-backed-animation).** |
-
-**Found by doing the above** — three defects the `-i` flag exposed, all fixed
-in-slot, all covered by `scripts/signal-check.sh`:
-
-- **B-01 (MEDIUM)** — `_open_exit_signalfd` leaked its `SIG_BLOCK` when
-  `signalfd(2)` failed, leaving HUP/INT/TERM blocked with no fd to drain them:
-  Ctrl-C inert, `kill` inert, hangup inert, only SIGKILL working. The same
-  defect darshana fixed at v0.9.3; anuenue's hand-rolled copy predates it.
-  Mutation-proven via `tests/probes/sigmask-probe.cyr`.
-- **B-02 (MEDIUM)** — the frame loop slept a whole interval before checking for
-  signals. With `-i 3600000` the process ignored SIGTERM for an hour and
-  `timeout(1)` could not kill it. `_frame_wait` now slices at
-  `ANUENUE_TICK_MS`.
-- **B-03 (LOW)** — `--duration` overshot by up to one interval, same cause.
+The 1.4.x slots are ordered by readiness, not dependency. v1.4.2 waits on an
+upstream tag; if v1.4.3's work is ready first it ships first and the two swap
+numbers. The slot *names* are the stable anchors.
 
 ---
 
-## v1.3.1 — PTY-backed animation
+## v1.4.2 — cyrius 6.7.11 + sakshi 2.5.10 through the snapshot
 
-> **Status: complete.**
+> **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
+> the latest tag as of 2026-10-14).
 
-The one item carried out of the v1.3.0 slot, on its own because it is a
-different kind of work: everything else in v1.3.0 was reachable from a pipe,
-and this is not.
+From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
+nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
+taking for what the snapshot carries, not for the compiler:
 
-| Item | Outcome |
-|------|---------|
-| **Drive animation through a real pseudo-terminal** | Shipped as `scripts/pty-check.sh` — 14 checks via `script(1)`, CI-wired, skip-clean without `/dev/ptmx`. Covers seven exits of `anuenue_detect_color_mode` under a real TTY, MONO byte-exactness on a colour-capable terminal, cursor-lifecycle ordering, and SIGINT-during-animation. |
+| Toolchain | sakshi in its snapshot | What it changes for anuenue |
+|-----------|------------------------|-----------------------------|
+| 6.7.9 (current) | 2.5.8 | — |
+| 6.7.10 | 2.5.9 | cx-target support only; native output byte-identical. `str.cyr` gains three JSON helpers. **Nothing anuenue needs** — not worth a cut on its own. |
+| **6.7.11** | **2.5.10** | sakshi's four private buffers declared in bytes, not slots: **−60 144 B** of static data. Measured at v1.4.1 in a scratch trial (6.7.10 + a shadowing 2.5.10): 223 872 → **163 728 B**, about a quarter of the binary. |
 
-**Why it is worth its own cut.** Three behaviours are only reachable with a
-controlling terminal, and all three are animation's exit path:
+Work:
 
-1. **`tty_isatty` returns true**, so colour auto-detection takes the branch a
-   pipe never takes. Every existing animation test forces `--color=24bit` to
-   work around exactly this.
-2. **Cursor restore is checkable against the end of the stream**, and on the
-   path a terminal actually drives. `tty_cursor_hide` / `tty_cursor_show` and
-   the final `tty_sgr_reset` are asserted by ordering — show after hide, reset
-   before show — rather than by a grep count.
-   *(Corrected: an earlier draft of this entry said the terminal state itself
-   could be read back. It cannot — `script(1)` transcribes bytes, it does not
-   emulate a terminal, so there is no cursor-visibility to query. Reading real
-   terminal state back would need an emulator in the harness.)*
-3. **SIGINT arrives as a real terminal signal**, not a delivered one. The
-   signalfd path has now been tested for its *failure* mode (B-01) and its
-   *latency* (B-02); it has never been tested for the case it was written for.
+- `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps`, then
+  `cyrius distlib --all`. Confirm `lib/sakshi.cyr`'s `# Version:` reads 2.5.10.
+- **6.7.11 adds cyrlint rules for array overrun and write length.**
+  `scripts/lint-check.sh` lints `src/`, `tests/` and `fuzz/`, so expect them to
+  run over all three. v1.4.1 fixed one overrun of exactly that shape by hand
+  (`fuzz/flag-parser.fcyr`'s `solo_tokens[44]` holding 88 bytes); others may
+  surface.
+- **If cyrius fixes `args_init`'s 2 MiB cut**
+  (`docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`
+  upstream), `robustness-check.sh` gate 7's over-2 MiB check inverts: the command
+  line parses whole and `--seed 99` is honoured. Update the check to assert that.
+  The `--nofile=3` check is unaffected — no descriptor is no descriptor.
+- Gates: stdout identity against v1.4.1 across corpora × flags, every
+  `scripts/*-check.sh`, a size-attribution row in `state.md`.
 
-**Outcome**: no new defects. That is a meaningful result rather than a null one
-— the auto-detection chain had never been executed by any test, so "it was
-already correct" was an assumption until this cut, not a measurement. The
-harness skips clean without `script(1)` or `/dev/ptmx`, so a runner without a
-PTY warns rather than fails.
+## v1.4.3 — stderr hygiene
 
----
+> **Status:** actionable. Both items measured at v1.4.1; neither touches stdout
+> or an exit code.
 
-## v1.3.2 — v1.3.x closeout
+- **Every `anuenue_fail` line is followed by a blank line.**
+  `agnostik_err_print` already ends its line with `\n`, and `anuenue_fail`
+  writes another. Measured: `anuenue --log-level=bogus` stderr ends
+  `…debug trace\n\n`, on v1.4.0 and v1.4.1 alike, and the same holds for every
+  runtime and validation failure. Drop the second newline on the agnostik path
+  only — the `str_new`-OOM path prints the bare message and needs its own. Gate:
+  `observe-check.sh` asserts each failure ends in exactly one newline.
+- **Name the offending token in parse-error lines.** `anuenue: unknown flag`
+  does not say which. cmdit 1.3.x added `cmdit_err_token` / `cmdit_err_value`,
+  so the four usage lines in `src/main.cyr` can say `unknown flag: --bogus`
+  without anuenue re-tokenizing argv (which [ADR 0004](../adr/0004-stderr-only-observability.md)
+  declined). The token is attacker-controlled argv on its way to a terminal:
+  bound its length and write it through the same path as the rest of the line,
+  never as a format string.
 
-> **Status: complete.**
+## v1.4.4 — escape-table word copy
 
-No remaining roadmap item was actionable, so this cut discharged what the arc
-*owed* instead: two gates v1.3.0 stated and never executed.
+> **Status:** actionable. A measurement looking for a slot, not a defect.
 
-| Item | Outcome |
-|------|---------|
-| **Perf across the arc** | Never measured after `_frame_wait` restructured the animation loop; `docs/benchmarks.md` had no v1.3.x row. Now recorded head-to-head vs a rebuilt v1.2.2 binary — filter path 46.22 → **46.61 ns/byte**, animation CPU 5.0 → **5.1 ms**, both within noise. Slicing at a long interval costs nothing: total CPU *falls* at `-i 200` because fewer frames render. |
-| **Audit delta over the v1.3.x source** | [`2026-08-25-v13x-delta.md`](../audit/2026-08-25-v13x-delta.md) — 1 finding (D-01, INFO, fixed), zero HIGH+ open. Plus the full CLAUDE.md closeout sweep: capability surface, allocation guards, dead code, unused constants, stack buffers, deferral language, doc links. |
+`_emit_phase_esc` copies `elen` bytes one at a time: 39–45 ns per escape on
+truecolor, 26–30 on 256, 15–18 on 16 (`tests/anuenue.bcyr`, v1.4.0 / v1.4.1).
+Three `load64` / `store64` of the same 24-byte payload measured **9–10 ns in
+every mode** — by the micro-benchmark the largest single cost left on the
+per-cluster path. Not yet measured end to end; that is the first gate.
 
-**D-01** — `_frame_wait`'s termination depended on `ANUENUE_TICK_MS` being
-positive, an invariant held by a unit test rather than by the code. A zero tick
-would spin forever inside animation with the exit signals blocked. Guarded
-structurally; recorded as **unproven**, since no public API can reach it.
+The catch is the write footprint: a word copy writes past `elen`, up to 24 bytes
+from `pos`. That stays inside the line buffer only because every call site keeps
+`pos + ANUENUE_FLUSH_RESERVE ≤ ANUENUE_LINE_BUF` (32 ≥ 24) — an argument
+[architecture 001](../architecture/001-buffer-geometry.md) has to make
+explicitly before the code relies on it — and `fuzz/emit-phase-esc.fcyr`
+asserts "writes exactly `elen` bytes", which becomes "the bytes past `elen` are
+overwritten before any flush".
 
-**The lesson worth keeping**: a gate that is *stated* and not *executed* reads
-identically to one that passed. v1.3.0 was marked complete with its perf gate
-unrun. That is the same failure the v1.2.2 sweep found in the 2026-05-22 audit's
-accepted INFO items — a claim carried forward as if it were a measurement.
+Gates: `perf-bench.sh` in all three `COLOR=` modes, goldens, a stdout identity
+comparison against the previous binary across corpora × flags,
+robustness-check's 4096-boundary corpus, and the long-cluster animation smoke.
 
----
+**Decided in this slot:** whether `tests/anuenue.bcyr` gains a fixed input
+corpus (its own source comment: "once we have a fixed input corpus to bench").
+Today `scripts/perf-bench.sh` owns end-to-end measurement and the `.bcyr` file
+benches functions. The word copy is the first change whose gate wants both
+numbers side by side; adopt the corpus here, or move the item to
+[§ Explicitly declined](#explicitly-declined).
 
-## v1.3.3 — P(-1) audit sweep
+## v1.4.5 — v1.4.x closeout + P(-1) sweep
 
-> **Status: complete.**
+> **Status:** the last patch of the arc, cut before v1.5.0 — CLAUDE.md
+> § Closeout Pass, plus the audit cadence's minor-cut sweep, recorded as
+> `docs/audit/YYYY-MM-DD-v14x-delta.md` against the
+> [v1.4.0 delta](../audit/2026-10-12-v140-delta.md).
 
-Full sweep, [`2026-08-26-audit.md`](../audit/2026-08-26-audit.md). **1 HIGH +
-1 INFO, both fixed, zero HIGH+ open.**
+The sweep's surfaces, picked by the v1.3.3 method — *what has never been looked
+at*, not what worked last time:
 
-**E-01 (HIGH)** — every stdout write was unchecked. `> /dev/full` lost 100% of
-the output at exit 0; a non-blocking stdout with a slow reader lost 99.3%.
-Shipped in every release since v0.2.0.
+1. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
+   never resizes it, and `rows_to_climb` assumes the block fits on screen. The
+   highest-value unexamined surface since v1.3.3.
+2. **A stdin that never closes.** Both sides retry transient errors without an
+   attempt cap — correct backpressure, and what a blocking read does anyway — so
+   a writer that stalls forever hangs anuenue forever by design. Nothing tests
+   that it degrades the way the design says (blocked, not spinning).
+3. **The unproven branches.** Each is guarded and none is reachable from
+   outside, so each needs fault injection at a layer the existing probes lack:
+   - `D-01` — `_frame_wait`'s zero-tick guard (v1.3.2).
+   - `E-01` — `anuenue_write_all`'s zero-byte-write branch (v1.3.3).
+   - **EINTR** on the read and write paths (v1.3.5): anuenue installs no
+     handlers, and default-disposition signals do not interrupt a blocking
+     syscall. Reaching it needs a parent that execs anuenue with an inherited
+     handler.
+   - **NOMEM** in `src/main.cyr` (v1.4.1): cmdit_new's OOM. `alloc_init`'s
+     first chunk (16 MiB on the small-board fallback) always holds the handle,
+     so no `prlimit --as` value opens a window. The 0-handle contract it rests
+     on is pinned in `tests/anuenue.tcyr`.
 
-**The method note is the durable output of this cut.** Three prior audits missed
-E-01 because all three worked the *input* side — malformed UTF-8, chunk
-boundaries, argv extremes, signals, terminal detection. This sweep opened by
-asking what no audit had ever examined, and the answer was the output side.
-**Pick the audit surface by asking what has never been looked at, not by
-re-running what worked last time.**
-
-Unaudited surfaces remaining, in rough order of value — these are the candidates
-for the next sweep, not scheduled work:
-
-1. ~~**Allocation failure as a reachable state.**~~ **Done at v1.3.4** — see
-   above. Note what it did *not* cover: `D-01`'s zero-tick guard and `E-01`'s
-   zero-byte-write branch remain unproven, because neither is an allocation and
-   neither is reachable from outside. They need fault injection at a different
-   layer, not heap pressure.
-2. ~~**stdin as a failure surface.**~~ **Done at v1.3.5** — F-01. What it did
-   *not* settle: the EINTR branch on both sides remains unproven, because
-   anuenue installs no handlers and default-disposition signals do not interrupt
-   a blocking read or write. Reaching it needs a parent that execs anuenue with
-   an inherited handler — a harness shape neither probe currently has.
-3. **Animation under a constrained terminal.** `pty-check.sh` drives a PTY but
-   never resizes it; `rows_to_climb` assumes the block fits on screen. Now the
-   highest-value unexamined surface.
-4. **A stdin that never closes.** Both sides now retry transient errors without
-   an attempt cap, which is correct backpressure but means a writer that stalls
-   forever hangs anuenue forever. That is what a blocking read would do anyway,
-   so it is a deliberate property rather than a defect — but nothing tests that
-   it degrades the way the design says.
-
----
-
-## v1.3.4 — allocation-failure probe
-
-> **Status: complete.**
-
-The item the v1.3.3 sweep ranked first among unaudited surfaces. Three audits in
-a row had recorded guards they could not test — A-01 (v1.2.2), E-01 (v1.3.3),
-and the eight other guarded `alloc` call sites — because nothing could drive
-`alloc` to return 0 from outside the process.
-
-`tests/probes/allocfail-probe.cyr` + `scripts/allocfail-check.sh`: 15 checks
-against a genuinely exhausted heap under `prlimit --as=400MiB`, one chunk's
-headroom over `lib/alloc.cyr`'s 256 MiB `_LINUX_CHUNK`. CI-wired, skip-clean
-without `prlimit(1)`.
-
-**Mutation-proven, and more sharply than usual**: deleting either guard makes
-the probe **segfault**, not merely fail an assertion. The guards are the only
-thing between a starved process and a null-pointer write.
-
-Test infrastructure only — no source change, binary unchanged.
+The closeout's own steps — dead code, refactor, cleanup, security re-scan,
+downstream check, clean build — run as written in CLAUDE.md.
 
 ---
 
-## v1.3.5 — stdin failure surface
+## v1.5.0 — Adoption
 
-> **Status: complete.**
+> **Status:** gated on a consumer integration. The minor is cut when its first
+> item is ready; patches continue on 1.4.x until then.
 
-The mirror of E-01. Three audits had examined stdin exhaustively for *content*
-and never for *failure*, and it had the mirror defect: `file_read` is a bare
-`sys_read` and all three call sites classed any negative as fatal, so `EAGAIN`
-on a non-blocking stdin — "no data yet" — read as "broken stream".
-
-**F-01 (MEDIUM)**: 6 500 bytes fed through a non-blocking pipe rendered **64**,
-on every path, at exit 1. Fixed with `anuenue_read_some`, symmetric to
-`anuenue_write_all` — the two sides of a filter should not disagree about what
-counts as an error. Gate 6 in `robustness-check.sh`, mutation-proven.
-
-**A second pattern, about the gates rather than the code.** Twice in two cuts a
-local gate passed while CI failed, and both times because the local check was
-green *about something else* — E-03 ran a SIGPIPE disposition in which the code
-under test could not execute, and the lint gate used `cyrius audit`, whose lint
-section does not count untracked deferrals. The fix in both cases was to make
-local and CI the same implementation: `robustness-check.sh` now runs both
-SIGPIPE dispositions, and `scripts/lint-check.sh` is called by CI rather than
-duplicated in YAML. **A gate that is not literally the same code as CI's is a
-different gate.**
-
-**Pattern worth keeping.** E-01, E-03 and F-01 are one defect in three places:
-a syscall wrapper that does not distinguish *transient* from *fatal*, and call
-sites that treat every negative return the same way. anuenue now has exactly two
-places where that judgement lives — `anuenue_write_all` and `anuenue_read_some`
-— and they agree with each other by construction.
-
----
-
-## v1.4.0 — cyrius 6.7.9 + darshana 1.3.0
-
-> **Status: complete.**
-
-The toolchain and darshana moves, and every item darshana's consumer survey
-(2026-10-12) filed here. The survey's items were "confirmed by reading the
-source; not yet reproduced by running it" — each was reproduced on the v1.3.6
-code before it was fixed. Audit delta:
-[`2026-10-12-v140-delta.md`](../audit/2026-10-12-v140-delta.md).
-
-| Item | Outcome |
-|------|---------|
-| **darshana 1.3.0 needs cyrius ≥ 6.7.2** | cyrius 6.6.2 → **6.7.9**, `lib/` re-vendored from scratch; darshana 1.1.1 → **1.3.0**. sakshi 2.5.1 → 2.5.8 because the 6.7.9 snapshot ships 2.5.8 (anything else is a build warning). No language-bump repair was needed in anuenue's source; the move surfaced a stale `dist/`, stale `sleep_ms` docs (cyrius 6.6.20 fixed the truncation), and a `cyrius audit` failing fmt + docs since before the move — all fixed. |
-| **`[deps.darshana]` `path` beside the tag** | Dropped. Reproduced: the never-committed 2026-09-26 `lib/` held darshana 1.1.2 / cmdit 1.2.5 / agnostik 1.6.4 under tags 1.1.1 / 1.2.4 / 1.6.0. From cyrius 6.7.6 a `path` is only a `CYRIUS_LOCAL` override, so the tag builds either way. |
-| **`_open_exit_signalfd`: whole-mask rollback, no CLOEXEC** | Both reproduced (`hup_blocked=0`, `cloexec=0`) — **G-01 LOW**, **G-02 INFO**. Now darshana's `tty_open_signalfd` + the stdlib's `fd_set_nonblocking`, `tty_read_signal`, and a `tty_close_signalfd` teardown that runs last and gives back only what the open took (**G-03 INFO**, the 2026-05-22 audit's INFO 8 + 9). The close exposed a second-pending-signal hazard (exit 143), drained in-cut. signal-check 12 → 18 checks; unit +18 assertions. |
-| **Two stale comments about darshana** | `filter.cyr`'s `_ansi_emit_u8` claim and `color.cyr`'s "`tty_isatty` is Linux-only" rewritten — plus a third the re-measurement found: the "≈ 10 ns/call" table figure, which the byte loop does not achieve (41–43 ns under cyrius 6.6.2). |
-| **The escape table may cost more than it saves** | Re-measured in anuenue's harnesses (`anuenue.bcyr` gained the comparison, `perf-bench.sh` gained `COLOR=`). **Kept**: deleting it is −15% on truecolor, +33% on 256, +42% on 16. Its cost is the byte copy — see [§ Next](#next--measured-not-yet-slotted). |
-
-**Found by doing the above**: **G-04 INFO** — the `--interval` clamp warning gave
-the cyrius ≤ 6.6.19 truncation as its cause; reworded.
-
----
-
-## Next — measured, not yet slotted
-
-> **Status:** open. One item, and it is a measurement looking for a slot rather
-> than a defect.
-
-- **Copy the escape-table entry by words, not bytes.** `_emit_phase_esc` copies
-  `elen` bytes one at a time: 43–45 ns per escape on truecolor, 30 on 256, 18 on
-  16 (`tests/anuenue.bcyr`, v1.4.0). Three `load64` / `store64` of the same
-  24-byte payload measured **9–10 ns in every mode** — by the micro-benchmark the
-  largest single cost left on the per-cluster path. Not yet measured end to end;
-  that is the first gate. The catch is the write footprint: a word
-  copy writes past `elen`, up to 24 bytes from `pos`. That stays inside the line
-  buffer only because every call site already keeps `pos + ANUENUE_FLUSH_RESERVE
-  ≤ ANUENUE_LINE_BUF` (32 ≥ 24) — an argument
-  [architecture 001](../architecture/001-buffer-geometry.md) has to make
-  explicitly before the code relies on it — and `fuzz/emit-phase-esc.fcyr`
-  asserts "writes exactly `elen` bytes", which becomes "the bytes past `elen` are
-  overwritten before any flush". Gates: `perf-bench.sh` in all three `COLOR=`
-  modes, goldens, a stdout identity comparison against the previous binary
-  across corpora × flags (the method the v1.2.1 and v1.4.0 cuts used),
-  robustness-check's 4096-boundary corpus, and the long-cluster animation smoke.
-
----
-
-## v1.x — later minors
-
-**Nothing here is actionable, and that is the honest state of the project rather
-than a gap to fill.** Every item below is blocked on a trigger anuenue cannot
-pull itself — a consumer landing, a second pipe-decorator wanting HSV, someone
-hitting a cap. The one actionable item is in [§ Next](#next--measured-not-yet-slotted);
-there is no other slot open because there is no work that inventing one would
-contain.
-
-The next cut is therefore reactive: a bug a consumer finds, a dep bump worth
-taking, or the audit cadence at the next minor. If one of the triggers below
-fires, that item becomes the slot.
-
-### Adoption — blocked on external consumers
-
-The two v1.0 acceptance items still open. Neither is code anuenue can write.
+The two v1.0 acceptance items still open — eight of ten closed at GA. Neither is
+code anuenue can write; both close retroactively once an integration lands.
 
 - **Dogfooded** — `iam | anuenue` MOTD or `bnrmr | anuenue` banners running in a
   real AGNOS pipeline for at least one minor-cycle window.
 - **Downstream gate** — at least one consumer green against v1.x (`agnoshi`
-  MOTD chain or `iam`'s default login chain anticipated).
+  MOTD chain or `iam`'s default login chain anticipated). Listed in
+  [`state.md` § Consumers](state.md#consumers) once real.
 
-Both close as retroactive acceptance once an integration lands. The v1.0
-*contract* is what makes adoption tractable; shipping it was the deliverable,
-and adoption is not a property the project can satisfy unilaterally.
+Additive surface an integration asks for lands here. One candidate is on file:
 
-### Waiting for a second data point
+- **`-vvv` repeat-count verbosity** — trigger: a consumer asks.
+  `--log-level=trace` is self-documenting in a script and greppable in shell
+  history; `-v` covers the interactive case. cmdit supports repeat counts, so
+  the cost is low if the ask arrives.
+  ([ADR 0004 § Alternatives](../adr/0004-stderr-only-observability.md))
 
-| Item | Trigger that unblocks it | Source |
-|------|--------------------------|--------|
-| **Extract the HSV model to a shared crate** (or pull `abaco`) | A second pipe-decorator wants its own rainbow tint. Until then the inline copy is free. | [ADR 0002 § Revisit triggers](../adr/0002-hsv-inline-not-abaco.md) |
-| **`-vvv` repeat-count verbosity** | A consumer asks. `--log-level=trace` is self-documenting in a script and greppable in shell history; `-v` covers the interactive case. cmdit supports repeat counts, so the cost is low if the ask arrives. | [ADR 0004 § Alternatives](../adr/0004-stderr-only-observability.md) |
-| **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. Needs a real use case before trading either away. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
-| **Fixed input corpus for `tests/anuenue.bcyr`** | Wanting end-to-end numbers *inside* the bench harness. Today `scripts/perf-bench.sh` owns end-to-end measurement and the `.bcyr` file benches two functions. The split works; this only matters if the shell harness becomes the bottleneck. | `tests/anuenue.bcyr` — "once we have a fixed input corpus to bench" |
+## v1.6.0 — Pipe-decorator family
+
+> **Status:** gated on a second pipe-decorator wanting a rainbow tint.
+
+- **Extract the HSV phase model to a shared crate** (or pull `abaco`). Until a
+  second consumer exists the inline copy is free.
+  ([ADR 0002 § Revisit triggers](../adr/0002-hsv-inline-not-abaco.md)) The
+  seam already exists: `dist/anuenue.cyr` (v1.2.0) exports exactly
+  `src/hsv.cyr`, and thoth includes it in-process today.
+- The successors that would fire the trigger, idea-tier and uncommitted:
+  - `boxes`-equivalent — wrap stdin in ASCII borders
+  - `cowsay`-equivalent — ASCII speech bubble
+  - `pv`-equivalent — pipe-viewer with throughput indicator
+
+  They earn entries in
+  [shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)
+  when they become real.
+
+## v1.x — trigger-gated
+
+Pinned to the first minor after the trigger fires.
+
+| Item | Trigger | Source |
+|------|---------|--------|
+| **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. A behaviour change, so a minor. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
 
 ### Explicitly declined
 
@@ -335,27 +236,28 @@ Recorded so they are not re-raised as findings.
   preservation; `robustness-check.sh` asserts all 256 byte values pass through.
   Neutralising control bytes in stdin would break the contract it exists to
   keep.
-- **Flattening the remaining `} } } }` chains** in `src/main.cyr` and
-  `src/filter.cyr`. Both are genuine 4-way dispatches at ≤24 columns and both
-  pass `cyrius fmt`. `hsv_rainbow` was flattened at v1.2.2 because the formatter
-  cascaded it to 24 columns *and* it is a lookup table whose parallel alignment
-  carries meaning. These two are neither. ([2026-08-25 audit § Deferred](../audit/2026-08-25-audit.md))
+- **Flattening `src/filter.cyr`'s `} } } }` chain.** A genuine 4-way dispatch at
+  ≤24 columns that passes `cyrius fmt`. (`src/main.cyr`'s parse-error chain was
+  flattened at v1.4.1 because cmdit 1.4.0 pushed it to five levels; this one has
+  not grown.) ([2026-08-25 audit § Deferred](../audit/2026-08-25-audit.md))
 
 ### Upstream, not anuenue's to fix
 
-- **`-p -9223372036854775808` is rejected while `i64::MAX` is accepted.** cmdit's
-  integer parser refuses the most-negative i64 (the negate-MIN case). Rejecting
-  is the safe direction and the asymmetry is cmdit's to resolve. Recorded so the
-  next audit does not re-derive it.
-- **cyrius 6.7.9's `distlib` credits a named dep's need to the bundle.**
-  `dist/anuenue.deps` reads `boxed` though `src/hsv.cyr` calls nothing;
-  `cyrius distlib -v` shows `boxed recorded for 'tagged_new'` — agnostik's
-  bundle calls it, and agnostik's sidecar names `tagged` (which includes
-  `boxed`), so the verify does not count `boxed` as the dep's. Harmless (one extra
-  include for consumers of `dist/anuenue.cyr`) but wrong; cyrius's to fix.
-- **agnostik 1.6.0's raw `syscall(318, …)`** draws an aarch64 build warning
-  (pre-existing; agnostik ≥ 1.6.3 changes it). aarch64 is not an anuenue target,
-  so it is not a reason to bump.
+Re-checked at every bump of the dep named.
+
+- **cmdit: `-p -9223372036854775808` is rejected while `i64::MAX` is accepted.**
+  `_cmdit_parse_int` builds the positive magnitude and refuses the most-negative
+  i64 (the negate-MIN case). Unchanged in cmdit 1.4.0, and nothing upstream
+  tracks it — worth filing at cmdit. Rejecting is the safe direction.
+- **cyrius: `args_init` cuts the command line at 2 MiB** (one read of
+  `/proc/self/cmdline` into a fixed buffer). Filed upstream 2026-10-14. Since
+  v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
+  parsing a prefix; the fix is the stdlib's. See v1.4.2 for what changes here
+  when it lands.
+- **darshana: `cyrius distlib` reports `tty_winsize` undefined on
+  x86_64-windows / x86_64-macos / aarch64-macos.** A warning on every
+  `cyrius distlib` run, present at v1.4.0 too. None of those is an anuenue
+  target, and `dist/anuenue.cyr` exports only `src/hsv.cyr`.
 
 ---
 
@@ -369,6 +271,11 @@ changing the output byte shape for input that renders today; narrowing the
 capability surface a consumer depends on. Anything that only *adds* surface is a
 minor.
 
+**Precedent, v1.4.1:** rejecting input whose accepted meaning was the defect is
+a fix, not a break. cmdit 1.4.0 made `--no-color=0` a usage error; v1.4.0
+accepted it and turned colour *off* — the opposite of what was typed. No
+documented form ever put `=value` on a boolean.
+
 ---
 
 ## Ongoing cadence — not milestones
@@ -376,32 +283,26 @@ minor.
 These run every cut and never "complete".
 
 - **Audit cadence.** A P(-1) sweep at every minor cut, recorded as a delta vs the
-  previous report. Five have run: the
-  [v0.8.0 baseline](../audit/2026-05-22-audit.md), the
-  [v1.2.2 P-1 sweep](../audit/2026-08-25-audit.md), the
-  [v1.3.x delta](../audit/2026-08-25-v13x-delta.md), the
-  [v1.3.3 sweep](../audit/2026-08-26-audit.md) and the
-  [v1.4.0 delta](../audit/2026-10-12-v140-delta.md). The v1.2.2 lesson is now
-  policy: **an accepted INFO finding is a hypothesis about behaviour, not a
-  measurement of it** — re-measure accepted items rather than carrying the prior
-  description forward. That is why INFO 8 and 9 are scheduled work above and not
-  a footnote.
-- **Sandhi cadence.** darshana / cmdit / sakshi / agnostik bumps follow
-  proposal → swap → goldens-unchanged. Re-evaluate pin lag at each minor cut,
-  per [feedback_dep_lockin_sandhi_unlock](https://github.com/MacCracken/agnosticos/blob/main/.claude/projects/-home-macro-Repos-agnosticos/memory/feedback_dep_lockin_sandhi_unlock.md).
-  v1.2.1 is the cautionary reference: manifest tags had drifted from the
-  vendored bytes because a `path`-mode tag only binds when `cyrius.lock` agrees.
-  Invalidate the lock when changing a tag, and check the bundle's `# Version:`
-  header. (From cyrius 6.7.6 the tag builds by default and a `path` is only a
-  `CYRIUS_LOCAL` override; v1.4.0 dropped darshana's.)
-- **Binary size: track, do not cap.** The 512 KB cap was removed at v1.2.2 —
-  the number now measures the first-party dep surface far more than it measures
-  anuenue, and `CYRIUS_DCE=1` stopped removing anything on 6.5.x. Record the
-  size every release and attribute any step change. See
+  previous report — the next is [v1.4.5](#v145--v14x-closeout--p-1-sweep).
+  Five have run, latest the [v1.4.0 delta](../audit/2026-10-12-v140-delta.md).
+  Standing policy from v1.2.2: **an accepted INFO finding is a hypothesis about
+  behaviour, not a measurement of it** — re-measure accepted items rather than
+  carrying the prior description forward.
+- **Sandhi cadence.** darshana / cmdit / agnostik bumps follow proposal → swap →
+  goldens-unchanged. Re-evaluate pin lag at each minor cut, per
+  [feedback_dep_lockin_sandhi_unlock](https://github.com/MacCracken/agnosticos/blob/main/.claude/projects/-home-macro-Repos-agnosticos/memory/feedback_dep_lockin_sandhi_unlock.md).
+  Invalidate the lock when changing a tag (`rm cyrius.lock && cyrius deps`) and
+  check the bundle's `# Version:` header. **sakshi is not on this list** from
+  v1.4.1: it is a stdlib module and moves with the `cyrius` pin. A dep bump is
+  also a behaviour survey — v1.4.1's cmdit move made four input classes reachable
+  that 1.2.4 had parsed clean (the CHANGELOG has them).
+- **Binary size: track, do not cap.** Record the size every release and
+  attribute any step change, one change per row. See
   [`state.md` § Binary](state.md#binary).
 - **Perf ratchet.** `scripts/perf-bench.sh` at every cut, measured head-to-head
   against a rebuilt prior binary on one idle host rather than against a
-  historical figure. M5 acceptance: ASCII no-LF ≤ 60 ns/byte.
+  historical figure, in all three `COLOR=` modes. M5 acceptance: ASCII no-LF
+  ≤ 60 ns/byte.
 
 ---
 
@@ -428,57 +329,6 @@ them by accident.
 
 ---
 
-## Shipped
-
-Per-cut narrative in [`CHANGELOG.md`](../../CHANGELOG.md); this is the index.
-
-### v1.x
-
-| Cut | Slot | Headline |
-|-----|------|----------|
-| v1.2.2 | P(-1) audit sweep | 9 findings (2 MEDIUM, 5 LOW, 2 INFO), all fixed in-cut, zero HIGH+ open. Unchecked `alloc` → null write; `--duration` overflow inverting long animations to a one-frame exit; three silent-fallback defects. `scripts/robustness-check.sh` added (11 checks: UTF-8 carry across the read boundary, byte preservation under malformed input, argv at i64 extremes). **512 KB size cap removed.** 308 → 349 assertions. |
-| v1.2.1 | Toolchain + deps + observability + CI repair | cyrius `6.4.62` → `6.5.35`; darshana `1.0.0` (API freeze), cmdit `1.2.4`, sakshi `2.4.11`, agnostik `1.5.1`. **sakshi + agnostik wired** (`src/observe.cyr`) after being declared-but-uncalled since M0 — `-v` / `--log-level`, stderr-only, ADR 0004. CI's hand-rolled pre-6.5 toolchain install replaced with the upstream installer (it would have broken on the pin bump). 242 → 308 assertions. |
-| v1.2.0 | Library surface | `dist/anuenue.cyr` distlib — the pure HSV phase model becomes consumable in-process. First consumer: thoth's `/theme rainbow`. |
-| v1.1.5 | AGNOS colour fix | Rainbow collapsed to 16 colours on AGNOS (env heuristics on a platform that sets no env); agnos now defaults to truecolor. |
-| v1.1.4 | CLI parsing → cmdit | Dropped the stdlib `flags` parser for the cmdit distlib. Byte-compatible; anuenue is cmdit's second worked migration. |
-| v1.1.3 | Toolchain + dep refresh | cyrius `6.1.14` → `6.2.24` plus the first sandhi refresh after GA. |
-| **v1.0.0** | **GA** | Public API contract frozen for the v1.x line. 8 of 10 acceptance criteria met at tag. |
-
-### Pre-GA — M0 through v0.9.0
-
-Eleven releases across two calendar days (2026-05-21 / 2026-05-22).
-
-| Cut | Slot | Headline |
-|-----|------|----------|
-| v0.9.0 | Quality slot | `fuzz/` populated with 5 harnesses (1.35 M assertions, CI-gated). `animate-smoke.sh` extended to 256 / 16-colour. `src/hsv.cyr` split landed. |
-| v0.8.0 | M7 + M8 — Docs + Audit | Three ADRs, integration guide, 8 examples. Audit found and fixed one HIGH (`_render_frame` long-cluster heap overflow). |
-| v0.7.1 | Sandhi closeout | darshana 0.5.3 swap; stand-ins removed. |
-| v0.7.0 | M6 — Colour-mode negotiation | TRUECOLOR / 256 / 16 / MONO priority chain; `--no-color` / `--force-color` / `--color`. |
-| v0.6.0 | M5 — Performance pass | ASCII short-circuit, binary-searched `cp_is_extending` LUT, 1 530-entry phase-cached escape table. 91.6 → 47.0 ns/byte. |
-| v0.5.0 | M4 — Animation mode | `-a` / `-d` / `-S`; cluster pre-tag, 16 ms frame loop, non-blocking signalfd. |
-| v0.4.0 | M3 — UTF-8 grapheme awareness | Cycle by cluster, not byte. Practical-subset classifier + ZWJ + RI latches + chunk-boundary carry. |
-| v0.3.0 | M2 — Flag surface | `-h` / `-V` / `-p` / `-s` / `-F`; deterministic-seed golden harness. |
-| v0.2.0 | M1 — Minimum viable filter | stdin → stdout per-byte 24-bit rainbow. Pipe-pure: read + write + brk + exit. |
-| v0.1.0 | M0 — Scaffold | `cyrius init anuenue`; doc tree; deps pinned. |
-
-### v1.0 acceptance scorecard
-
-Eight of ten met at the GA tag. The two open items are in
-[§ Adoption](#adoption--blocked-on-external-consumers).
-
-- [x] Public CLI surface frozen — M7 / v0.8.0
-- [x] UTF-8 correct by default — M3 / v0.4.0, [ADR 0003](../adr/0003-grapheme-cluster-cycling.md)
-- [x] TTY-aware (`NO_COLOR`, stdout-not-a-TTY) — M6 / v0.7.0
-- [x] Colour-mode negotiation — M6 / v0.7.0
-- [x] Animation parity with `lolcat -a` — M4 / v0.5.0
-- [x] Per-character overhead measured — M5 / v0.6.0, `docs/benchmarks.md`
-- [x] Security audit pass — M8 / v0.8.0, re-run at v1.2.2
-- [x] CHANGELOG complete from v0.1.0 — maintained at every cut
-- [ ] **Dogfooded** in real AGNOS pipelines for one minor-cycle window
-- [ ] **Downstream gate** — at least one consumer green
-
----
-
 ## Dependency map
 
 Versions live in [`state.md` § Dependencies](state.md#dependencies); this is the
@@ -486,11 +336,11 @@ durable shape and the rationale.
 
 | Dep | Provides | Notes |
 |-----|----------|-------|
-| **darshana** | ANSI escape generation — `tty_fg_rgb_buf`, `tty_fg_256_buf`, `tty_sgr_buf`, `tty_sgr_reset_buf`, `tty_sgr_reset`, `tty_cursor_up` / `_hide` / `_show`, `tty_isatty` — and, from v1.4.0, animation's exit-signal fd: `tty_open_signalfd` / `tty_read_signal` / `tty_close_signalfd` | API frozen since 1.0.0; all twelve symbols anuenue calls are frozen. anuenue never emits a raw escape and no longer touches a signalfd directly. |
-| **cmdit** | CLI / argument parsing (getopt-long) | Adopted at v1.1.4, replacing the stdlib `flags` parser. anuenue is cmdit's second worked migration, after kii. |
-| **sakshi** | Errors / tracing / structured logging | Canonical per first-party-standards. Wired at v1.2.1 (`src/observe.cyr`). **stderr only** — the file and UDP output targets would breach the capability bound and are never selected. |
+| **darshana** | ANSI escape generation — `tty_fg_rgb_buf`, `tty_fg_256_buf`, `tty_sgr_buf`, `tty_sgr_reset_buf`, `tty_sgr_reset`, `tty_cursor_up` / `_hide` / `_show`, `tty_isatty` — and animation's exit-signal fd: `tty_open_signalfd` / `tty_read_signal` / `tty_close_signalfd` | API frozen since 1.0.0; all twelve symbols anuenue calls are frozen. anuenue never emits a raw escape and never touches a signalfd directly. |
+| **cmdit** | CLI / argument parsing (getopt-long) | Adopted at v1.1.4, replacing the stdlib `flags` parser. anuenue is cmdit's second worked migration, after kii. Its error taxonomy is append-only; `src/main.cyr` names every code anuenue's flag set can produce, and `fuzz/flag-parser.fcyr` asserts nothing else comes back. |
+| **sakshi** | Errors / tracing / structured logging | Canonical per first-party-standards. Wired at v1.2.1 (`src/observe.cyr`). **stderr only** — the file and UDP output targets would breach the capability bound and are never selected. A **stdlib module** from v1.4.1: the toolchain snapshot's version, no git pin. |
 | **agnostik** | Shared Result / Error shapes | Wired at v1.2.1. Every failure returns through `anuenue_fail(kind, msg)`; `STIK_ERR_INVALID_ARGUMENT` → exit 2, everything else → exit 1. |
-| **Cyrius stdlib** | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, chrono | `flags` was dropped at v1.1.4; `chrono` added at M4 for frame timing. |
+| **Cyrius stdlib** | string, fmt, alloc, io, vec, str, syscalls, assert, bench, args, chrono, sakshi | `flags` was dropped at v1.1.4; `chrono` added at M4 for frame timing; `sakshi` moved here from `[deps.sakshi]` at v1.4.1. |
 
 Evaluated and **not** wired:
 
@@ -506,19 +356,3 @@ Evaluated and **not** wired:
   per-character at terminal output, not pixel-buffer manipulation.
 - **kashi** — PSF font rendering. Wrong domain: anuenue tints existing glyphs,
   it doesn't draw them.
-
----
-
-## Pipe-decorator family successors
-
-Idea-tier, no commitments. Captured so v1.x architectural decisions leave room
-for siblings, and because [ADR 0002](../adr/0002-hsv-inline-not-abaco.md)'s
-first revisit trigger fires when the second of these wants a rainbow.
-
-- `boxes`-equivalent — wrap stdin in ASCII borders
-- `cowsay`-equivalent — ASCII speech bubble
-- `pv`-equivalent — pipe-viewer with throughput indicator
-
-They earn entries in
-[shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)
-when they become real.

@@ -33,6 +33,9 @@
 #      (E-01) — and EPIPE still behaves as SIGPIPE (E-03).
 #   6. Transient READ errors are not failures (F-01) — a non-blocking
 #      stdin is backpressure, not a broken stream.
+#   7. The parse failures cmdit 1.4.0 made visible (v1.4.1): a boolean
+#      given `=value` is a usage error, not ON; a command line the stdlib
+#      cannot read whole is a runtime failure, not a silent prefix.
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -417,6 +420,108 @@ if [ "$rc" -eq 1 ] && grep -q 'read from stdin failed' "$WORK/rderr"; then
     ok "a real read failure (closed stdin) is still reported and exits 1"
 else
     bad "closed stdin gave rc=$rc without the expected message"
+fi
+
+# --- gate 7: cmdit 1.4.0's parse failures ---------------------------
+#
+# v1.4.1. Both states parsed CLEAN under cmdit 1.2.4, so neither could
+# reach main.cyr's error switch before the bump:
+#
+#   `--bool=value` stored 1 and ignored the value — `--no-color=0`
+#   disabled colour, the opposite of what was typed, at exit 0.
+#
+#   A command line over 2 MiB was cut at 2 MiB by stdlib args_init (one
+#   read of /proc/self/cmdline into a fixed buffer) and the prefix parsed
+#   as OK: every token past the cut, flags included, vanished at exit 0.
+#   Reaching it needs ARG_MAX above 2 MiB, i.e. an unlimited stack — so
+#   the child raises RLIMIT_STACK before exec, and the check skips if the
+#   hard limit forbids that.
+echo "[robustness] cmdit 1.4.0 parse failures (v1.4.1)"
+for _bv in --no-color=0 --animate=1 --force-color= --help=x; do
+    set +e
+    printf 'hi\n' | "$BIN" "$_bv" > "$WORK/bv.out" 2> "$WORK/bv.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 2 ] && [ ! -s "$WORK/bv.out" ] \
+        && grep -q 'boolean flags take no value' "$WORK/bv.err"; then
+        ok "$_bv is a usage error (exit 2, nothing on stdout)"
+    else
+        bad "$_bv: rc=$rc, $(wc -c < "$WORK/bv.out") bytes on stdout"
+    fi
+done
+
+# One-shot TEXT mode renders every positional. cmdit 1.2.4 stopped storing
+# at 128 and reported nothing, so `anuenue $(seq 1 200)` printed 1..128 at
+# exit 0; 1.4.0 grows the array instead.
+set +e
+# shellcheck disable=SC2046
+"$BIN" --color=none $(seq 1 200) < /dev/null > "$WORK/pos.out" 2>/dev/null
+rc=$?
+set -e
+_pw=$(wc -w < "$WORK/pos.out" | tr -d ' ')
+_pl=$(tr ' ' '\n' < "$WORK/pos.out" | tail -1)
+if [ "$rc" -eq 0 ] && [ "$_pw" -eq 200 ] && [ "$_pl" = "200" ]; then
+    ok "one-shot TEXT keeps all 200 positionals (not the first 128)"
+else
+    bad "200 positionals: rc=$rc, rendered $_pw words, last '$_pl'"
+fi
+
+cat > "$WORK/bigargv.py" <<'PYEOF'
+import resource, subprocess, sys
+binary, npad = sys.argv[1], int(sys.argv[2])
+def unlimit():
+    inf = resource.RLIM_INFINITY
+    resource.setrlimit(resource.RLIMIT_STACK, (inf, inf))
+try:
+    resource.setrlimit(resource.RLIMIT_STACK, resource.getrlimit(resource.RLIMIT_STACK))
+    hard = resource.getrlimit(resource.RLIMIT_STACK)[1]
+    if hard != resource.RLIM_INFINITY:
+        print("SKIP stack hard limit is %d" % hard); sys.exit(0)
+    argv = [binary, "--color=24bit"] + ["x" * 100000] * npad + ["--seed", "99"]
+    r = subprocess.run(argv, input=b"", stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, preexec_fn=unlimit)
+except OSError as e:
+    print("SKIP exec refused: %s" % e); sys.exit(0)
+msg = b"could not read the full command line" in r.stderr
+print("RC %d %d" % (r.returncode, 1 if msg else 0))
+PYEOF
+_r=$(python3 -I "$WORK/bigargv.py" "$BIN" 24)
+case "$_r" in
+    SKIP*) echo "  skip: argv over 2 MiB — ${_r#SKIP }" ;;
+    *)  set -- $_r
+        if [ "$2" -eq 1 ] && [ "$3" -eq 1 ]; then
+            ok "a 2.4 MB command line is reported and exits 1, not parsed as a prefix"
+        else
+            bad "2.4 MB command line: rc=$2, message=$3"
+        fi
+        # Control: the same shape under 2 MiB still parses, so the gate is
+        # measuring the cut rather than rejecting long command lines.
+        set -- $(python3 -I "$WORK/bigargv.py" "$BIN" 10)
+        if [ "$2" -eq 0 ]; then
+            ok "a 1.0 MB command line still parses (control)"
+        else
+            bad "1.0 MB command line: rc=$2 (the control must pass)"
+        fi ;;
+esac
+
+# The other way to an unreadable command line: no descriptor for
+# /proc/self/cmdline. Under --nofile=3 args_init's open fails and argc()
+# is 0 — architecture 006. cmdit 1.2.4 parsed that as an empty argv, so
+# every flag was dropped and the default path ran at exit 0.
+if command -v prlimit >/dev/null 2>&1; then
+    set +e
+    printf 'hi\n' | prlimit --nofile=3 "$BIN" --color=none --log-level=debug \
+        > "$WORK/nf.out" 2> "$WORK/nf.err"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 1 ] && [ ! -s "$WORK/nf.out" ] \
+        && grep -q 'could not read the full command line' "$WORK/nf.err"; then
+        ok "argv unreadable under --nofile=3 is reported and exits 1, flags not dropped"
+    else
+        bad "--nofile=3: rc=$rc, $(wc -c < "$WORK/nf.out") bytes on stdout"
+    fi
+else
+    echo "  skip: prlimit(1) unavailable — cannot bound the descriptor table"
 fi
 
 echo

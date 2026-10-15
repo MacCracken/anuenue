@@ -64,20 +64,22 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 ## Project Status
 
-**v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the v1.0 acceptance scorecard and the post-v1.0 plan, and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
+**v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.4.0
+### Quality bar at v1.4.1
 
-- **402** unit assertions across 53 groups (`cyrius test`)
+- **410** unit assertions across 54 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **22** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
-- **21** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **29** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
-  dispositions, a non-blocking stdin
-- **1,450,672** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
+  dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
+  clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
+  positionals)
+- **1,450,668** fuzz assertions per run across 6 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open — five audits, latest
   [`docs/audit/2026-10-12-v140-delta.md`](docs/audit/2026-10-12-v140-delta.md)
 - **14** PTY checks + **18** signal/pacing checks + **15** allocation-failure
@@ -123,21 +125,21 @@ $ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
 | Dep | Tag | Role |
 |-----|-----|------|
 | [`darshana`](https://github.com/MacCracken/darshana) | 1.3.0 | ANSI escape primitives + the animation exit-signal fd (frozen v1.0 API) |
-| [`cmdit`](https://github.com/MacCracken/cmdit) | 1.2.4 | CLI / argument parsing (getopt-long) |
-| [`sakshi`](https://github.com/MacCracken/sakshi) | 2.5.8 | Errors / tracing (first-party-standards-required) |
-| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.6.0 | Shared Result / Error shapes |
+| [`cmdit`](https://github.com/MacCracken/cmdit) | 1.4.0 | CLI / argument parsing (getopt-long) |
+| [`sakshi`](https://github.com/MacCracken/sakshi) | stdlib (2.5.8 in cyrius 6.7.9) | Errors / tracing (first-party-standards-required); a stdlib module, so it follows the toolchain pin |
+| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.12.0 | Shared Result / Error shapes |
 | Cyrius toolchain | 6.7.9 | `cyrius.cyml [package].cyrius` |
 
 ## Documentation
 
 - [`CLAUDE.md`](CLAUDE.md) — durable rules for working in this repo (Claude Code or human)
-- [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones M0 → v1.0; post-v1.0 plan
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — forward plan: the 1.4.x arc through the 1.x minors
 - [`docs/development/state.md`](docs/development/state.md) — current state (volatile)
 - [`docs/adr/`](docs/adr/) — architecture decision records (`0001` pipe-purity, `0002` HSV-inline, `0003` grapheme-cluster cycling, `0004` stderr-only observability)
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build / run / develop
 - [`docs/guides/integrating-anuenue.md`](docs/guides/integrating-anuenue.md) — downstream-consumer integration manual
 - [`docs/examples/`](docs/examples/) — eight runnable shell examples covering the full flag surface
-- [`docs/audit/`](docs/audit/) — audit reports (v1.0 baseline 2026-05-22; latest P(-1) sweep 2026-08-25)
+- [`docs/audit/`](docs/audit/) — audit reports (v1.0 baseline 2026-05-22; latest the 2026-10-12 v1.4.0 delta)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — per-byte overhead trend across releases
 - [`CHANGELOG.md`](CHANGELOG.md) — release log (Keep a Changelog format)
 

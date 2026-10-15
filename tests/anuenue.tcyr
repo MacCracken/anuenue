@@ -1164,6 +1164,30 @@ fn main(): i64 {
       "and INT/TERM are back to their state before the open");
     if ((sfd_before & 1) == 0) { sys_sigprocmask(SIG_UNBLOCK, &sfd_hup, 0); }
 
+    test_group("v1.4.1 — cmdit 1.4.0's parse failures, as main.cyr routes them");
+    # A boolean given a value is an error, not ON. cmdit 1.2.4 stored 1 and
+    # ignored the value, so `--no-color=0` disabled colour.
+    var c141_fs = cmdit_new("anuenue");
+    var c141_nc = cmdit_bool(c141_fs, 110, "no-color", "n");
+    var c141_argv[16];
+    store64(&c141_argv + 0, "anuenue");
+    store64(&c141_argv + 8, "--no-color=0");
+    assert_eq(cmdit_parse_argv(c141_fs, 2, &c141_argv), CMDIT_RESULT_ERR,
+      "--no-color=0 is a parse error");
+    assert_eq(cmdit_error(c141_fs), CMDIT_ERR_UNEXPECTED_VALUE,
+      "--no-color=0 is UNEXPECTED_VALUE");
+    assert_eq(cmdit_get_bool(c141_fs, c141_nc), 0, "and the flag is not set");
+    # The NOMEM branch rests on cmdit's 0-handle contract: cmdit_new's OOM is
+    # a 0 handle, which 1.2.4 dereferenced and 1.4.0 fails closed on. No
+    # external limit reaches it (see main.cyr), so this pins the contract.
+    assert_eq(cmdit_parse(0), CMDIT_RESULT_ERR, "cmdit_parse(0) fails closed");
+    assert_eq(cmdit_error(0), CMDIT_ERR_NOMEM, "and cmdit_error(0) is NOMEM");
+    # main.cyr names these codes by value; cmdit's taxonomy is append-only, so
+    # a renumbering would be a cmdit major — and should fail here first.
+    assert_eq(CMDIT_ERR_UNEXPECTED_VALUE, 11, "UNEXPECTED_VALUE == 11");
+    assert_eq(CMDIT_ERR_NOMEM, 12, "NOMEM == 12");
+    assert_eq(CMDIT_ERR_ARGV, 13, "ARGV == 13");
+
     return assert_summary();
 }
 

@@ -12,9 +12,15 @@ What is *not* obvious is the consequence for testing.
 
 **anuenue's CLI cannot be exercised under a file-descriptor limit.** Under
 `prlimit --nofile=3` only the three inherited descriptors exist, so
-`args_init()`'s `open` fails, argv comes back empty, no flag is parsed, and the
-binary silently takes the default path. Observed: `--log-level=debug` produced
-*no output at all*, because the flag was never seen.
+`args_init()`'s `open` fails and `argc()` is 0.
+
+Through v1.4.0 (cmdit 1.2.4) that parsed as an empty argv: no flag was seen and
+the binary silently took the default path. Observed: `--log-level=debug` produced
+*no output at all*. From v1.4.1 (cmdit 1.4.0) an `argc()` of 0 is
+`CMDIT_ERR_ARGV`, and anuenue exits **1** with `could not read the full command
+line` — loud, but still before anything after argv parsing runs. The same code
+covers a command line over 2 MiB, which `args_init` cuts at its fixed buffer.
+Both are gate 7 of `scripts/robustness-check.sh`.
 
 That is why the 2026-05-22 audit's INFO 8 and 9 — the signalfd lifecycle and the
 signal mask — sat unmeasured from v0.8.0 through v1.2.2. The obvious experiment

@@ -49,5 +49,5 @@ UTF-8 sequence, so there is no ceiling to hit and no truncation to report. Only
 the first frame is drawn.
 
 Raising or removing the caps is tracked in
-[`roadmap.md` § v1.x](../development/roadmap.md#waiting-for-a-second-data-point);
+[`roadmap.md` § v1.x](../development/roadmap.md#v1x--trigger-gated);
 it trades against the slurp design, so it needs a real use case first.
