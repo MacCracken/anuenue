@@ -46,6 +46,25 @@ var ANUENUE_ANIMATE_INPUT_MAX = 65536;
 # trends higher).
 var ANUENUE_ANIMATE_CLUSTER_MAX = 8192;
 
+# Per-cluster flags (v1.5.0, ADR 0006):
+#   RAW   part of a producer's no-colour span: rendered raw.
+#   OPEN  an `off` marker came right before it — it is a span's first
+#         cluster, or the first after an empty span — so the renderer writes
+#         an SGR reset before it, as the filter does at every `off`. Keeps
+#         two adjacent spans from sharing attributes.
+#   JOIN  an ordinary cluster of extenders straight after a span. The
+#         terminal joins it to the cell before it, the span's last, so the
+#         row count gives it no columns.
+#   CONT  a JOIN cluster that also continues the cluster before the span,
+#         as the filter folds it there: drawn at that cluster's phase, with
+#         no phase step of its own. Always set with JOIN.
+enum AnuenueClusterFlag {
+    ANUENUE_CF_RAW  = 1;
+    ANUENUE_CF_OPEN = 2;
+    ANUENUE_CF_CONT = 4;
+    ANUENUE_CF_JOIN = 8;
+}
+
 # Frame interval. 16 ms ≈ 60 fps — the roadmap target. Mutable so the
 # -i / --interval flag (v1.3.0) can override it without touching the
 # frame loop; main.cyr writes this var, the same shape as
@@ -161,28 +180,121 @@ fn _animate_slurp_stdin(buf, cap): i64 {
 # overflow, returns max_clusters and silently truncates input —
 # the frame renderer never reads past `ctab[max_clusters]`, so the
 # tail bytes simply don't animate.
-fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
+# Length of the UTF-8 sequence at `buf + i`, as utf8_seq_len, but a
+# sequence never runs into a no-colour span's edge (v1.5.0, V-09): the
+# filter meets the span's marker there — an ESC, which ends the sequence —
+# but the prepare pass has removed the marker, so the bytes now touch.
+# `span_map` 0 means no span edge exists.
+fn _seq_len_in(buf, i, n_bytes, span_map): i64 {
+    var lim = n_bytes;
+    if (span_map != 0) {
+        var j = i + 1;
+        var going = 1;
+        while (going == 1) {
+            if (j >= lim) {
+                going = 0;
+            } else {
+                if (j >= i + 4) {
+                    going = 0;
+                } else {
+                    if (load8(span_map + j) != 0) {
+                        lim = j;
+                        going = 0;
+                    } else {
+                        j = j + 1;
+                    }
+                }
+            }
+        }
+    }
+    var seqlen = utf8_seq_len(buf, i, lim);
+    if (seqlen == 0) {
+        # Truncated sequence at the end of the input (no next chunk in
+        # animation mode) or at a span edge. Treat the remaining bytes as
+        # singleton clusters — graceful degradation.
+        seqlen = 1;
+    }
+    return seqlen;
+}
+
+# Open cluster `n` at byte `at` with flags `flag` (when flags are kept).
+fn _tag_open(ctab, cflags, n, at, flag): i64 {
+    store64(ctab + n * 8, at);
+    if (cflags != 0) { store8(cflags + n, flag); }
+    return n + 1;
+}
+
+fn _pretag_spans(buf, n_bytes, ctab, max_clusters, span_map, cflags): i64 {
     var n_clusters = 0;
     var prev_unpaired_ri = 0;
     var prev_was_zwj = 0;
-    var saw_any = 0;
     # 1 while the open cluster is an LF. H-05 (v1.4.4): nothing may extend
     # an LF cluster, because _render_frame writes only reset + LF for one —
-    # any byte folded into it was dropped from every frame.
+    # any byte folded into it was dropped from every frame. From v1.5.0 a
+    # raw (no-colour span) cluster is closed to ordinary extenders too.
     var open_is_lf = 0;
+    # 1 while the open cluster is a raw span cluster that more span bytes
+    # (other than an LF) extend (v1.5.0, ADR 0006).
+    var open_raw_text = 0;
+    # v1.5.0: 1 from a span boundary (a span's bytes, or an empty span) until
+    # the next ordinary byte; whether an ordinary cluster has been opened,
+    # and whether the last one was an LF. They decide ANUENUE_CF_CONT.
+    var after_span = 0;
+    var saw_ordinary = 0;
+    var last_ord_lf = 0;
 
     var i = 0;
     while (i < n_bytes && n_clusters < max_clusters) {
         var b = load8(buf + i);
 
+        # v1.5.0 (ADR 0006): bytes of a producer's no-colour span. They are
+        # not clustered for the rainbow: a run of span bytes is one RAW
+        # cluster, split at each LF (which is a raw cluster of its own, so
+        # the renderer can flush there), and ordinary text never extends one.
+        var sm = 0;
+        if (span_map != 0) { sm = load8(span_map + i); }
+        var in_span = 0;
+        if (sm == 1) { in_span = 1; }
+        if (sm == 2) { in_span = 1; }
+        if (in_span == 1) {
+            var open_raw = 1;
+            if (b == 10) { open_raw = 0; }
+            if (open_raw_text == 0) { open_raw = 0; }
+            if (sm == 2) { open_raw = 0; }              # a span's first byte
+            if (open_raw == 0) {
+                var rflag = ANUENUE_CF_RAW;
+                if (sm == 2) { rflag = ANUENUE_CF_RAW + ANUENUE_CF_OPEN; }
+                n_clusters = _tag_open(ctab, cflags, n_clusters, i, rflag);
+            }
+            open_raw_text = 1;
+            if (b == 10) { open_raw_text = 0; }
+            open_is_lf = 1;
+            prev_unpaired_ri = 0;
+            prev_was_zwj = 0;
+            after_span = 1;
+            i = i + 1;
+            continue;
+        }
+        # The first byte after an empty span: the filter wrote its resets and
+        # reset its ZWJ / RI latches at the `off` (span map 4).
+        var oflag = 0;
+        if (sm == 4) {
+            oflag = ANUENUE_CF_OPEN;
+            after_span = 1;
+            prev_unpaired_ri = 0;
+            prev_was_zwj = 0;
+        }
+
         if (b == 10) {
             # LF is always its own cluster — open the entry and bump.
-            store64(ctab + n_clusters * 8, i);
-            n_clusters = n_clusters + 1;
+            n_clusters = _tag_open(ctab, cflags, n_clusters, i, oflag);
+            open_raw_text = 0;
             prev_unpaired_ri = 0;
             prev_was_zwj = 0;
             open_is_lf = 1;
-            saw_any = 1;
+            after_span = 0;
+            saw_ordinary = 1;
+            last_ord_lf = 1;
             i = i + 1;
             continue;
         }
@@ -196,26 +308,22 @@ fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
         # so the animation pre-tag walk benefits identically.
         if (b < 0x80) {
             var ascii_extending = prev_was_zwj;
+            if (open_is_lf == 1) { ascii_extending = 0; }
             if (ascii_extending == 0) {
-                store64(ctab + n_clusters * 8, i);
-                n_clusters = n_clusters + 1;
+                n_clusters = _tag_open(ctab, cflags, n_clusters, i, oflag);
                 open_is_lf = 0;
+                open_raw_text = 0;
+                saw_ordinary = 1;
+                last_ord_lf = 0;
             }
             prev_was_zwj = 0;
             if (ascii_extending == 0) { prev_unpaired_ri = 0; }
-            saw_any = 1;
+            after_span = 0;
             i = i + 1;
             continue;
         }
 
-        var seqlen = utf8_seq_len(buf, i, n_bytes);
-        if (seqlen == 0) {
-            # Truncated sequence at input EOF (no next chunk in
-            # animation mode). Treat the remaining bytes as singleton
-            # clusters — graceful degradation.
-            seqlen = 1;
-        }
-
+        var seqlen = _seq_len_in(buf, i, n_bytes, span_map);
         var cp = utf8_decode(buf, i, seqlen);
 
         var extending = 0;
@@ -231,13 +339,31 @@ fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
         # renders as reset + LF only). The filter path renders both, under
         # the current phase; here they get a phase step of their own.
         if (n_clusters == 0) { extending = 0; }
+        # v1.5.0 (V-07): straight after a span an extender cannot join the
+        # raw cluster. It opens a JOIN cluster, which takes no columns. The
+        # filter folds it into the cluster BEFORE the span, so it is also
+        # CONT — continues that one — unless there is none, or it was an LF
+        # (H-05's rule, as without a span).
+        var cflag = oflag;
+        if (after_span == 1) {
+            if (extending == 1) {
+                cflag = oflag + ANUENUE_CF_JOIN;
+                if (saw_ordinary == 1) {
+                    if (last_ord_lf == 0) { cflag = cflag + ANUENUE_CF_CONT; }
+                }
+            }
+            extending = 0;
+        }
         if (open_is_lf == 1) { extending = 0; }
 
         if (extending == 0) {
-            store64(ctab + n_clusters * 8, i);
-            n_clusters = n_clusters + 1;
+            n_clusters = _tag_open(ctab, cflags, n_clusters, i, cflag);
             open_is_lf = 0;
+            open_raw_text = 0;
+            saw_ordinary = 1;
+            last_ord_lf = 0;
         }
+        after_span = 0;
 
         prev_was_zwj = 0;
         if (cp == 0x200D) { prev_was_zwj = 1; }
@@ -252,7 +378,6 @@ fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
             if (extending == 0) { prev_unpaired_ri = 0; }
         }
 
-        saw_any = 1;
         i = i + seqlen;
     }
 
@@ -261,6 +386,12 @@ fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
     # - ctab[n_clusters-1] without a branch.
     store64(ctab + n_clusters * 8, i);
     return n_clusters;
+}
+
+# The pre-tag without no-colour spans: every cluster ordinary. Kept as the
+# entry point the unit suite, the fuzz harness and the probes use.
+fn _pretag_clusters(buf, n_bytes, ctab, max_clusters): i64 {
+    return _pretag_spans(buf, n_bytes, ctab, max_clusters, 0, 0);
 }
 
 # Count line-feeds in the tagged cluster table. This is the row-
@@ -421,6 +552,50 @@ fn _cluster_cols_mb(buf, off, clen): i64 {
     return anuenue_cp_cols(cp);
 }
 
+# Inside a no-colour span (v1.5.0, ADR 0006) the producer's escape
+# sequences reach the terminal intact, so the row count must parse them as
+# the terminal does. One step of the VT500 parser (xterm's), for the subset
+# that decides display width. `esc` is the state before byte `c`: 0 ground,
+# 1 escape (just after ESC), 2 CSI, 3 OSC, 4 a DCS / SOS / PM / APC string,
+# 5 escape intermediate (ESC then 0x20-0x2F, as in ESC ( B). Returns the
+# next state * 2, plus 1 when the byte also acts as in ground — as text, or
+# as a C0 control, which the terminal executes even in the middle of an
+# escape or CSI (an LF there is still a line feed). An ESC anywhere
+# restarts; CAN and SUB abort; OSC ends at BEL or ST, a string at ST (ESC \
+# — an ESC then a final byte); DEL is ignored. After an intermediate any
+# byte 0x30-0x7E is the final one, `[` and `]` included (V-10 in the
+# v1.5.0 audit delta). A non-ASCII byte ends an escape or CSI and is text.
+fn _span_vt(c, esc): i64 {
+    if (c == 27) { return 2; }
+    if (c == 0x18) { return 0; }
+    if (c == 0x1A) { return 0; }
+    if (esc == 0) { return 1; }
+    if (esc == 3) {
+        if (c == 7) { return 0; }
+        return 6;
+    }
+    if (esc == 4) { return 8; }
+    if (c < 0x20) { return esc * 2 + 1; }
+    if (c == 0x7F) { return esc * 2; }
+    if (c >= 0x80) { return 1; }
+    if (c < 0x30) {                                     # an intermediate
+        if (esc == 2) { return 4; }                     # (inside a CSI: stays)
+        return 10;
+    }
+    if (esc == 1) {
+        if (c == 91) { return 4; }                      # [  CSI
+        if (c == 93) { return 6; }                      # ]  OSC
+        if (c == 80) { return 8; }                      # P  DCS
+        if (c == 88) { return 8; }                      # X  SOS
+        if (c == 94) { return 8; }                      # ^  PM
+        if (c == 95) { return 8; }                      # _  APC
+        return 0;                                       # the final byte
+    }
+    if (esc == 5) { return 0; }                         # final after intermediates
+    if (c >= 0x40) { return 0; }                        # CSI final byte
+    return 4;
+}
+
 # How far the renderer must climb between frames on a terminal `cols`
 # wide — the physical-row generalisation of the LF count:
 #   each LF-terminated line  the rows it occupies;
@@ -445,15 +620,80 @@ fn _cluster_cols_mb(buf, off, clen): i64 {
 #
 # `cols` <= 0 means the width is unknown: the result is the LF count,
 # exactly what v1.4.3 climbed.
-fn _block_rows(buf, ctab, n_clusters, cols): i64 {
+fn _block_rows_f(buf, ctab, cflags, n_clusters, cols): i64 {
     if (cols <= 0) { return _count_lf_clusters(buf, ctab, n_clusters); }
     var climb = 0;
     var rows  = 1;                     # rows the current line occupies so far
     var col   = 0;
+    # Inside a no-colour span (v1.5.0, ADR 0006) the producer's escape
+    # sequences reach the terminal INTACT — anuenue writes nothing between
+    # them — so there the count runs them through _span_vt, as the terminal
+    # does: `esc` is its parser state. Outside a span the v1.4.4 rule above
+    # holds.
+    var esc   = 0;
+    var span_zwj = 0;                  # the last span codepoint was a ZWJ
+    var span_ri  = 0;                  # an unpaired regional indicator is open
     var i = 0;
     while (i < n_clusters) {
         var off  = load64(ctab + i * 8);
         var clen = load64(ctab + (i + 1) * 8) - off;
+        var raw = 0;
+        if (cflags != 0) { raw = load8(cflags + i); }
+        # A JOIN cluster (v1.5.0, V-07) is counted like span text: its
+        # extenders join the cell before them, which is the span's last.
+        if ((raw & (ANUENUE_CF_RAW + ANUENUE_CF_JOIN)) != 0) {
+            # The renderer's reset before a span, or its escape before a JOIN
+            # cluster, restarts the parser.
+            if ((raw & ANUENUE_CF_OPEN) != 0) { esc = 0; }
+            if ((raw & ANUENUE_CF_JOIN) != 0) { esc = 0; }
+            var k = 0;
+            while (k < clen) {
+                var c = load8(buf + off + k);
+                var cw = 0;
+                var step = 1;
+                var vt = _span_vt(c, esc);
+                esc = vt / 2;
+                if ((vt & 1) == 1) {
+                    if (c == 10) {
+                        climb = climb + rows;
+                        rows = 1;
+                        col = 0;
+                    }
+                    if (c == 13) { col = 0; }
+                    if (c == 9) {
+                        col = (col / 8 + 1) * 8;
+                        if (col > cols - 1) { col = cols - 1; }
+                    }
+                    if (c >= 0x20) {
+                        if (c < 0x7F) { cw = 1; }
+                    }
+                    if (c >= 0x80) {
+                        cw = _span_cp_cols(buf, off + k, off + clen, span_zwj, span_ri);
+                        step = _span_cp_len(buf, off + k, off + clen);
+                        span_zwj = _span_cp_is(buf, off + k, step, 0x200D);
+                        span_ri = _span_ri_next(buf, off + k, step, span_ri);
+                    } else {
+                        span_zwj = 0;
+                        span_ri = 0;
+                    }
+                }
+                if (cw > 0) {
+                    if (col + cw > cols) {
+                        rows = rows + 1;
+                        col = 0;
+                    }
+                    col = col + cw;
+                }
+                k = k + step;
+            }
+            i = i + 1;
+            continue;
+        }
+        # anuenue's own escape before an ordinary cluster cancels anything a
+        # span left open.
+        esc = 0;
+        span_zwj = 0;
+        span_ri = 0;
         var b = load8(buf + off);
         var w = 0;
         if (b == 10) {
@@ -486,6 +726,56 @@ fn _block_rows(buf, ctab, n_clusters, cols): i64 {
         climb = climb + rows - 1;
     }
     return climb;
+}
+
+# _block_rows_f with every cluster ordinary — the entry point the unit
+# suite uses.
+fn _block_rows(buf, ctab, n_clusters, cols): i64 {
+    return _block_rows_f(buf, ctab, 0, n_clusters, cols);
+}
+
+# Byte length of the UTF-8 sequence at `buf + at` before `end`: its
+# length, or 1 for a malformed or truncated one (shown as one U+FFFD).
+fn _span_cp_len(buf, at, end): i64 {
+    var sl = utf8_seq_len(buf, at, end);
+    if (sl <= 1) { return 1; }
+    return sl;
+}
+
+# 1 when the sequence of `sl` bytes at `buf + at` is codepoint `want`.
+fn _span_cp_is(buf, at, sl, want): i64 {
+    if (sl <= 1) { return 0; }
+    if (utf8_decode(buf, at, sl) == want) { return 1; }
+    return 0;
+}
+
+# Columns of the non-ASCII codepoint at `buf + at` inside a span, where no
+# cluster table groups it: 0 for a C1 control, an extender (combining mark,
+# ZWJ, variation selector), the codepoint after a ZWJ, or the second of a
+# regional-indicator pair — so a span's width matches what the cluster
+# model gives the same text outside one. 1 for a malformed byte.
+fn _span_cp_cols(buf, at, end, after_zwj, open_ri): i64 {
+    var sl = utf8_seq_len(buf, at, end);
+    if (sl <= 1) { return 1; }
+    var cp = utf8_decode(buf, at, sl);
+    if (cp < 0xA0) { return 0; }
+    if (after_zwj == 1) { return 0; }
+    if (cp_is_extending(cp) == 1) { return 0; }
+    if (cp_is_regional_indicator(cp) == 1) {
+        if (open_ri == 1) { return 0; }
+    }
+    return anuenue_cp_cols(cp);
+}
+
+# The regional-indicator latch after the codepoint at `buf + at`: a first
+# RI opens a pair, a second closes it, anything else clears it.
+fn _span_ri_next(buf, at, sl, open_ri): i64 {
+    if (sl <= 1) { return 0; }
+    if (cp_is_regional_indicator(utf8_decode(buf, at, sl)) == 1) {
+        if (open_ri == 1) { return 0; }
+        return 1;
+    }
+    return 0;
 }
 
 # The terminal's size, or 0 x 0 when stdout is not a terminal or its size
@@ -526,15 +816,56 @@ fn _term_size(out_rows, out_cols): i64 {
 # trailing CR (0x0d) so the cursor returns to column 1 — without
 # this, a partial-line input ("hello") would leave the cursor at
 # column 6 and tty_cursor_up wouldn't re-anchor at column 1.
-fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf): i64 {
+fn _render_frame(buf, ctab, cflags, n_clusters, phase_base, line_buf, input_ends_with_lf): i64 {
     var pos = 0;
     var phase = phase_base;
+    var prev_raw = 0;
 
     var i = 0;
     while (i < n_clusters) {
         var off = load64(ctab + i * 8);
         var next_off = load64(ctab + (i + 1) * 8);
         var clen = next_off - off;
+
+        # v1.5.0 (ADR 0006): a no-colour span cluster goes out raw — the
+        # producer's bytes, nothing of anuenue's, no phase step — with an
+        # SGR reset where a span begins and where it ends. An LF inside it,
+        # or the buffer nearing full, flushes WITHOUT a reset, so the
+        # producer's own attributes may run across lines.
+        var raw = 0;
+        if (cflags != 0) { raw = load8(cflags + i); }
+        if ((raw & ANUENUE_CF_RAW) != 0) {
+            var want_reset = 0;
+            if (prev_raw == 0) { want_reset = 1; }
+            if ((raw & ANUENUE_CF_OPEN) != 0) { want_reset = 1; }
+            if (want_reset == 1) { pos = tty_sgr_reset_buf(line_buf, pos); }
+            prev_raw = 1;
+            var rk = 0;
+            while (rk < clen) {
+                var rb = load8(buf + off + rk);
+                store8(line_buf + pos, rb);
+                pos = pos + 1;
+                rk = rk + 1;
+                var rflush = 0;
+                if (rb == 10) { rflush = 1; }
+                if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) { rflush = 1; }
+                if (rflush == 1) {
+                    if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
+                    pos = 0;
+                }
+            }
+            i = i + 1;
+            continue;
+        }
+        # A reset where a span ends, and before the first cluster after an
+        # empty span (OPEN), as the filter writes at the markers.
+        var lead_reset = prev_raw;
+        if ((raw & ANUENUE_CF_OPEN) != 0) { lead_reset = 1; }
+        prev_raw = 0;
+        if (lead_reset == 1) {
+            pos = _reset_checked(line_buf, pos);
+            if (pos < 0) { return 0 - 1; }
+        }
 
         if (load8(buf + off) == 10) {
             # LF cluster — reset SGR + emit LF + flush line. Same
@@ -565,14 +896,23 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
         # cluster across multiple flushes when needed, re-emitting
         # the same phase escape after each flush so visible colour
         # stays consistent.
-        pos = _emit_phase_esc(line_buf, pos, phase);
+        #
+        # v1.5.0 (V-07): a CONT cluster continues the cluster before a span,
+        # so it is drawn at that cluster's phase and takes no step.
+        var cphase = phase;
+        var cont = 0;
+        if ((raw & ANUENUE_CF_CONT) != 0) {
+            cont = 1;
+            cphase = phase - ANUENUE_PHASE_STEP;
+        }
+        pos = _emit_phase_esc(line_buf, pos, cphase);
         var k = 0;
         while (k < clen) {
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 if (anuenue_write_all(line_buf, pos) != 0) { return 0 - 1; }
                 pos = 0;
-                pos = _emit_phase_esc(line_buf, pos, phase);
+                pos = _emit_phase_esc(line_buf, pos, cphase);
             }
             store8(line_buf + pos, load8(buf + off + k));
             pos = pos + 1;
@@ -585,7 +925,7 @@ fn _render_frame(buf, ctab, n_clusters, phase_base, line_buf, input_ends_with_lf
             pos = 0;
         }
 
-        phase = phase + ANUENUE_PHASE_STEP;
+        if (cont == 0) { phase = phase + ANUENUE_PHASE_STEP; }
         i = i + 1;
     }
 
@@ -833,6 +1173,69 @@ fn _frame_wait(sigfd, deadline_ns): i64 {
     return stop;
 }
 
+# Prepare the slurped input for tagging (v1.4.5 / v1.5.0): remove the
+# no-colour markers, strip the input's SGR colour codes OUTSIDE a span
+# (inside one they are the producer's), and record in `span_map` which kept
+# bytes are span bytes: 0 outside, 1 inside, 2 for the first byte of a
+# span, and 4 for the first byte after an EMPTY span, which leaves no byte
+# of its own (_pretag_spans flags the cluster at a 2 or a 4
+# ANUENUE_CF_OPEN, and resets its ZWJ / RI latches there, as the filter does
+# at `off`). Compacts `buf[0, n)` in place and returns the new length. The
+# whole input is in memory, so a marker or colour code still unfinished at
+# the end is ordinary bytes.
+fn _anim_prepare(buf, n, span_map): i64 {
+    var w = 0;
+    var r = 0;
+    var in_span = 0;
+    var opened = 0;                    # an `off` opened a span; no byte yet
+    var empty_closed = 0;              # an `on` closed a span that had none
+    while (r < n) {
+        var b = load8(buf + r);
+        var drop = 0;
+        if (b == 27) {
+            var mk = _marker_at(buf, r, n);
+            if (mk > 0) {
+                ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                if (mk == ANUENUE_MK_OFF) {
+                    if (in_span == 0) { opened = 1; }
+                    in_span = 1;
+                }
+                if (mk == ANUENUE_MK_ON) {
+                    if (in_span == 1) {
+                        if (opened == 1) { empty_closed = 1; }
+                    }
+                    in_span = 0;
+                    opened = 0;
+                }
+                drop = _marker_len(mk);
+            } else {
+                if (in_span == 0) {
+                    var sg = _sgr_len(buf, r, n);
+                    if (sg > 0) {
+                        ANUENUE_SGR_STRIPPED = ANUENUE_SGR_STRIPPED + 1;
+                        drop = sg;
+                    }
+                }
+            }
+        }
+        if (drop > 0) {
+            r = r + drop;
+        } else {
+            store8(buf + w, b);
+            var sm_v = in_span + opened;
+            if (in_span == 0) {
+                if (empty_closed == 1) { sm_v = 4; }
+            }
+            store8(span_map + w, sm_v);
+            opened = 0;
+            empty_closed = 0;
+            w = w + 1;
+            r = r + 1;
+        }
+    }
+    return w;
+}
+
 # ---- main animate driver ------------------------------------------
 #
 # Orchestrates input slurp → cluster tag → frame loop. Returns:
@@ -843,7 +1246,11 @@ fn anuenue_animate(duration_secs, speed): i64 {
     # +1 slot for the sentinel ctab[n_clusters] = total_bytes
     var ctab        = alloc((ANUENUE_ANIMATE_CLUSTER_MAX + 1) * 8);
     var line_buf    = alloc(ANUENUE_LINE_BUF);
-    if (in_buf == 0 || ctab == 0 || line_buf == 0) {
+    # v1.5.0 (ADR 0006): which input bytes are no-colour span bytes, and
+    # which clusters are raw span clusters.
+    var span_map    = alloc(ANUENUE_ANIMATE_INPUT_MAX);
+    var cflags      = alloc(ANUENUE_ANIMATE_CLUSTER_MAX + 1);
+    if (in_buf == 0 || ctab == 0 || line_buf == 0 || span_map == 0 || cflags == 0) {
         # A-06 (2026-08-25 audit): v1.2.1 routed the filter and
         # passthrough failures through anuenue_fail but missed the
         # animate path, which kept returning a bare 1 with no message
@@ -860,12 +1267,12 @@ fn anuenue_animate(duration_secs, speed): i64 {
         return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
     }
     ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n_read;
-    # v1.4.5: the input's colour codes go before anything is tagged —
-    # anuenue owns the colour here. The whole input is in memory, so
-    # nothing is held. (The byte cap below still reads n_read: it is
-    # about what was read, not what is left.)
-    var an_held[8];
-    var n_bytes = anuenue_sgr_strip(in_buf, n_read, 1, &an_held);
+    # v1.4.5 / v1.5.0: the input's colour codes go before anything is
+    # tagged — anuenue owns the colour here — except inside a producer's
+    # no-colour span, and the span markers are consumed. (The byte cap
+    # below still reads n_read: it is about what was read, not what is
+    # left.)
+    var n_bytes = _anim_prepare(in_buf, n_read, span_map);
     if (n_bytes == 0) {
         # No input to animate. Quietly exit 0 — same shape as
         # `cat /dev/null | anuenue` (which exits 0 from the filter
@@ -886,8 +1293,8 @@ fn anuenue_animate(duration_secs, speed): i64 {
           "byte-cap", ANUENUE_ANIMATE_INPUT_MAX);
     }
 
-    var n_clusters = _pretag_clusters(in_buf, n_bytes, ctab,
-      ANUENUE_ANIMATE_CLUSTER_MAX);
+    var n_clusters = _pretag_spans(in_buf, n_bytes, ctab,
+      ANUENUE_ANIMATE_CLUSTER_MAX, span_map, cflags);
     if (n_clusters == 0) { return 0; }
     if (n_clusters >= ANUENUE_ANIMATE_CLUSTER_MAX) {
         anuenue_log_kv_int(SK_WARN, "animation input truncated at the cluster cap; text beyond it is not rendered",
@@ -905,7 +1312,7 @@ fn anuenue_animate(duration_secs, speed): i64 {
     var term_rows = 0;
     var term_cols = 0;
     _term_size(&term_rows, &term_cols);
-    var rows_to_climb = _block_rows(in_buf, ctab, n_clusters, term_cols);
+    var rows_to_climb = _block_rows_f(in_buf, ctab, cflags, n_clusters, term_cols);
     anuenue_log_kv_int(SK_DEBUG, "animation", "terminal-rows", term_rows);
     anuenue_log_kv_int(SK_DEBUG, "animation", "terminal-cols", term_cols);
     anuenue_log_kv_int(SK_DEBUG, "animation", "rows-to-climb", rows_to_climb);
@@ -949,7 +1356,7 @@ fn anuenue_animate(duration_secs, speed): i64 {
         # cursor has to come back first or we leave the terminal
         # cursorless — the exact regression the M4 acceptance guards
         # against, reached by a different route than SIGINT.
-        if (_render_frame(in_buf, ctab, n_clusters, phase_base, line_buf, ends_lf) != 0) {
+        if (_render_frame(in_buf, ctab, cflags, n_clusters, phase_base, line_buf, ends_lf) != 0) {
             tty_sgr_reset();
             tty_cursor_show();
             # Report before the close: the close is the one step that

@@ -1,0 +1,290 @@
+# anuenue fuzz — v1.5.0 no-colour spans (ADR 0006).
+#
+# Targets and invariants:
+#   anuenue_marker_strip (MONO)
+#     - equals a reference that removes exactly the two marker strings and
+#       keeps every other byte, in order
+#     - CHUNKED == WHOLE: two pieces with the held tail carried give the
+#       same bytes as one piece (the 4096-byte read boundary)
+#   _anim_prepare (animation)
+#     - equals a reference: markers removed and toggle the span; an SGR is
+#       removed only OUTSIDE a span; every kept byte's span flag is the
+#       span state at that byte (2 for the first byte after an opening
+#       `off`, 4 for the first byte after an empty span)
+#   _pretag_spans
+#     - the first cluster starts at byte 0 and the sentinel is the length
+#     - a raw cluster holds only span bytes, every span byte is in a raw
+#       cluster, and an ordinary cluster holds no span byte
+#     - a cluster is flagged CF_OPEN exactly when it starts right after an
+#       `off` (a span's first byte, or the first byte after an empty span),
+#       and no span edge falls inside a cluster — a UTF-8 sequence cut by a
+#       span stays cut (V-09)
+#     - a JOIN cluster is ordinary, never first, and follows a span; CONT
+#       comes only with JOIN
+#     - every LF cluster, raw or ordinary, is the LF alone
+#
+# Inputs: random sequences over a pool of tokens that matter here — the
+# two markers whole and cut short, SGRs, ESC, '[', LF, text, a combining
+# acute, ZWJ, a UTF-8 lead byte and its tail apart, a regional indicator —
+# so markers, spans and their edges actually occur.
+
+include "src/observe.cyr"
+include "src/hsv.cyr"
+include "src/color.cyr"
+include "src/filter.cyr"
+include "src/animate.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 0x7FFFFFFF;
+}
+
+# Append cstr `t` to `buf` at `at`; returns the new end.
+fn _app(buf, at, t): i64 {
+    var n = strlen(t);
+    var k = 0;
+    while (k < n) { store8(buf + at + k, load8(t + k)); k = k + 1; }
+    return at + n;
+}
+
+# Append one random token at `at`; returns the new end.
+fn _token(buf, at): i64 {
+    var k = _fuzz_next() % 17;
+    if (k == 0) { return _app(buf, at, "\x1b_anuenue:off\x1b\\"); }
+    if (k == 1) { return _app(buf, at, "\x1b_anuenue:on\x1b\\"); }
+    if (k == 2) { return _app(buf, at, "\x1b_anuenue:o"); }        # cut short
+    if (k == 3) { return _app(buf, at, "\x1b_anuenue:of"); }
+    if (k == 4) { return _app(buf, at, "\x1b[31m"); }
+    if (k == 5) { return _app(buf, at, "\x1b[0m"); }
+    if (k == 6) { return _app(buf, at, "\x1b_G\x1b\\"); }          # another APC
+    if (k == 7) { return _app(buf, at, "\x1b"); }
+    if (k == 8) { return _app(buf, at, "["); }
+    if (k == 9) { return _app(buf, at, "\n"); }
+    if (k == 10) { return _app(buf, at, "\xcc\x81"); }             # U+0301
+    if (k == 11) { return _app(buf, at, "\xe2\x80\x8d"); }         # ZWJ
+    if (k == 12) { return _app(buf, at, "m"); }
+    if (k == 13) { return _app(buf, at, "\xe4"); }                 # a lead byte...
+    if (k == 14) { return _app(buf, at, "\xb8\xad"); }             # ...and its tail
+    if (k == 15) { return _app(buf, at, "\xf0\x9f\x87\xba"); }     # U+1F1FA
+    return _app(buf, at, "xy");
+}
+
+# 1 when the bytes at `src + r` within `n` are the cstr `lit` in full.
+fn _lit_at(src, r, n, lit): i64 {
+    var len = strlen(lit);
+    if (r + len > n) { return 0; }
+    var k = 0;
+    while (k < len) {
+        if (load8(src + r + k) != load8(lit + k)) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# Reference SGR length at `src + r` (an ESC): written independently of
+# _sgr_len — scan parameters freely, then accept only a final 'm' within
+# ANUENUE_SGR_MAX bytes. 0 when not an SGR (an unfinished one is not).
+fn _ref_sgr(src, r, n): i64 {
+    if (r + 1 >= n) { return 0; }
+    if (load8(src + r + 1) != 91) { return 0; }
+    var k = r + 2;
+    while (k < n) {
+        var c = load8(src + k);
+        if (c == 109) {
+            if (k - r + 1 <= ANUENUE_SGR_MAX) { return k - r + 1; }
+            return 0;
+        }
+        if (c < 48) { return 0; }
+        if (c > 59) { return 0; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Reference for both strips. `mode` 0: MONO (markers only). `mode` 1:
+# animation (markers, and SGR outside a span; span flags to `map`).
+fn _ref_strip(src, n, dst, map, mode): i64 {
+    var w = 0;
+    var r = 0;
+    var span = 0;
+    var first = 0;
+    var empty = 0;
+    while (r < n) {
+        var drop = 0;
+        if (_lit_at(src, r, n, "\x1b_anuenue:off\x1b\\") == 1) {
+            drop = 15;
+            if (span == 0) { first = 1; }
+            span = 1;
+        } else {
+            if (_lit_at(src, r, n, "\x1b_anuenue:on\x1b\\") == 1) {
+                drop = 14;
+                if (span == 1) {
+                    if (first == 1) { empty = 1; }
+                }
+                span = 0;
+                first = 0;
+            } else {
+                if (mode == 1) {
+                    if (span == 0) {
+                        if (load8(src + r) == 27) { drop = _ref_sgr(src, r, n); }
+                    }
+                }
+            }
+        }
+        if (drop > 0) {
+            r = r + drop;
+        } else {
+            store8(dst + w, load8(src + r));
+            if (map != 0) {
+                var v = span + first;
+                if (span == 0) {
+                    if (empty == 1) { v = 4; }
+                }
+                store8(map + w, v);
+            }
+            first = 0;
+            empty = 0;
+            w = w + 1;
+            r = r + 1;
+        }
+    }
+    return w;
+}
+
+fn _same(a, b, n): i64 {
+    var k = 0;
+    var eq = 1;
+    while (k < n) {
+        if (load8(a + k) != load8(b + k)) { eq = 0; }
+        k = k + 1;
+    }
+    return eq;
+}
+
+# One random input: MONO whole and chunked, animation prepare, pretag.
+fn fuzz_markers_one(n_tokens, input, work, ref, piece, out, map, rmap, ctab, cflags) {
+    var n = 0;
+    var t = 0;
+    while (t < n_tokens) { n = _token(input, n); t = t + 1; }
+
+    # MONO, whole.
+    var i = 0;
+    while (i < n) { store8(work + i, load8(input + i)); i = i + 1; }
+    var hv[8];
+    var w = anuenue_marker_strip(work, n, 1, &hv);
+    var rn = _ref_strip(input, n, ref, 0, 0);
+    assert(w == rn, "MONO strip length differs from the reference");
+    assert(_same(work, ref, rn) == 1, "MONO strip bytes differ from the reference");
+
+    # MONO, chunked at a random cut, the held tail carried.
+    var cut = _fuzz_next() % (n + 1);
+    i = 0;
+    while (i < cut) { store8(piece + i, load8(input + i)); i = i + 1; }
+    var w1 = anuenue_marker_strip(piece, cut, 0, &hv);
+    var held = load64(&hv);
+    assert(held < ANUENUE_MK_OFF_LEN, "held more than a marker can be");
+    i = 0;
+    while (i < w1) { store8(out + i, load8(piece + i)); i = i + 1; }
+    i = 0;
+    while (i < held) { store8(piece + i, load8(piece + w1 + i)); i = i + 1; }
+    i = 0;
+    while (i < n - cut) { store8(piece + held + i, load8(input + cut + i)); i = i + 1; }
+    var w2 = anuenue_marker_strip(piece, held + n - cut, 1, &hv);
+    i = 0;
+    while (i < w2) { store8(out + w1 + i, load8(piece + i)); i = i + 1; }
+    assert(w1 + w2 == rn, "chunked MONO strip length differs from whole");
+    assert(_same(out, ref, rn) == 1, "chunked MONO strip bytes differ from whole");
+
+    # Animation prepare.
+    i = 0;
+    while (i < n) { store8(work + i, load8(input + i)); i = i + 1; }
+    var pw = _anim_prepare(work, n, map);
+    var prn = _ref_strip(input, n, ref, rmap, 1);
+    assert(pw == prn, "prepare length differs from the reference");
+    assert(_same(work, ref, prn) == 1, "prepare bytes differ from the reference");
+    assert(_same(map, rmap, prn) == 1, "prepare span flags differ from the reference");
+
+    # Pretag over the prepared bytes.
+    var nc = _pretag_spans(work, pw, ctab, pw + 1, map, cflags);
+    if (pw > 0) {
+        assert(nc > 0, "no clusters for non-empty input");
+        assert(load64(ctab) == 0, "the first cluster does not start at byte 0");
+    }
+    assert(load64(ctab + nc * 8) == pw, "the sentinel is not the prepared length");
+    var c = 0;
+    while (c < nc) {
+        var off = load64(ctab + c * 8);
+        var end = load64(ctab + (c + 1) * 8);
+        var raw = load8(cflags + c);
+        var k = off;
+        while (k < end) {
+            var mv = load8(map + k);
+            if ((raw & ANUENUE_CF_RAW) != 0) {
+                assert(mv == 1 || mv == 2, "a raw cluster holds a byte outside the span");
+            } else {
+                assert(mv == 0 || mv == 4, "an ordinary cluster holds a span byte");
+            }
+            if (k > off) {
+                assert(mv <= 1, "a span edge falls inside a cluster");
+            }
+            k = k + 1;
+        }
+        if (load8(work + off) == 10) {
+            assert(end == off + 1, "an LF cluster carries more than the LF");
+        }
+        var opens = 0;
+        if ((raw & ANUENUE_CF_OPEN) != 0) { opens = 1; }
+        var starts = 0;
+        if (load8(map + off) == 2) { starts = 1; }
+        if (load8(map + off) == 4) { starts = 1; }
+        assert(opens == starts, "CF_OPEN is not exactly the clusters right after an off");
+        if ((raw & ANUENUE_CF_CONT) != 0) {
+            assert((raw & ANUENUE_CF_JOIN) != 0, "a CONT cluster without JOIN");
+        }
+        if ((raw & ANUENUE_CF_JOIN) != 0) {
+            assert((raw & ANUENUE_CF_RAW) == 0, "a JOIN cluster is raw");
+            assert(c > 0, "the first cluster is JOIN");
+            var after = 0;
+            if (load8(map + off) == 4) { after = 1; }
+            if ((load8(cflags + c - 1) & ANUENUE_CF_RAW) != 0) { after = 1; }
+            assert(after == 1, "a JOIN cluster does not follow a span");
+        }
+        c = c + 1;
+    }
+    return 0;
+}
+
+# Harness entry: 2 000 random inputs of up to 40 tokens. Returns
+# assert_summary() so a broken invariant fails `cyrius fuzz`.
+fn main(): i64 {
+    alloc_init();
+    _phase_esc_init();
+    var input = alloc(1024);
+    var work  = alloc(1024);
+    var ref   = alloc(1024);
+    var piece = alloc(2048);
+    var out   = alloc(2048);
+    var map   = alloc(1024);
+    var rmap  = alloc(1024);
+    var ctab  = alloc(1100 * 8);
+    var cfl   = alloc(1100);
+    if (cfl == 0) { return 1; }
+    _fuzz_seed(2027);
+    var it = 0;
+    while (it < 2000) {
+        fuzz_markers_one(1 + _fuzz_next() % 40, input, work, ref, piece, out, map, rmap, ctab, cfl);
+        it = it + 1;
+    }
+    println("fuzz_no_colour_markers: reference, chunked and cluster-coverage invariants held");
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

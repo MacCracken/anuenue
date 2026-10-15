@@ -247,8 +247,10 @@ fi
 #
 # Each case sizes the pty with stty(1), records the animation, and plays
 # the transcript into scripts/term-model.py at the same size. Correct:
-# no scrolling after the first frame, and an animation (several frames)
-# exactly when the block fits.
+# no scrolling after the first frame, every frame climbing back to the
+# same row and never past the top (v1.5.0: a climb that is too far
+# scrolls nothing, it draws over what is above the block), and an
+# animation (several frames) exactly when the block fits.
 echo "[pty-check] animation on a sized terminal re-anchors exactly"
 if ! command -v python3 >/dev/null 2>&1; then
     skip "python3 unavailable — no terminal model"
@@ -323,23 +325,51 @@ open(w + "/bare-esc.in", "w").write("line\x1b\n" * 5)
 # UAX #11 wide symbols at the end of an 80-column line (the review's MOTD
 # case): 76 + 4 x 2 = 84 columns, so each line is 2 rows.
 open(w + "/emoji.in", "w").write(("x" * 76 + "\u2705\u2728\u26a1\u2b50\n") * 3)
+# v1.5.0 no-colour spans: the producer's sequences reach the terminal
+# INTACT, so inside a span they take no columns — and the count must
+# parse them the way the terminal does. Each line below is 80 columns as
+# the terminal shows it, or 100 (two rows) after a string sequence — so a
+# string the count never ends swallows a row.
+OFF, ON = "\x1b_anuenue:off\x1b\\", "\x1b_anuenue:on\x1b\\"
+open(w + "/span-sgr.in", "w").write(("ab" + OFF + "\x1b[1;31m" + "\u65e5" * 38 + "\x1b[0m" + ON + "cd\n") * 3)
+open(w + "/span-lines.in", "w").write("top\n" + OFF + "\x1b[32m" + "".join("span line %d\n" % i for i in range(4)) + "\x1b[0m" + ON + "tail\n")
+open(w + "/span-apc.in", "w").write((OFF + "\x1b_Gq=2;" + "p" * 70 + "\x1b\\" + "x" * 100 + ON + "\n") * 3)
+open(w + "/span-link.in", "w").write((OFF + "\x1b]8;;https://agnos.example/\x1b\\" + "x" * 100 + "\x1b]8;;\x1b\\" + ON + "\n") * 3)
+open(w + "/span-csi-lf.in", "w").write((OFF + "\x1b[3\nab" + ON + "\n") * 3)
+open(w + "/span-adjacent.in", "w").write(OFF + "\x1b]0;title" + ON + "".join(OFF + "row %d\n" % i + ON for i in range(4)))
+# The v1.5.0 review's: a combining mark straight after a span joins the
+# span's last cell (80 columns, not 81), and after ESC ( a `_` is a final
+# byte, not an APC (so the 100 x's print: two rows).
+open(w + "/span-mark.in", "w").write(("ab" + OFF + "x" * 78 + ON + "\u0301\n") * 3)
+open(w + "/span-esc-inter.in", "w").write((OFF + "\x1b(_" + "x" * 100 + ON + "\n") * 3)
 PYEOF
     # name input rows cols expect(anim|once)
     for _case in "fits fit3 24 80 anim" "wraps-but-fits wide 24 80 anim" \
                  "wide-cjk cjk 24 40 anim" "partial-line-wraps partial 10 40 anim" \
                  "taller-than-terminal tall 24 80 once" "wraps-too-tall wide 10 80 once" \
                  "input-csi csi 24 80 anim" "input-osc-unterminated osc 24 80 anim" \
-                 "input-bare-esc bare-esc 24 80 anim" "wide-symbols emoji 24 80 anim"; do
+                 "input-bare-esc bare-esc 24 80 anim" "wide-symbols emoji 24 80 anim" \
+                 "span-sgr-wide span-sgr 24 80 anim" "span-multiline span-lines 24 80 anim" \
+                 "span-apc span-apc 24 80 anim" "span-hyperlink span-link 24 80 anim" \
+                 "span-lf-inside-csi span-csi-lf 24 80 anim" \
+                 "span-adjacent span-adjacent 24 80 anim" "span-mark-after span-mark 24 80 anim" \
+                 "span-esc-intermediate span-esc-inter 24 80 anim"; do
         set -- $_case
         in_pty "stty rows $3 cols $4; $BIN -a -d 1 -i 150 --color=24bit < $WORK/$2.in" > "$WORK/sized.out"
         _m=$(python3 -I scripts/term-model.py "$3" "$4" "$WORK/sized.out")
         _fr=$(printf '%s' "$_m" | sed -n 's/.*frames=\([0-9]*\).*/\1/p')
         _s1=$(printf '%s' "$_m" | sed -n 's/.*scrolled_first=\([0-9]*\).*/\1/p')
         _st=$(printf '%s' "$_m" | sed -n 's/.*scrolled_total=\([0-9]*\).*/\1/p')
+        _an=$(printf '%s' "$_m" | sed -n 's/.*anchors=\([0-9]*\).*/\1/p')
+        _oc=$(printf '%s' "$_m" | sed -n 's/.*overclimb=\([0-9]*\).*/\1/p')
         if [ -z "$_fr" ]; then
             bad "$1 ($3x$4): the model read nothing — '$_m'"
         elif [ "$_st" -ne "$_s1" ]; then
             bad "$1 ($3x$4): $((_st - _s1)) rows scrolled after the first frame ($_fr frames)"
+        elif [ "$_oc" -ne 0 ]; then
+            bad "$1 ($3x$4): $_oc of $_fr frames climbed past the top — the climb is too far"
+        elif [ "$_fr" -gt 1 ] && [ "$_an" -ne 1 ]; then
+            bad "$1 ($3x$4): frames climbed to $_an different rows — the block drifts"
         elif [ "$5" = "anim" ] && [ "$_fr" -gt 1 ]; then
             ok "$1 ($3x$4): $_fr frames, nothing scrolled after the first"
         elif [ "$5" = "once" ] && [ "$_fr" -eq 1 ]; then

@@ -317,15 +317,37 @@ fn anuenue_passthrough(): i64 {
     if (buf == 0) {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "passthrough read buffer allocation failed");
     }
+    # v1.5.0 (ADR 0006): MONO consumes anuenue's own no-colour markers and
+    # keeps every other byte. A marker a read cuts off is carried into the
+    # next read (at most 14 bytes); at EOF an unfinished one is ordinary
+    # bytes.
+    var carry = 0;
     var go = 1;
     while (go == 1) {
-        var n = anuenue_read_some(buf, ANUENUE_READ_CHUNK);
+        var n = anuenue_read_some(buf + carry, ANUENUE_READ_CHUNK - carry);
         if (n < 0) {
             return anuenue_fail(STIK_ERR_IO, "read from stdin failed");
         }
-        if (n == 0) { go = 0; continue; }
+        if (n == 0) {
+            if (carry > 0) {
+                if (anuenue_write_all(buf, carry) != 0) { return anuenue_write_failed(); }
+            }
+            go = 0;
+            continue;
+        }
         ANUENUE_BYTES_IN = ANUENUE_BYTES_IN + n;
-        if (anuenue_write_all(buf, n) != 0) { return anuenue_write_failed(); }
+        var held_v[8];
+        var w = anuenue_marker_strip(buf, carry + n, 0, &held_v);
+        var held = load64(&held_v);
+        if (w > 0) {
+            if (anuenue_write_all(buf, w) != 0) { return anuenue_write_failed(); }
+        }
+        var h = 0;
+        while (h < held) {
+            store8(buf + h, load8(buf + w + h));
+            h = h + 1;
+        }
+        carry = held;
     }
     return 0;
 }

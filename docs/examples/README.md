@@ -22,6 +22,8 @@ prefix at the top of each script makes this easy).
 | [`06-no-color.sh`](06-no-color.sh) | `NO_COLOR=1`, `--no-color`, `--color=none` → byte-identical passthrough |
 | [`07-animation.sh`](07-animation.sh) | `-a` animation with duration + speed flags |
 | [`08-force-color.sh`](08-force-color.sh) | `--force-color` keeps colour across a non-TTY pipe |
+| [`09-diagnostics.sh`](09-diagnostics.sh) | `-v` / `--log-level` diagnostics on stderr; stdout byte-identical with and without |
+| [`10-no-colour-span.sh`](10-no-colour-span.sh) | v1.5.0 no-colour spans: the APC marker pair, the producer's own colour kept, the phase pause, MONO consuming the markers |
 
 ## Conventions
 

@@ -1556,6 +1556,298 @@ fn test_v145_sgr(): i64 {
     return 0;
 }
 
+# Copy cstr `src` into `buf` and return its length.
+fn _t_put(buf, src): i64 {
+    var n = strlen(src);
+    var k = 0;
+    while (k < n) { store8(buf + k, load8(src + k)); k = k + 1; }
+    return n;
+}
+
+# 1 when `buf[0, n)` is exactly cstr `want`.
+fn _t_is(buf, n, want): i64 {
+    if (n != strlen(want)) { return 0; }
+    var k = 0;
+    while (k < n) {
+        if (load8(buf + k) != load8(want + k)) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# v1.5.0 — producer-side no-colour spans, the APC marker pair (ADR 0006).
+# Returns 0.
+fn test_v150_markers(): i64 {
+    test_group("v1.5.0 — the no-colour markers are recognised exactly");
+    var mb = alloc(512);
+    var n = _t_put(mb, "\x1b_anuenue:off\x1b\\x");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_OFF, "ESC _ anuenue:off ESC \\ is the off marker");
+    n = _t_put(mb, "\x1b_anuenue:on\x1b\\x");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_ON, "ESC _ anuenue:on ESC \\ is the on marker");
+    assert_eq(ANUENUE_MK_OFF_LEN, 15, "off is 15 bytes");
+    assert_eq(ANUENUE_MK_ON_LEN, 14, "on is 14 bytes");
+    n = _t_put(mb, "\x1b_anuenue:OFF\x1b\\");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_NONE, "upper case is not a marker");
+    n = _t_put(mb, "\x1b_anuenue:off\x07");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_NONE, "a BEL terminator is not a marker (ST only)");
+    n = _t_put(mb, "\x1b_Gf=100\x1b\\");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_NONE, "another application's APC (kitty graphics) is not");
+    n = _t_put(mb, "\x1b[31m");
+    assert_eq(_marker_at(mb, 0, n), ANUENUE_MK_NONE, "an SGR is not a marker");
+    n = _t_put(mb, "\x1b_anuenue:o");
+    assert_eq(_marker_at(mb, 0, n), 0 - 1, "a common prefix cut off is undecided");
+    n = _t_put(mb, "\x1b");
+    assert_eq(_marker_at(mb, 0, n), 0 - 1, "a lone ESC at the end is undecided");
+    n = _t_put(mb, "\x1b_anuenue:of");
+    assert_eq(_marker_at(mb, 0, n), 0 - 1, "an off prefix cut off is undecided");
+
+    test_group("v1.5.0 — MONO consumes markers and keeps every other byte");
+    n = _t_put(mb, "a\x1b_anuenue:off\x1b\\L\x1b[31mR\x1b_anuenue:on\x1b\\b\x1b_G\x1b\\");
+    var hv[8];
+    var w = anuenue_marker_strip(mb, n, 1, &hv);
+    assert_eq(_t_is(mb, w, "aL\x1b[31mRb\x1b_G\x1b\\"), 1, "markers gone; colour codes and other APCs kept");
+    n = _t_put(mb, "ab\x1b_anuenue:o");
+    w = anuenue_marker_strip(mb, n, 0, &hv);
+    assert_eq(w, 2, "an unfinished marker at a chunk end is held");
+    assert_eq(load64(&hv), 11, "11 bytes held (ESC _ anuenue : o)");
+    n = _t_put(mb, "ab\x1b_anuenue:o");
+    w = anuenue_marker_strip(mb, n, 1, &hv);
+    assert_eq(w, n, "at the end of the input it is ordinary bytes");
+
+    test_group("v1.5.0 — animation's prepare pass: spans keep their colour codes");
+    var sm = alloc(512);
+    n = _t_put(mb, "\x1b[1ma\x1b_anuenue:off\x1b\\\x1b[31mR\x1b_anuenue:on\x1b\\\x1b[2mb");
+    w = _anim_prepare(mb, n, sm);
+    assert_eq(_t_is(mb, w, "a\x1b[31mRb"), 1, "SGR outside a span stripped, inside kept, markers gone");
+    assert_eq(load8(sm + 0), 0, "a: outside the span");
+    assert_eq(load8(sm + 1), 2, "the span's ESC: inside, and its first byte");
+    assert_eq(load8(sm + 2), 1, "the next: inside");
+    assert_eq(load8(sm + 6), 1, "R: inside");
+    assert_eq(load8(sm + 7), 0, "b: outside again");
+    n = _t_put(mb, "x\x1b_anuenue:off\x1b\\yz");
+    w = _anim_prepare(mb, n, sm);
+    assert_eq(_t_is(mb, w, "xyz"), 1, "an off with no on runs to the end");
+    assert_eq(load8(sm + 2), 1, "z: still inside");
+
+    test_group("v1.5.0 — span bytes are raw clusters, split at LF, closed to extenders");
+    var ct = alloc(64 * 8);
+    var cf = alloc(64);
+    # "a" + span("XY" LF "Z") + U+0301 "b"
+    n = _t_put(mb, "a\x1b_anuenue:off\x1b\\XY\nZ\x1b_anuenue:on\x1b\\\xcc\x81b");
+    w = _anim_prepare(mb, n, sm);
+    var nc = _pretag_spans(mb, w, ct, 64, sm, cf);
+    assert_eq(nc, 6, "a | XY | LF | Z | U+0301 | b — six clusters");
+    assert_eq(load8(cf + 0), 0, "a is ordinary");
+    assert_eq(load8(cf + 1), ANUENUE_CF_RAW + ANUENUE_CF_OPEN, "XY is one raw cluster, and opens the span");
+    assert_eq(load64(ct + 2 * 8) - load64(ct + 1 * 8), 2, "of two bytes");
+    assert_eq(load8(cf + 2), ANUENUE_CF_RAW, "the LF inside the span is a raw cluster of its own");
+    assert_eq(load8(cf + 3), ANUENUE_CF_RAW, "Z is a raw cluster");
+    assert_eq(load8(cf + 4), ANUENUE_CF_JOIN + ANUENUE_CF_CONT,
+              "an extender after a span continues the cluster before it");
+    assert_eq(load8(cf + 5), 0, "b is ordinary");
+
+    test_group("v1.5.0 — the row count inside a span: the producer's escapes are intact");
+    # span(ESC[31m + 80 x + ESC[0m) LF at 80 columns: the codes reach the
+    # terminal intact, so the line is 80 columns, one row.
+    n = 0;
+    store8(mb, 27); store8(mb + 1, 95);
+    n = _t_put(mb, "\x1b_anuenue:off\x1b\\\x1b[31m");
+    var xk = 0;
+    while (xk < 80) { store8(mb + n + xk, 120); xk = xk + 1; }
+    n = n + 80;
+    store8(mb + n, 27); store8(mb + n + 1, 91); store8(mb + n + 2, 48); store8(mb + n + 3, 109);
+    store8(mb + n + 4, 10);
+    n = n + 5;
+    w = _anim_prepare(mb, n, sm);
+    nc = _pretag_spans(mb, w, ct, 64, sm, cf);
+    assert_eq(_block_rows_f(mb, ct, cf, nc, 80), 1, "escapes inside a span take no columns: 1 row");
+    assert_eq(_block_rows_f(mb, ct, cf, nc, 79), 2, "and 80 printing columns wrap at 79");
+    # The same bytes clustered as ordinary text: anuenue's escape cancels
+    # each ESC, so the codes' parameters print — 4 + 80 + 3 columns.
+    var ct2 = alloc(256 * 8);
+    var nc2 = _pretag_clusters(mb, w, ct2, 256);
+    assert_eq(_block_rows(mb, ct2, nc2, 80), 2, "outside a span the parameters count: 2 rows");
+    return 0;
+}
+
+# OFF + pre + `xs` x's + post + ON + LF into `buf`; returns the length.
+fn _t_span(buf, pre, xs, post): i64 {
+    var n = _t_put(buf, "\x1b_anuenue:off\x1b\\");
+    n = n + _t_put(buf + n, pre);
+    var k = 0;
+    while (k < xs) { store8(buf + n + k, 120); k = k + 1; }
+    n = n + xs;
+    n = n + _t_put(buf + n, post);
+    n = n + _t_put(buf + n, "\x1b_anuenue:on\x1b\\\n");
+    return n;
+}
+
+# Rows climbed for `n` bytes of `buf` as animation would tag them.
+fn _t_span_rows(buf, n, sm, ct, cf, cols): i64 {
+    var w = _anim_prepare(buf, n, sm);
+    var nc = _pretag_spans(buf, w, ct, 256, sm, cf);
+    return _block_rows_f(buf, ct, cf, nc, cols);
+}
+
+# v1.5.0 review (V-07 to V-10): animation agrees with the filter at span
+# edges — an extender after a span, an empty span, a UTF-8 sequence a span
+# cuts — and the escape parser's intermediates.
+fn test_v150_review(): i64 {
+    var mb = alloc(512);
+    var sm = alloc(512);
+    var ct = alloc(257 * 8);
+    var cf = alloc(257);
+
+    test_group("v1.5.0 V-07 — an extender after a span continues the cluster before it");
+    # e span(x) U+0301 b: the mark is CONT (no phase step, no columns).
+    var n = _t_put(mb, "e\x1b_anuenue:off\x1b\\x\x1b_anuenue:on\x1b\\\xcc\x81b");
+    var w = _anim_prepare(mb, n, sm);
+    var nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 4, "e | x | U+0301 | b");
+    assert_eq(load8(cf + 2), ANUENUE_CF_JOIN + ANUENUE_CF_CONT, "the mark continues e");
+    assert_eq(load8(cf + 3), 0, "b is ordinary");
+    # After an LF, H-05's rule holds: the mark is a cluster of its own.
+    n = _t_put(mb, "e\n\x1b_anuenue:off\x1b\\x\x1b_anuenue:on\x1b\\\xcc\x81b");
+    w = _anim_prepare(mb, n, sm);
+    nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(load8(cf + 3), ANUENUE_CF_JOIN, "after an LF the mark joins the span but is not CONT");
+    # The review's row count: 10 columns of span, then the mark, at 10 wide.
+    n = _t_span(mb, "", 10, "");
+    n = n - 1;                                          # drop the LF; add mark + LF
+    n = n + _t_put(mb + n, "\xcc\x81\n");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 10), 1, "the mark joins the span's last cell: 1 row");
+
+    test_group("v1.5.0 V-08 — an empty span is seen: the latches reset, the cluster opens");
+    n = _t_put(mb, "a\xe2\x80\x8d\x1b_anuenue:off\x1b\\\x1b_anuenue:on\x1b\\b");
+    w = _anim_prepare(mb, n, sm);
+    assert_eq(load8(sm + 4), 4, "b: the first byte after an empty span");
+    nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 2, "a+ZWJ | b: b does not join across the empty span");
+    assert_eq(load8(cf + 1), ANUENUE_CF_OPEN, "and its cluster is reset before");
+    n = _t_put(mb, "\xf0\x9f\x87\xba\x1b_anuenue:off\x1b\\\x1b_anuenue:on\x1b\\\xf0\x9f\x87\xb8b");
+    w = _anim_prepare(mb, n, sm);
+    nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 3, "U+1F1FA | U+1F1F8 | b: no flag pair across an empty span");
+
+    test_group("v1.5.0 V-09 — a UTF-8 sequence a span cuts stays cut");
+    n = _t_put(mb, "a\xe4\x1b_anuenue:off\x1b\\\xb8\xad\x1b_anuenue:on\x1b\\x");
+    w = _anim_prepare(mb, n, sm);
+    nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 4, "a | 0xE4 | span(0xB8 0xAD) | x");
+    assert_eq(load64(ct + 2 * 8) - load64(ct + 8), 1, "the lead byte alone");
+    assert_eq(load8(cf + 2), ANUENUE_CF_RAW + ANUENUE_CF_OPEN, "the tail is the span's");
+
+    test_group("v1.5.0 — _find_esc: the ESC at every offset, eight bytes at a time");
+    # Every length 0..72 (both word loops), an ESC at every offset or none, among bytes that
+    # sit next to 0x1B: 0x1A, 0x1C, 0x9B, 0x3B. The word test must find the
+    # first ESC exactly, and n when there is none.
+    var fe_bad = 0;
+    var fe_len = 0;
+    while (fe_len <= 72) {
+        var fe_at = 0 - 1;
+        while (fe_at < fe_len) {
+            var fe_k = 0;
+            while (fe_k < fe_len) {
+                var fe_b = 0x1A;
+                if ((fe_k % 4) == 1) { fe_b = 0x1C; }
+                if ((fe_k % 4) == 2) { fe_b = 0x9B; }
+                if ((fe_k % 4) == 3) { fe_b = 0x3B; }
+                store8(mb + 3 + fe_k, fe_b);
+                fe_k = fe_k + 1;
+            }
+            var fe_want = fe_len;
+            if (fe_at >= 0) {
+                store8(mb + 3 + fe_at, 27);
+                fe_want = fe_at;
+                if (fe_at + 1 < fe_len) { store8(mb + 3 + fe_at + 1, 27); }   # a second one after
+            }
+            if (_find_esc(mb + 3, 0, fe_len) != fe_want) { fe_bad = fe_bad + 1; }
+            fe_at = fe_at + 1;
+        }
+        fe_len = fe_len + 1;
+    }
+    assert_eq(fe_bad, 0, "the first ESC at every offset of every length to 72, unaligned");
+    assert_eq(_find_esc(mb, 5, 5), 5, "an empty range is n");
+
+    test_group("v1.5.0 V-10 — after an escape intermediate, [ ] P X ^ _ are final bytes");
+    n = _t_span(mb, "\x1b(P", 30, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 10), 3, "ESC ( P is one sequence: 30 columns, 3 rows at 10");
+    n = _t_span(mb, "\x1b(B", 30, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 10), 3, "ESC ( B likewise");
+    return 0;
+}
+
+# v1.5.0 review: inside a span the row count parses the producer's escapes
+# as the terminal's VT parser does (_span_vt), and each span's first
+# cluster is flagged so the renderer resets there.
+fn test_v150_vt(): i64 {
+    test_group("v1.5.0 — _span_vt: one step of the terminal's escape parser");
+    assert_eq(_span_vt(65, 0), 1, "text in ground: ground, acts");
+    assert_eq(_span_vt(27, 0), 2, "ESC: escape state");
+    assert_eq(_span_vt(27, 2), 2, "an ESC inside a CSI restarts");
+    assert_eq(_span_vt(10, 2), 5, "an LF inside a CSI is still executed");
+    assert_eq(_span_vt(10, 1), 3, "an LF after an ESC is still executed");
+    assert_eq(_span_vt(0x18, 2), 0, "CAN aborts a CSI");
+    assert_eq(_span_vt(0x1A, 3), 0, "SUB aborts an OSC");
+    assert_eq(_span_vt(40, 1), 10, "an intermediate: escape-intermediate state (ESC ( B)");
+    assert_eq(_span_vt(40, 5), 10, "more intermediates stay there");
+    assert_eq(_span_vt(91, 5), 0, "after an intermediate, [ is a final byte, not a CSI");
+    assert_eq(_span_vt(95, 5), 0, "and _ is one too, not an APC");
+    assert_eq(_span_vt(10, 5), 11, "a C0 control still executes there");
+    assert_eq(_span_vt(32, 2), 4, "an intermediate inside a CSI keeps the CSI");
+    assert_eq(_span_vt(66, 1), 0, "a final byte ends it");
+    assert_eq(_span_vt(91, 1), 4, "ESC [ : CSI");
+    assert_eq(_span_vt(93, 1), 6, "ESC ] : OSC");
+    assert_eq(_span_vt(95, 1), 8, "ESC _ : an APC string");
+    assert_eq(_span_vt(80, 1), 8, "ESC P : a DCS string");
+    assert_eq(_span_vt(10, 3), 6, "an LF inside an OSC is swallowed");
+    assert_eq(_span_vt(7, 3), 0, "BEL ends an OSC");
+    assert_eq(_span_vt(7, 4), 8, "BEL does not end an APC");
+    assert_eq(_span_vt(0x7F, 2), 4, "DEL is ignored");
+    assert_eq(_span_vt(0xC3, 2), 1, "a non-ASCII byte ends a CSI and is text");
+    assert_eq(_span_vt(109, 2), 0, "m ends a CSI");
+    assert_eq(_span_vt(59, 2), 4, "a parameter keeps it open");
+
+    test_group("v1.5.0 — the row count follows the terminal inside a span");
+    var mb = alloc(512);
+    var sm = alloc(512);
+    var ct = alloc(257 * 8);
+    var cf = alloc(257);
+    var n = _t_span(mb, "\x1b[3\x1b[1m", 80, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 1, "ESC inside a CSI restarts: 80 columns, 1 row");
+    n = _t_span(mb, "\x1b[3\nab", 0, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 2, "an LF inside a CSI is a line feed: 2 rows");
+    n = _t_span(mb, "\x1b_G", 80, "\x1b\\ab");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 1, "an APC's payload takes no columns");
+    n = _t_span(mb, "\x1bP1$r", 80, "\x1b\\ab");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 1, "nor a DCS's");
+    n = _t_span(mb, "\x1b(B", 80, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 1, "ESC ( B is one sequence: 80 columns");
+    n = _t_span(mb, "\x1b]8;;http://x/\x1b\\", 80, "\x1b]8;;\x1b\\");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 80), 1, "an OSC 8 hyperlink takes no columns");
+    n = _t_span(mb, "\x1b[31\x18", 80, "");
+    assert_eq(_t_span_rows(mb, n, sm, ct, cf, 79), 2, "CAN aborts a CSI: the 80 x's print, 2 rows at 79");
+
+    test_group("v1.5.0 — each span's first cluster is flagged: adjacent spans reset");
+    # span(unterminated OSC) span(abc LF): the renderer's reset before the
+    # second span ends the OSC, so abc and its LF show.
+    n = _t_put(mb, "\x1b_anuenue:off\x1b\\\x1b]0;t\x1b_anuenue:on\x1b\\\x1b_anuenue:off\x1b\\abc\n");
+    var w = _anim_prepare(mb, n, sm);
+    var nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 3, "OSC | abc | LF");
+    assert_eq(load8(cf + 0), ANUENUE_CF_RAW + ANUENUE_CF_OPEN, "the first span opens");
+    assert_eq(load8(cf + 1), ANUENUE_CF_RAW + ANUENUE_CF_OPEN, "so does the adjacent one");
+    assert_eq(load8(cf + 2), ANUENUE_CF_RAW, "the LF inside it does not");
+    assert_eq(_block_rows_f(mb, ct, cf, nc, 80), 1, "the reset ends the OSC: abc and the LF count");
+    # A nested `off` opens nothing.
+    n = _t_put(mb, "\x1b_anuenue:off\x1b\\a\x1b_anuenue:off\x1b\\b\x1b_anuenue:on\x1b\\");
+    w = _anim_prepare(mb, n, sm);
+    nc = _pretag_spans(mb, w, ct, 256, sm, cf);
+    assert_eq(nc, 1, "a nested off: one raw cluster");
+    assert_eq(load64(ct + 8), 2, "of both bytes");
+    return 0;
+}
+
 # Unit-suite entry: runs every cut's groups in order and returns
 # assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
 #
@@ -1587,6 +1879,9 @@ fn main(): i64 {
     test_word_copy();
     test_v144_rows();
     test_v145_sgr();
+    test_v150_markers();
+    test_v150_vt();
+    test_v150_review();
 
     return assert_summary();
 }

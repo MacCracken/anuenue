@@ -531,10 +531,11 @@ fn _sgr_len(buf, s, n): i64 {
 # bytes. Bytes before the first ESC are never copied, so input with no
 # ESC costs one scan.
 #
-# Used where the whole input is already in memory — anuenue_render_bytes
-# and the animation slurp. The streaming filter does not call it: it
-# drops SGRs inline in its own byte loop (same _sgr_len decision), because
-# a second pass over every chunk measured +1.7 ns/byte.
+# The streaming filter and one-shot text do not call it — they drop SGRs
+# inline in their byte loops (same _sgr_len decision); a second pass over
+# every chunk measured +1.7 ns/byte, and from v1.5.0 a pass would also
+# strip the colour codes inside a producer's no-colour span. Its contract
+# is pinned by fuzz/sgr-strip.fcyr and the unit suite.
 fn anuenue_sgr_strip(buf, n, final, out_partial): i64 {
     store64(out_partial, 0);
     var r = 0;
@@ -577,6 +578,265 @@ fn anuenue_sgr_strip(buf, n, final, out_partial): i64 {
         r = r + 1;
     }
     return w;
+}
+
+# ---- no-colour spans (v1.5.0, ADR 0006) ---------------------------
+#
+# A producer keeps part of its output out of the rainbow by bracketing it
+# with an ECMA-48 application program command pair:
+#
+#     ESC _ anuenue:off ESC \      15 bytes
+#     ESC _ anuenue:on  ESC \      14 bytes
+#
+# xterm-family terminals ignore an APC, so the producer's output still
+# renders cleanly without anuenue in the pipe. Only these two exact byte
+# strings are markers; every other APC passes as before. Inside a span the
+# producer's bytes go out intact (its own colour codes included), anuenue
+# emits an SGR reset at both markers and nothing of its own between them,
+# and the rainbow's phase pauses. Unmatched markers are lenient: `off`
+# runs to the end of the input (which closes it with a reset, like `on`),
+# a stray `on` (or `off` inside a span) is a no-op. Markers are consumed on every route, MONO included — they are
+# commands to anuenue, not text. Decided with the user 2026-10-15.
+enum AnuenueMarker {
+    ANUENUE_MK_NONE    = 0;
+    ANUENUE_MK_OFF     = 1;
+    ANUENUE_MK_ON      = 2;
+    ANUENUE_MK_OFF_LEN = 15;
+    ANUENUE_MK_ON_LEN  = 14;
+}
+
+var _ANUENUE_MK_OFF_STR = "\x1b_anuenue:off\x1b\\";
+var _ANUENUE_MK_ON_STR  = "\x1b_anuenue:on\x1b\\";
+
+# Markers consumed so far (reported under -v).
+var ANUENUE_MARKERS = 0;
+
+# Compare the `len`-byte literal `lit` with `buf + s` within `n` bytes: 1
+# when all of it is there, 0 on the first byte that differs, -1 when every
+# byte present matches but the buffer ends first.
+fn _marker_cmp(buf, s, n, lit, len): i64 {
+    var k = 0;
+    var res = 1;
+    var going = 1;
+    while (going == 1) {
+        if (k >= len) {
+            going = 0;
+        } else {
+            if (s + k >= n) {
+                res = 0 - 1;
+                going = 0;
+            } else {
+                if (load8(buf + s + k) != load8(lit + k)) {
+                    res = 0;
+                    going = 0;
+                } else {
+                    k = k + 1;
+                }
+            }
+        }
+    }
+    return res;
+}
+
+# Which marker starts at `buf + s` (an ESC) within `n` bytes:
+# ANUENUE_MK_OFF or _ON when the whole marker is there, ANUENUE_MK_NONE
+# when it is no marker, -1 when it could still become one but the buffer
+# ends first (at most ANUENUE_MK_OFF_LEN - 1 bytes — the carry bound).
+fn _marker_at(buf, s, n): i64 {
+    var a = _marker_cmp(buf, s, n, _ANUENUE_MK_OFF_STR, ANUENUE_MK_OFF_LEN);
+    if (a == 1) { return ANUENUE_MK_OFF; }
+    var b = _marker_cmp(buf, s, n, _ANUENUE_MK_ON_STR, ANUENUE_MK_ON_LEN);
+    if (b == 1) { return ANUENUE_MK_ON; }
+    if (a < 0) { return 0 - 1; }
+    if (b < 0) { return 0 - 1; }
+    return ANUENUE_MK_NONE;
+}
+
+# Length of the marker `mk` (ANUENUE_MK_OFF or _ON).
+fn _marker_len(mk): i64 {
+    if (mk == ANUENUE_MK_OFF) { return ANUENUE_MK_OFF_LEN; }
+    return ANUENUE_MK_ON_LEN;
+}
+
+# Index of the first ESC in `buf[r, n)`, or `n` if there is none. Eight
+# bytes at a time: XOR with ESC in every byte turns an ESC into a zero
+# byte, and (v - 0x01..01) & ~v & 0x80..80 is non-zero exactly when a word
+# holds one (the stdlib strlen's test). MONO's marker strip runs this over
+# every byte of the stream. Measured on MONO, ns/byte: v1.4.5's bare copy
+# 0.25; a byte loop 2.04; one word per step 0.67; four words per step 0.55
+# (docs/benchmarks.md § v1.5.0).
+fn _find_esc(buf, r, n): i64 {
+    var lo = 0x0101010101010101;
+    var hi = 0x8080808080808080;
+    var esc8 = 0x1B1B1B1B1B1B1B1B;
+    var k = r;
+    var found = 0;
+    # Four words per step: the loop's own cost is most of the cost.
+    while (found == 0) {
+        if (k + 32 > n) {
+            found = 1;
+        } else {
+            var v0 = load64(buf + k) ^ esc8;
+            var v1 = load64(buf + k + 8) ^ esc8;
+            var v2 = load64(buf + k + 16) ^ esc8;
+            var v3 = load64(buf + k + 24) ^ esc8;
+            var t = ((v0 - lo) & (v0 ^ 0xFFFFFFFFFFFFFFFF))
+                  | ((v1 - lo) & (v1 ^ 0xFFFFFFFFFFFFFFFF))
+                  | ((v2 - lo) & (v2 ^ 0xFFFFFFFFFFFFFFFF))
+                  | ((v3 - lo) & (v3 ^ 0xFFFFFFFFFFFFFFFF));
+            if ((t & hi) != 0) {
+                found = 1;
+            } else {
+                k = k + 32;
+            }
+        }
+    }
+    found = 0;
+    while (found == 0) {
+        if (k + 8 > n) {
+            found = 1;
+        } else {
+            var v = load64(buf + k) ^ esc8;
+            if (((v - lo) & (v ^ 0xFFFFFFFFFFFFFFFF) & hi) != 0) {
+                found = 1;
+            } else {
+                k = k + 8;
+            }
+        }
+    }
+    while (k < n) {
+        if (load8(buf + k) == 27) { return k; }
+        k = k + 1;
+    }
+    return n;
+}
+
+# Remove the markers from `buf[0, n)` in place and keep every other byte —
+# MONO's job (ADR 0006: markers are consumed in every mode). Returns the
+# decided length; with `final` 0 a marker prefix at the end is moved after
+# the decided bytes and its length stored through `out_partial`, for the
+# caller to carry — the same contract as anuenue_sgr_strip. It jumps from
+# ESC to ESC (_find_esc), and until the first marker is removed nothing
+# moves, so input without markers is only scanned, never copied.
+fn anuenue_marker_strip(buf, n, final, out_partial): i64 {
+    store64(out_partial, 0);
+    var r = _find_esc(buf, 0, n);
+    var w = r;
+    while (r < n) {
+        # buf[r] is an ESC.
+        var mk = _marker_at(buf, r, n);
+        if (mk > 0) {
+            ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+            r = r + _marker_len(mk);
+        } else {
+            if (mk < 0) {
+                if (final == 0) {
+                    var held = n - r;
+                    var h = 0;
+                    while (h < held) {
+                        store8(buf + w + h, load8(buf + r + h));
+                        h = h + 1;
+                    }
+                    store64(out_partial, held);
+                    return w;
+                }
+            }
+            store8(buf + w, 27);                    # an ESC that is no marker
+            w = w + 1;
+            r = r + 1;
+        }
+        # The run up to the next ESC: in place while nothing was removed.
+        var e = _find_esc(buf, r, n);
+        if (w == r) {
+            w = e;
+        } else {
+            while (r < e) {
+                store8(buf + w, load8(buf + r));
+                w = w + 1;
+                r = r + 1;
+            }
+        }
+        r = e;
+    }
+    return w;
+}
+
+# An SGR reset at a span's edge, then the reserve check that follows every
+# write (architecture 001). A run of empty spans writes resets and nothing
+# else, so without the check they would grow `pos` past the buffer (V-06 in
+# the v1.5.0 audit delta). Returns the new position, or -1 if the flush
+# failed.
+fn _reset_checked(line_buf, pos): i64 {
+    var p = tty_sgr_reset_buf(line_buf, pos);
+    if (p + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
+        if (anuenue_write_all(line_buf, p) != 0) { return 0 - 1; }
+        p = 0;
+    }
+    return p;
+}
+
+# Copy span bytes `buf[i, n)` into `line_buf` RAW — no escape of anuenue's,
+# no colour-code stripping, no phase — until an `on` marker or the end of
+# the chunk (ADR 0006). An LF, or the line buffer nearing full, flushes
+# WITHOUT the usual SGR reset: inside a span the producer owns the
+# attributes, which may run across lines. At an `on` marker the marker is
+# consumed, an SGR reset is emitted so the span's attributes do not bleed
+# into the rainbow, and *span_v is set to 0. An `off` inside a span is a
+# no-op. A marker the chunk cuts off is left unconsumed with *carry_v = 1,
+# for the caller to carry. *pos_v is the line-buffer position in and out.
+# Returns the index reached, or -1 if a write failed.
+fn _span_walk(buf, i, n, line_buf, pos_v, span_v, carry_v): i64 {
+    store64(carry_v, 0);
+    var pos = load64(pos_v);
+    var k = i;
+    var res = 0 - 2;                                    # -2: still walking
+    while (res == (0 - 2)) {
+        if (k >= n) {
+            res = k;
+        } else {
+            var b = load8(buf + k);
+            var handled = 0;
+            if (b == 27) {
+                var mk = _marker_at(buf, k, n);
+                if (mk < 0) {
+                    store64(carry_v, 1);
+                    res = k;
+                    handled = 1;
+                }
+                if (mk > 0) {
+                    ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                    k = k + _marker_len(mk);
+                    handled = 1;
+                    if (mk == ANUENUE_MK_ON) {
+                        pos = _reset_checked(line_buf, pos);
+                        if (pos < 0) {
+                            store64(pos_v, 0);
+                            return 0 - 1;
+                        }
+                        store64(span_v, 0);
+                        res = k;
+                    }
+                }
+            }
+            if (handled == 0) {
+                store8(line_buf + pos, b);
+                pos = pos + 1;
+                k = k + 1;
+                var flush = 0;
+                if (b == 10) { flush = 1; }
+                if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) { flush = 1; }
+                if (flush == 1) {
+                    if (anuenue_write_all(line_buf, pos) != 0) {
+                        store64(pos_v, pos);
+                        return 0 - 1;
+                    }
+                    pos = 0;
+                }
+            }
+        }
+    }
+    store64(pos_v, pos);
+    return res;
 }
 
 # ---- anuenue_filter ------------------------------------------------
@@ -648,13 +908,21 @@ fn anuenue_filter(): i64 {
     # very first emit (which otherwise would over-advance by one).
     var saw_any = 0;
 
+    # v1.5.0 (ADR 0006): 1 inside a producer's no-colour span. The span walk
+    # shares the line buffer through pos_v; span_v / carry_v are its outs.
+    var off_span = 0;
+    var pos_v[8];
+    var span_v[8];
+    var carry_v[8];
+
     var go = 1;
     while (go == 1) {
         var n_read = anuenue_read_some(read_buf + carry_len, ANUENUE_READ_CHUNK - carry_len);
         if (n_read < 0) {
             # Read error. Flush whatever's queued so partial output
-            # isn't lost; exit non-zero.
-            if (pos > 0) {
+            # isn't lost; exit non-zero. An open span is closed with a
+            # reset too, as at EOF below.
+            if (pos > 0 || off_span == 1) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
             }
@@ -671,19 +939,26 @@ fn anuenue_filter(): i64 {
             # a-time, never panic").
             var ci = 0;
             while (ci < carry_len) {
-                if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
-                pos = _emit_phase_esc(line_buf, pos, phase);
+                # Inside a span the carried bytes (an unfinished `on`) are
+                # span text: raw, no escape, no phase.
+                if (off_span == 0) {
+                    if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+                    pos = _emit_phase_esc(line_buf, pos, phase);
+                    saw_any = 1;
+                }
                 store8(line_buf + pos, load8(read_buf + ci));
                 pos = pos + 1;
-                saw_any = 1;
                 if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
-                    pos = tty_sgr_reset_buf(line_buf, pos);
+                    if (off_span == 0) { pos = tty_sgr_reset_buf(line_buf, pos); }
                     if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                     pos = 0;
                 }
                 ci = ci + 1;
             }
-            if (pos > 0) {
+            # The end of the input closes an open span like an `on` marker:
+            # one reset, so the producer's colour does not outlive anuenue
+            # even when the span's last line was already flushed.
+            if (pos > 0 || off_span == 1) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                 pos = 0;
@@ -701,6 +976,17 @@ fn anuenue_filter(): i64 {
         # the CLAUDE.md no-break-with-var rule.
         var i = 0;
         var in_chunk = 1;
+
+        # A span still open from the last chunk resumes before anything else.
+        if (off_span == 1) {
+            store64(&pos_v, pos);
+            store64(&span_v, 1);
+            i = _span_walk(read_buf, 0, n, line_buf, &pos_v, &span_v, &carry_v);
+            if (i < 0) { return anuenue_write_failed(); }
+            pos = load64(&pos_v);
+            off_span = load64(&span_v);
+            if (load64(&carry_v) == 1) { in_chunk = 0; }
+        }
         while (in_chunk == 1 && i < n) {
             var b = load8(read_buf + i);
 
@@ -735,6 +1021,33 @@ fn anuenue_filter(): i64 {
                 }
 
                 if (b == 27) {
+                    # v1.5.0: a no-colour marker first (ADR 0006).
+                    var mk = _marker_at(read_buf, i, n);
+                    if (mk < 0) {
+                        in_chunk = 0;
+                        continue;
+                    }
+                    if (mk == ANUENUE_MK_ON) {
+                        ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                        i = i + ANUENUE_MK_ON_LEN;          # stray `on`: a no-op
+                        continue;
+                    }
+                    if (mk == ANUENUE_MK_OFF) {
+                        ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                        i = i + ANUENUE_MK_OFF_LEN;
+                        pos = _reset_checked(line_buf, pos);
+                        if (pos < 0) { return anuenue_write_failed(); }
+                        prev_was_zwj = 0;
+                        prev_unpaired_ri = 0;
+                        store64(&pos_v, pos);
+                        store64(&span_v, 1);
+                        i = _span_walk(read_buf, i, n, line_buf, &pos_v, &span_v, &carry_v);
+                        if (i < 0) { return anuenue_write_failed(); }
+                        pos = load64(&pos_v);
+                        off_span = load64(&span_v);
+                        if (load64(&carry_v) == 1) { in_chunk = 0; }
+                        continue;
+                    }
                     var sgr = _sgr_len(read_buf, i, n);
                     if (sgr > 0) {
                         ANUENUE_SGR_STRIPPED = ANUENUE_SGR_STRIPPED + 1;
@@ -886,11 +1199,7 @@ fn anuenue_filter(): i64 {
 # so the stdin filter loop can never terminate there; rendering an
 # argv-supplied buffer makes anuenue one-shot usable, mirroring
 # `bnrmr TEXT`. On a real TTY pipeline the filter path stays canonical.
-fn anuenue_render_bytes(src, len_in): i64 {
-    # v1.4.5: the input's colour codes go first. The whole text is in
-    # memory, so nothing is held (`final` 1).
-    var rb_held[8];
-    var len = anuenue_sgr_strip(src, len_in, 1, &rb_held);
+fn anuenue_render_bytes(src, len): i64 {
     var line_buf = alloc(ANUENUE_LINE_BUF);
     if (line_buf == 0) {
         return anuenue_fail(STIK_ERR_RESOURCE_EXHAUSTED, "render line buffer allocation failed");
@@ -904,10 +1213,58 @@ fn anuenue_render_bytes(src, len_in): i64 {
     var prev_unpaired_ri = 0;
     var prev_was_zwj = 0;
     var saw_any = 0;
+    # v1.5.0 (ADR 0006): no-colour spans, as in anuenue_filter. The text is
+    # all in memory, so nothing is carried: a marker or colour code that is
+    # unfinished at the end is ordinary bytes.
+    var rb_pos_v[8];
+    var rb_span_v[8];
+    var rb_carry_v[8];
+    var rb_open = 0;                        # 1 while a span is open
 
     var i = 0;
     while (i < len) {
         var b = load8(src + i);
+
+        # v1.4.5 / v1.5.0: the input's colour codes are stripped (they were
+        # stripped up front through v1.5.0, which would also strip the ones
+        # inside a no-colour span), and a no-colour marker opens a span.
+        if (b == 27) {
+            var rmk = _marker_at(src, i, len);
+            if (rmk == ANUENUE_MK_ON) {
+                ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                i = i + ANUENUE_MK_ON_LEN;
+                continue;
+            }
+            if (rmk == ANUENUE_MK_OFF) {
+                ANUENUE_MARKERS = ANUENUE_MARKERS + 1;
+                i = i + ANUENUE_MK_OFF_LEN;
+                pos = _reset_checked(line_buf, pos);
+                if (pos < 0) { return anuenue_write_failed(); }
+                prev_was_zwj = 0;
+                prev_unpaired_ri = 0;
+                store64(&rb_pos_v, pos);
+                store64(&rb_span_v, 1);
+                i = _span_walk(src, i, len, line_buf, &rb_pos_v, &rb_span_v, &rb_carry_v);
+                if (i < 0) { return anuenue_write_failed(); }
+                pos = load64(&rb_pos_v);
+                rb_open = load64(&rb_span_v);
+                if (load64(&rb_carry_v) == 1) {
+                    # An unfinished `on` at the very end: span text, raw.
+                    while (i < len) {
+                        store8(line_buf + pos, load8(src + i));
+                        pos = pos + 1;
+                        i = i + 1;
+                    }
+                }
+                continue;
+            }
+            var rsgr = _sgr_len(src, i, len);
+            if (rsgr > 0) {
+                ANUENUE_SGR_STRIPPED = ANUENUE_SGR_STRIPPED + 1;
+                i = i + rsgr;
+                continue;
+            }
+        }
 
         if (b == 10) {                      # LF: reset SGR, emit, flush line
             if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
@@ -998,7 +1355,9 @@ fn anuenue_render_bytes(src, len_in): i64 {
         i = i + seqlen;
     }
 
-    if (pos > 0) {                          # final reset + flush
+    # Final reset + flush. An open span gets its reset here even when its
+    # last line was already flushed (the end closes it like `on`).
+    if (pos > 0 || rb_open == 1) {
         pos = tty_sgr_reset_buf(line_buf, pos);
         if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
         pos = 0;

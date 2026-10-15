@@ -45,6 +45,13 @@ byte-identical to `cat`. The removal holds at most an unfinished sequence, under
 128 bytes, across a read, the same bounded carry as a split UTF-8 sequence. So
 the no-buffering rule above holds.
 
+*Amended at v1.5.0:* a second class. The no-colour markers `ESC _ anuenue:off
+ESC \` and `ESC _ anuenue:on ESC \` are removed on **every** route, MONO
+included: they are commands to anuenue, not text ([ADR 0006](0006-no-colour-spans.md)).
+Between them the bytes pass exactly as written, colour codes included, with an
+SGR reset at each marker. MONO is byte-identical to `cat` for every input
+without a marker. A marker split across a read is carried, at most 14 bytes.
+
 Concretely, this means anuenue's capability surface is:
 
 | Syscall                  | Why                                                          |

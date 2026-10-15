@@ -46,13 +46,20 @@ NO_COLOR=1 echo "AGNOS" | ./build/anuenue      # byte-identical passthrough
 | `-a`  | `--animate`       | —        | Buffer input, repaint with phase shift per frame (a block taller than the terminal is drawn once) |
 | `-d`  | `--duration <N>`  | int      | Animation duration in seconds (0 = until SIGINT) |
 | `-S`  | `--speed <N>`     | int      | Animation phase advance per frame (default 1) |
-| `-n`  | `--no-color`      | —        | Force MONO passthrough (byte-identical to `cat`) |
+| `-n`  | `--no-color`      | —        | Force MONO passthrough (byte-identical to `cat`, less any no-colour markers) |
 | `-C`  | `--force-color`   | —        | Emit colour even when stdout isn't a TTY |
 | `-c`  | `--color <mode>`  | str      | `auto` / `24bit` / `256` / `16` / `none` |
 
 Colour codes already in the input (`ls --color=always | anuenue`) are replaced by
 the rainbow on every colouring route; `--no-color` / `NO_COLOR` pass them through
 untouched (v1.4.5).
+
+To keep part of its output out of the rainbow, a producer brackets it with
+`ESC _ anuenue:off ESC \` … `ESC _ anuenue:on ESC \` (v1.5.0). The span passes
+through exactly as written, the producer's own colours included, and the rainbow
+picks up after it where it left off. Terminals ignore the markers when anuenue
+is not in the pipe — see [ADR 0006](docs/adr/0006-no-colour-spans.md) and
+[`docs/examples/10-no-colour-span.sh`](docs/examples/10-no-colour-span.sh).
 
 **Colour-mode priority chain**: `--color` → `--no-color` → `NO_COLOR` env → stdout-not-TTY (unless `--force-color`) → `COLORTERM` → `TERM`.
 
@@ -70,34 +77,37 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.4.5
+### Quality bar at v1.5.0
 
-- **506** unit assertions across 60 groups (`cyrius test`)
+- **595** unit assertions across 73 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **27** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
   and one stderr line per failure
-- **60** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **80** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
   clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
   positionals), parse-error lines that echo argv sanitized and bounded, and
   no escape-copy scratch byte ever reaching stdout, a stalled non-blocking peer
-  costing no CPU, animation keeping every byte, and the input's colour codes
-  stripped on the colour routes (never on MONO)
-- **1,521,882** fuzz assertions per run across 7 harnesses (`cyrius fuzz`)
-- **0** HIGH+ security audit findings open — six audits, latest
-  [`docs/audit/2026-10-14-v14x-delta.md`](docs/audit/2026-10-14-v14x-delta.md); no guard recorded as unproven
-- **25** PTY checks (animation on sized terminals, played into a terminal
-  model) + **18** signal/pacing + **23** allocation-failure + **17**
+  costing no CPU, animation keeping every byte, the input's colour codes
+  stripped on the colour routes (never on MONO), and no-colour spans — intact,
+  reset at both ends, the phase paused, the routes agreeing at span edges, and
+  100 000 empty spans inside the line buffer
+- **1,780,057** fuzz assertions per run across 8 harnesses (`cyrius fuzz`)
+- **0** HIGH+ security audit findings open — seven audits, latest
+  [`docs/audit/2026-10-15-v150-delta.md`](docs/audit/2026-10-15-v150-delta.md) (its one HIGH was caught before
+  release); no guard recorded as unproven
+- **33** PTY checks (animation on sized terminals, no-colour spans included,
+  played into a terminal model) + **18** signal/pacing + **23** allocation-failure + **17**
   fault-injection checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
   `scripts/allocfail-check.sh`, `scripts/fault-check.sh` — the last injects
   syscall faults under gdb and gates the per-route syscall surface)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 15.4 ns/byte ASCII no-LF in every colour mode at v1.4.5 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
+- **Perf**: 15.2 ns/byte ASCII no-LF in every colour mode at v1.5.0, MONO 0.55 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics

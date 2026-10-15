@@ -88,16 +88,60 @@ ls --color=always | anuenue   # through v1.4.4: `[01;34m` printed as text; now c
 Exactly SGR is removed: `ESC [ <digits ; :> m`, up to 128 bytes. Every other
 escape sequence, and every other byte, passes as before. A sequence split
 across a read is still recognised. MONO (below) keeps the input's codes
-byte for byte. To keep a span of your own output out of the rainbow, see the
-v1.5.0 marker on the roadmap.
+byte for byte. To keep part of your output out of the rainbow, mark it as a
+no-colour span (next section).
+
+### No-colour spans (v1.5.0)
+
+A producer brackets text with an application program command pair, and
+anuenue passes the bracketed bytes through untinted
+([ADR 0006](../adr/0006-no-colour-spans.md)):
+
+```
+ESC _ anuenue:off ESC \      ← from here, untinted
+ESC _ anuenue:on  ESC \      ← the rainbow resumes
+```
+
+```sh
+nocolour() { printf '\033_anuenue:off\033\\%s\033_anuenue:on\033\\' "$1"; }
+{ printf 'status: '; nocolour "$(printf '\033[1;31mDISK FULL\033[0m')"; echo; } | anuenue
+```
+
+What an integrator can rely on:
+
+- **The span is yours.** Its bytes go out exactly as written, colour codes
+  included. A span without codes shows in the terminal's default colour.
+- **Clean edges.** anuenue writes one SGR reset at each marker, and nothing else
+  inside the span (no reset before an LF either, so your colour may run across
+  lines). The end of the input closes a span still open, with one reset.
+- **The rainbow pauses** across a span: the text after it takes the hue that
+  would have followed the text before it.
+- **Lenient.** An `off` without an `on` runs to the end of the input; a stray
+  `on`, or an `off` inside a span, does nothing. Nothing errors.
+- **Exact markers only**: lower case, no spaces, ST (`ESC \`) as the terminator.
+  Every other APC (kitty graphics, say) passes as before. A marker split across
+  a read is still a marker.
+- **Every route consumes the markers**, MONO included: with `NO_COLOR` the output
+  is your text without them. They are commands to anuenue, not text.
+- **Without anuenue** the markers are invisible on xterm-family terminals and
+  tmux, which ignore APC. The Linux text console does not implement APC and may
+  print the payload.
+- **Animation** draws the span unchanged in every frame while the rest cycles.
+  Escape sequences inside it reach the terminal intact, so anuenue counts them as
+  the terminal parses them when it climbs back between frames.
+
+`-v` reports `no-colour markers consumed count=N` at debug level. Runnable:
+[`docs/examples/10-no-colour-span.sh`](../examples/10-no-colour-span.sh).
 
 ### MONO is a passthrough
 
 `ANUENUE_COLOR_MODE == MONO` short-circuits the entire filter
 pipeline. anuenue copies stdin to stdout unchanged — *byte-
-identical* to `cat`. This is asserted by three goldens in
+identical* to `cat`, except that it consumes the v1.5.0 no-colour
+markers (above). This is asserted by three goldens in
 `scripts/golden-check.sh` (`NO_COLOR=1`, `--no-color`,
-`--color=none`).
+`--color=none`), and the marker exception by
+`scripts/robustness-check.sh` gate 11.
 
 Practical consequence for integrators: **always invoke anuenue with
 `NO_COLOR` already in the environment if you want guaranteed plain
@@ -253,7 +297,8 @@ diff <(yourtool) <(yourtool | NO_COLOR=1 anuenue)
 ```
 
 If the diff has anything, something in the chain is emitting
-escapes despite NO_COLOR — and it isn't anuenue.
+escapes despite NO_COLOR — and it isn't anuenue. (If your tool emits
+no-colour markers, the diff shows exactly those: MONO consumes them.)
 
 ## See also
 
@@ -261,5 +306,6 @@ escapes despite NO_COLOR — and it isn't anuenue.
 - [ADR 0001 — Pipe-purity](../adr/0001-pipe-purity.md) — full reasoning.
 - [ADR 0002 — HSV inline](../adr/0002-hsv-inline-not-abaco.md) — why no abaco dep.
 - [ADR 0003 — Grapheme-cluster cycling](../adr/0003-grapheme-cluster-cycling.md) — UTF-8 correctness model.
+- [ADR 0006 — No-colour spans](../adr/0006-no-colour-spans.md) — the producer-side marker.
 - [`docs/examples/`](../examples/) — runnable invocations.
 - [`docs/development/roadmap.md`](../development/roadmap.md) — v1.0 acceptance criteria.

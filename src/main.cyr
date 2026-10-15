@@ -125,6 +125,9 @@ fn anuenue_text_args(fs, npos): i64 {
     pos = pos + 1;
 
     if (ANUENUE_COLOR_MODE == ANUENUE_COLOR_MONO) {
+        # v1.5.0 (ADR 0006): MONO consumes the no-colour markers too.
+        var mono_held[8];
+        pos = anuenue_marker_strip(buf, pos, 1, &mono_held);
         if (anuenue_write_all(buf, pos) != 0) { return anuenue_write_failed(); }
         return ANUENUE_EXIT_OK;
     }
@@ -375,6 +378,9 @@ fn main(): i64 {
     anuenue_log_kv_int(SK_INFO,  "complete", "bytes-in",  ANUENUE_BYTES_IN);
     if (ANUENUE_SGR_STRIPPED > 0) {
         anuenue_log_kv_int(SK_DEBUG, "input colour codes stripped", "count", ANUENUE_SGR_STRIPPED);
+    }
+    if (ANUENUE_MARKERS > 0) {
+        anuenue_log_kv_int(SK_DEBUG, "no-colour markers consumed", "count", ANUENUE_MARKERS);
     }
     anuenue_log_kv_int(SK_DEBUG, "complete", "exit-code", rc);
     anuenue_span_exit();

@@ -28,44 +28,46 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.5.** The v1.x contract — exit codes, output shape, capability surface —
-has been frozen since GA and is unbroken; the flag set has only ever grown. Six
-audits have run, the latest the [v1.4.x delta](../audit/2026-10-14-v14x-delta.md),
-all with zero HIGH+ open, and no guard is recorded as unproven. v1.4.5 strips
-the input's own colour codes on the colour routes (the delta's H-06, decided
-2026-10-14). Next: v1.4.6 waits on the cyrius 6.7.11 tag; v1.5.0, the
-no-colour marker, is actionable.
+**v1.5.0.** The v1.x contract — exit codes, output shape, capability surface —
+has been frozen since GA and is unbroken; the flag set has only ever grown.
+v1.4.5 stripped the input's own colour codes on the colour routes (audit H-06);
+v1.5.0 adds their counterpart, a producer-side no-colour span marked with an APC
+pair ([ADR 0006](../adr/0006-no-colour-spans.md)). Seven audits have run, the
+latest the [v1.5.0 delta](../audit/2026-10-15-v150-delta.md), all with zero
+HIGH+ open. Next: v1.5.1 waits on the cyrius 6.7.11 tag; v1.5.2 settles two
+older phase disagreements between the routes.
 
 ## Release map
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.4.6](#v146--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
-| [v1.5.0](#v150--the-no-colour-marker) | The no-colour marker (+ adoption, if a consumer has landed) | none — actionable |
-| [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family | a second pipe-decorator wants a rainbow |
+| [v1.5.1](#v151--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
+| [v1.5.2](#v152--the-routes-agree-on-the-phase-of-an-extender) | The routes agree on the phase of an extender | none — actionable after v1.5.1 |
+| [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family (+ adoption, if a consumer has landed) | a second pipe-decorator wants a rainbow, or a consumer's ask |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
 
-The toolchain move stays the 1.4.x arc's last patch: it moved from v1.4.5 to
-v1.4.6 when v1.4.5 took the input colour codes (2026-10-14). It lands after the
-v1.4.4 closeout, so it re-runs the closeout's build-level gates itself — see
-that slot.
+The toolchain move was the 1.4.x arc's last patch until 2026-10-15, when the
+user moved it behind the no-colour marker: v1.4.5 → v1.4.6 (2026-10-14, when
+v1.4.5 took the input colour codes) → **v1.5.1**. It lands after the v1.5.0
+cut's P(-1) sweep, so it re-runs that sweep's build-level gates itself — see the
+slot.
 
 ---
 
-## v1.4.6 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
+## v1.5.1 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
 
 > **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
-> the latest tag as of 2026-10-14). Take the latest 6.7.x tag at the time of
+> the latest tag as of 2026-10-15). Take the latest 6.7.x tag at the time of
 > the cut; 6.7.11 is the first that carries sakshi 2.5.10.
 >
-> **The arc's last patch, after the closeout** (renumbered from v1.4.5 when
-> v1.4.5 took the input colour codes). Because it lands after v1.4.4,
-> it re-runs the closeout's build-level steps itself: full test suite, benchmark
-> baseline, downstream check (thoth's vendored `dist/anuenue.cyr`), version
-> verify, and the clean build (`rm -rf build && cyrius deps && CYRIUS_DCE=1
-> cyrius build`). Also re-run `scripts/fault-check.sh`'s capability-surface
-> layer: a stdlib change is exactly what moves a route's syscall set.
+> **A patch after the v1.5.0 cut** (renumbered from v1.4.5, then v1.4.6). Because
+> it lands after v1.5.0's P(-1) sweep, it re-runs that sweep's build-level steps
+> itself: full test suite, benchmark baseline, downstream check (thoth's
+> vendored `dist/anuenue.cyr`), version verify, and the clean build (`rm -rf
+> build && cyrius deps && CYRIUS_DCE=1 cyrius build`). Also re-run
+> `scripts/fault-check.sh`'s capability-surface layer: a stdlib change is
+> exactly what moves a route's syscall set.
 
 From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
 nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
@@ -96,70 +98,35 @@ Work:
 
 ---
 
-## v1.5.0 — The no-colour marker
+## v1.5.2 — The routes agree on the phase of an extender
 
-> **Status:** actionable — format chosen 2026-10-14. A minor because it adds
-> surface.
+> **Status:** actionable after v1.5.1. Recorded as V-11 in the
+> [v1.5.0 delta](../audit/2026-10-15-v150-delta.md); both cases predate v1.5.0.
 
-v1.4.5 made anuenue own the colour on its colour routes: the input's colour
-codes are stripped. The counterpart is a way for the PRODUCER to keep some text
-out of the rainbow — a logo, a warning, a prompt — without leaving anuenue's
-pipeline. The format, chosen by the user: an ECMA-48 **application program
-command** pair.
+Two rare inputs where the filter and the other routes give a different hue to
+what follows. A stdout change on the filter for those inputs only, so it gets
+its own patch:
 
-```
-ESC _ anuenue:off ESC \     ← text from here is passed through untinted
-ESC _ anuenue:on  ESC \     ← the rainbow resumes
-```
+- **An extender straight after an LF.** The filter folds it into the LF with
+  no phase step. Animation gives it a cluster of its own with a step (H-05,
+  v1.4.4), which is UAX #29's answer (GB4: break after a control). Change the
+  filter (and `anuenue_render_bytes`) to match. Animation's row count gives
+  such a mark 1 column where terminals give it none; settle that in the same
+  slot.
+- **The filter's EOF carry ignores the ZWJ and RI latches.** A ZWJ, then a
+  carried prefix at the very end of the input (a lone ESC, `ESC _`), steps the
+  phase on the filter but not on the one-shot route.
 
-APC is the standard's slot for application-specific commands; xterm-family
-terminals ignore it, so a producer's output still renders cleanly when anuenue
-is not in the pipe. *Known caveat:* the Linux text console does not implement
-APC and may print the payload there.
-
-To settle in the slot (each is a stdout-shape decision, so it is decided and
-written into an ADR before the code):
-
-- **Inside an off-span**, the producer's own SGR colour codes pass through
-  intact (the span is the producer's), or are stripped like everywhere else?
-- **The rainbow's phase** pauses over the span, or keeps advancing as if the
-  span were tinted?
-- **An unmatched marker** — `off` with no `on` runs to the end of the input; a
-  stray `on` is a no-op?
-- **MONO** (`NO_COLOR`, `--color=none`): markers stripped, or passed through
-  byte-exact like everything else on that route?
-- **Animation**: an off-span stays still while the rest scrolls, and H-01's row
-  count counts it like any other text.
-
-Gates, at minimum: the markers stripped on every colour route and never shown;
-off-span bytes byte-exact; a marker split across the 4096-byte read (the v1.4.5
-carry); unmatched markers; the fuzz and pty gates over marked input.
-
-**Adoption rides along if it is ready.** The two v1.0 acceptance items still
-open — eight of ten closed at GA — are not code anuenue can write; both close
-retroactively once an integration lands, in this minor or the next.
-
-- **Dogfooded** — `iam | anuenue` MOTD or `bnrmr | anuenue` banners running in a
-  real AGNOS pipeline for at least one minor-cycle window.
-- **Downstream gate** — at least one consumer green against v1.x (`agnoshi`
-  MOTD chain or `iam`'s default login chain anticipated). Listed in
-  [`state.md` § Consumers](state.md#consumers) once real. *Noted at v1.4.4:*
-  thoth already consumes the **library** surface — it vendors
-  `dist/anuenue.cyr` (at 1.3.6, code-identical to 1.4.4's) for `/theme
-  rainbow`, and is green. Whether a library consumer closes this item, which
-  named pipeline consumers, is the user's call; until then it stays open.
-
-Additive surface an integration asks for lands here. One candidate is on file:
-
-- **`-vvv` repeat-count verbosity** — trigger: a consumer asks.
-  `--log-level=trace` is self-documenting in a script and greppable in shell
-  history; `-v` covers the interactive case. cmdit supports repeat counts, so
-  the cost is low if the ask arrives.
-  ([ADR 0004 § Alternatives](../adr/0004-stderr-only-observability.md))
+Gates: robustness gate 11's `ROUTES` comparison, widened to inputs with an
+extender after an LF, and stdout identity against v1.5.1 for every input
+without one.
 
 ## v1.6.0 — Pipe-decorator family
 
-> **Status:** gated on a second pipe-decorator wanting a rainbow tint.
+> **Status:** gated on a second pipe-decorator wanting a rainbow tint. Adoption
+> and any additive surface a consumer asks for ride along with this minor, or
+> cut it on their own if they arrive first (moved here from v1.5.0, which
+> shipped the no-colour marker).
 
 - **Extract the HSV phase model to a shared crate** (or pull `abaco`). Until a
   second consumer exists the inline copy is free.
@@ -175,6 +142,31 @@ Additive surface an integration asks for lands here. One candidate is on file:
   [shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)
   when they become real.
 
+**Adoption rides along if it is ready.** The two v1.0 acceptance items still
+open — eight of ten closed at GA — are not code anuenue can write; both close
+retroactively once an integration lands.
+
+- **Dogfooded** — `iam | anuenue` MOTD or `bnrmr | anuenue` banners running in a
+  real AGNOS pipeline for at least one minor-cycle window.
+- **Downstream gate** — at least one consumer green against v1.x (`agnoshi`
+  MOTD chain or `iam`'s default login chain anticipated). Listed in
+  [`state.md` § Consumers](state.md#consumers) once real. *Noted at v1.4.4:*
+  thoth already consumes the **library** surface — it vendors
+  `dist/anuenue.cyr` (at 1.3.6, code-identical to 1.5.0's) for `/theme
+  rainbow`, and is green. Whether a library consumer closes this item, which
+  named pipeline consumers, is the user's call; until then it stays open.
+- **A first producer of no-colour spans** (v1.5.0). The marker is only worth its
+  grammar if a producer emits it. When `iam`, `bnrmr` or the MOTD chain adopts
+  it, add that pipeline to the PTY gate's span cases.
+
+Additive surface an integration asks for lands here. One candidate is on file:
+
+- **`-vvv` repeat-count verbosity** — trigger: a consumer asks.
+  `--log-level=trace` is self-documenting in a script and greppable in shell
+  history; `-v` covers the interactive case. cmdit supports repeat counts, so
+  the cost is low if the ask arrives.
+  ([ADR 0004 § Alternatives](../adr/0004-stderr-only-observability.md))
+
 ## v1.x — trigger-gated
 
 Pinned to the first minor after the trigger fires.
@@ -182,6 +174,7 @@ Pinned to the first minor after the trigger fires.
 | Item | Trigger | Source |
 |------|---------|--------|
 | **Follow a resize mid-animation; animate a block taller than the terminal** | A consumer asks. v1.4.4 (H-01) reads the size once, before the first frame, and draws a block that cannot fit once. Following SIGWINCH means a signalfd mask change and a re-read per frame; animating an oversized block means a clipping policy (which rows?) nobody has specified. | [ADR 0005 § Consequences, § Alternatives](../adr/0005-practical-subset-display-width.md) |
+| **The span row count for terminal-dependent sequences** | A producer writes them inside a no-colour span: C1 controls encoded in UTF-8 (U+009B CSI, U+009D OSC), or a non-ASCII byte inside a CSI. Terminals disagree on both, so the count picks one reading. | [v1.5.0 delta V-12](../audit/2026-10-15-v150-delta.md) |
 | **Raise or remove the animation input caps** | Someone animates something that hits them. v1.2.2 (A-05) made the 64 KB / 8 192-cluster caps *announce* themselves; it did not raise them. Raising means more heap; removing means streaming animation, which conflicts with the slurp-then-tag design that makes frame re-anchoring possible. A behaviour change, so a minor. | `src/animate.cyr` caps + [2026-08-25 audit A-05](../audit/2026-08-25-audit.md) |
 
 ### Explicitly declined
@@ -229,7 +222,7 @@ Re-checked at every bump of the dep named.
 - **cyrius: `args_init` cuts the command line at 2 MiB** (one read of
   `/proc/self/cmdline` into a fixed buffer). Filed upstream 2026-10-14. Since
   v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
-  parsing a prefix; the fix is the stdlib's. See v1.4.6 for what changes here
+  parsing a prefix; the fix is the stdlib's. See v1.5.1 for what changes here
   when it lands.
 - **cyrius: growing a large function miscompiles code far from the growth.**
   At v1.4.3, appending one more group (about forty lines, nine locals, a 40-byte
@@ -276,8 +269,8 @@ documented form ever put `=value` on a boolean.
 These run every cut and never "complete".
 
 - **Audit cadence.** A P(-1) sweep at every minor cut, recorded as a delta vs the
-  previous report — the next is at the v1.5.0 cut. Six have run, latest the
-  [v1.4.x delta](../audit/2026-10-14-v14x-delta.md).
+  previous report — the next is at the v1.6.0 cut. Seven have run, latest the
+  [v1.5.0 delta](../audit/2026-10-15-v150-delta.md).
   Standing policy from v1.2.2: **an accepted INFO finding is a hypothesis about
   behaviour, not a measurement of it** — re-measure accepted items rather than
   carrying the prior description forward.
@@ -294,7 +287,7 @@ These run every cut and never "complete".
   [`state.md` § Binary](state.md#binary).
 - **Perf ratchet.** `scripts/perf-bench.sh` at every cut, measured head-to-head
   against a rebuilt prior binary on one idle host rather than against a
-  historical figure, in all three `COLOR=` modes. M5 acceptance: ASCII no-LF
+  historical figure, in all three `COLOR=` modes and `COLOR=none` (MONO, from v1.5.0). M5 acceptance: ASCII no-LF
   ≤ 60 ns/byte.
 
 ---

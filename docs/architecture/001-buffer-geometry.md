@@ -34,6 +34,19 @@ separately:
 | … then the reserve flush | SGR reset `\e[0m` before the write | 4 |
 | **codepoint path total** | | **≤ 32** — exactly the reserve |
 | an LF | SGR reset (4) + LF (1), then flushed | 5 |
+| an `off` marker (v1.5.0) | SGR reset (4) + the first span byte (1), then the check | 5 |
+| a span byte | the byte (1), then the check — the flush writes no reset inside a span | 1 |
+| an `on` marker (v1.5.0) | SGR reset (4), then the check | 4 |
+
+*(v1.5.0, V-06 in the [v1.5.0 delta](../audit/2026-10-15-v150-delta.md),
+HIGH, caught before release. The first cut wrote the marker resets with no
+check after them. One reset looked harmless: 4 bytes past the bound, and only
+at the 24-byte escape budget. But an empty span writes two resets and no byte,
+so nothing flushed, and a run of them grew `pos` without limit. 4 200 of them
+crashed the one-shot route. Every reset is now `_reset_checked`: the reset,
+then the check, like every other write. The lesson for this table: a row that
+writes without triggering a flush must be bounded per iteration, **and** it
+must not repeat without a check in between.)*
 
 **The reserve has zero bytes of slack at the 24-byte escape budget**, and 7
 with the 17-byte escape anuenue actually emits. *(Corrected at v1.4.4, H-04.

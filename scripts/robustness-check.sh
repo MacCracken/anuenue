@@ -47,6 +47,11 @@
 #      _emit_phase_esc writes 24 bytes per escape, zero past the escape;
 #      a leaked scratch byte would be a NUL, so NUL-free input must give
 #      NUL-free output on every route, in every mode, across flushes.
+#  11. No-colour spans (v1.5.0, ADR 0006): bytes between the APC markers
+#      go out intact with a reset at each end, the rainbow pauses across
+#      them, unmatched markers are lenient, near-misses pass as before,
+#      a marker split across the read boundary is still a marker, and
+#      MONO consumes the markers and keeps every other byte.
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -804,6 +809,219 @@ for _k in MONO BOUNDARY DRIBBLE BOUND KEEP; do
         esac
     else
         bad "$_k: $(grep "^$_k " "$WORK/sgr.out" || head -3 "$WORK/sgr.out")"
+    fi
+done
+
+# --- gate 11: no-colour spans (v1.5.0, ADR 0006) -------------------
+#
+# A producer brackets text with ESC _ anuenue:off ESC \ ... ESC _
+# anuenue:on ESC \ to keep it out of the rainbow. Inside, its bytes go out
+# intact — its own colour codes included — with one reset at each marker
+# and nothing else of anuenue's (no reset at an LF either). The phase
+# pauses, so removing `reset + span + reset` from the output must leave
+# exactly the output for the text without the span.
+echo "[robustness] no-colour spans (v1.5.0)"
+python3 -I - "$BIN" <<'PYEOF' > "$WORK/span.out" 2>&1 || true
+import re, subprocess, sys, time
+BIN = sys.argv[1]
+OFF = b"\x1b_anuenue:off\x1b\\"
+ON = b"\x1b_anuenue:on\x1b\\"
+RESET = b"\x1b[0m"
+OURS = re.compile(rb"\x1b\[(?:0|9[0-7]|38;5;\d+|38;2;\d+;\d+;\d+)m")
+TINT = re.compile(rb"\x1b\[38;2;\d+;\d+;\d+m")
+def run(args, data, stdin=True):
+    return subprocess.run([BIN] + args, input=data if stdin else None,
+                          capture_output=True).stdout
+def cut(out, span):
+    """out with the first reset+span+reset removed, or None if absent."""
+    k = out.find(RESET + span + RESET)
+    if k < 0:
+        return None
+    return out[:k] + out[k + len(RESET + span + RESET):]
+def frame0(out):
+    f = re.split(rb"\x1b\[\d+A", out)[0]
+    return f.replace(b"\x1b[?25l", b"")
+SPAN = b"\x1b[31mR\x1b[1m!\x1b[0m"            # the producer's own codes
+for mode in ("24bit", "256", "16"):
+    m = ["--color=" + mode]
+    base = run(m, b"abcd\n")
+    # SGR outside the span is stripped; inside it is the producer's.
+    got = run(m, b"a\x1b[32mb" + OFF + SPAN + ON + b"c\x1b[0md\n")
+    print("FILTER", mode, "ok" if cut(got, SPAN) == base else "bad %r" % got)
+    one = run(m + [(b"ab" + OFF + SPAN + ON + b"cd").decode()], b"", stdin=False)
+    print("ONESHOT", mode, "ok" if cut(one, SPAN) == run(m + ["abcd"], b"", stdin=False)
+          else "bad %r" % one)
+    an = run(["-a", "-d", "1", "-i", "300"] + m, b"ab" + OFF + SPAN + ON + b"cd\n")
+    abase = run(["-a", "-d", "1", "-i", "300"] + m, b"abcd\n")
+    frames = len(re.split(rb"\x1b\[\d+A", an))
+    ok = cut(frame0(an), SPAN) == frame0(abase) and an.count(RESET + SPAN + RESET) == frames
+    print("ANIM", mode, "ok" if ok else "bad %r" % an[:300])
+# An LF inside a span gets no reset of anuenue's: the producer's colour
+# may run across lines. Filter and one-shot.
+ml = b"\x1b[32mX\nY\x1b[0m"
+f = run(["--color=24bit"], b"a" + OFF + ml + ON + b"b\n")
+o = run(["--color=24bit", (b"a" + OFF + ml + ON + b"b").decode()], b"", stdin=False)
+print("LF", "ok" if cut(f, ml) == run(["--color=24bit"], b"ab\n")
+      and cut(o, ml) == run(["--color=24bit", "ab"], b"", stdin=False) else "bad %r %r" % (f, o))
+# `off` with no `on` runs to the end, which closes it with one reset —
+# with or without a final LF, on the filter and the one-shot route.
+m16 = ["--color=16"]
+ab = run(m16, b"ab")
+eof = (run(m16, b"ab" + OFF + b"\x1b[31mcd\n") == ab + b"\x1b[31mcd\n" + RESET
+       and run(m16, b"ab" + OFF + b"cd") == ab + b"cd" + RESET
+       and run(m16 + [(b"ab" + OFF + b"\x1b[31mcd").decode()], b"", stdin=False)
+           == ab + b"\x1b[31mcd\n" + RESET)
+print("EOF", "ok" if eof else "bad")
+# Two adjacent spans: a reset between them on every route, so the first
+# span's attributes (here an unterminated OSC) cannot run into the second.
+adj_in = b"a" + OFF + b"\x1b]0;t" + ON + OFF + b"Y" + ON + b"b\n"
+adj = re.compile(re.escape(b"\x1b]0;t") + rb"(?:\x1b\[0m)+" + re.escape(b"Y"))
+outs = (run(m16, adj_in), run(m16 + [adj_in[:-1].decode()], b"", stdin=False),
+        frame0(run(["-a", "-d", "1", "-i", "300"] + m16, adj_in)))
+print("ADJACENT", "ok" if all(adj.search(x) for x in outs) else "bad %r" % (outs,))
+# Inside a span nothing of anuenue's — not even at a reserve flush. Span
+# bytes fill the 32 KiB line buffer to 6 bytes under the reserve, and an
+# unfinished `on` at the very end is carried to EOF, where it is span text:
+# writing it crosses the reserve. Two resets in all: at `off`, and the one
+# that closes the span at the end.
+fill = OFF + b"x" * 32726 + b"\x1b_anuenue:o"
+rsv = run(m16, fill)
+print("RESERVE", "ok" if rsv.count(RESET) == 2 and rsv.endswith(b"\x1b_anuenue:o" + RESET)
+      else "bad %d resets" % rsv.count(RESET))
+# Empty spans write resets and no byte (V-06). Every reset is followed by the
+# reserve check, so however many there are, the line buffer holds: the
+# process exits 0, no marker leaks, and `b` keeps its hue. Before the check,
+# 4 200 on the one-shot route crashed with SIGSEGV, and the filter wrote past
+# the buffer into the read buffer and the phase table.
+pairs = OFF + ON
+m24 = ["--color=24bit"]
+want = TINT.findall(run(m24, b"ab\n"))
+ef = subprocess.run([BIN] + m24, input=b"a" + pairs * 100000 + b"b\n", capture_output=True)
+eo = subprocess.run([BIN] + m24 + [b"a" + pairs * 4400 + b"b"], capture_output=True)
+eok = all(r.returncode == 0 and b"anuenue:" not in r.stdout and TINT.findall(r.stdout) == want
+          for r in (ef, eo))
+print("EMPTY", "ok" if eok else "bad rc=%d/%d" % (ef.returncode, eo.returncode))
+# The three routes agree on the hue sequence at span edges (V-07 to V-09):
+# an extender after a span or an empty span continues the cluster before
+# it; an empty span resets the ZWJ / RI joins; a UTF-8 sequence a span
+# cuts stays cut. The filter writes an escape per codepoint and animation
+# one per cluster, so consecutive repeats are collapsed before comparing.
+# The bytes must agree too — span bytes raw between resets on both — once
+# the tints are removed and runs of resets collapsed (the filter writes two
+# at an empty span, animation one).
+def shape(out):
+    out = re.sub(rb"(?:\x1b\[0m)+", RESET, TINT.sub(b"", out))
+    return re.sub(rb"(?:\x1b\[0m)+\Z", b"", out)
+def hues(out):
+    seq = []
+    for t in TINT.findall(out):
+        if not seq or seq[-1] != t:
+            seq.append(t)
+    return seq
+edges = [b"e" + OFF + b"x" + ON + "\u0301b\n".encode(),
+         b"e" + OFF + ON + "\u0301b\n".encode(),
+         "a\u200d".encode() + OFF + ON + b"b\n",
+         "\U0001F1FA".encode() + OFF + ON + "\U0001F1F8b\n".encode(),
+         b"a\xe4" + OFF + b"\xb8\xad" + ON + b"x\n",
+         b"ab" + OFF + b"\x1b[31mR" + ON + "\u0301\u0302cd\n".encode(),
+         "\U0001F468\u200d".encode() + OFF + b"x" + ON + "\U0001F469b\n".encode(),
+         b"x" + OFF + b"y" + ON + OFF + b"z" + ON + "\u0301w\n".encode(),
+         b"e" + OFF + b"\n" + ON + "\u0301b\n".encode(),
+         OFF + b"x" + ON + "\u0301b\n".encode()]
+split = []
+for d in edges:
+    f = hues(run(m24, d))
+    o = hues(subprocess.run([BIN] + m24 + [d[:-1]], capture_output=True).stdout)
+    an = frame0(run(["-a", "-d", "1", "-i", "300"] + m24, d))
+    a = hues(an)
+    if not (f == o == a) or shape(run(m24, d)) != shape(an):
+        split.append(d)
+print("ROUTES", "ok" if not split else "bad %r" % split)
+# A stray `on`, a nested `off`, a repeated `on`: no-ops.
+lax = (run(m16, b"ab" + ON + b"cd\n") == run(m16, b"abcd\n")
+       and run(["--color=24bit"], b"a" + OFF + b"X" + OFF + b"Y" + ON + ON + b"b\n")
+           == run(["--color=24bit"], b"a" + OFF + b"XY" + ON + b"b\n"))
+print("LENIENT", "ok" if lax else "bad")
+# Near-misses are no markers: they pass byte for byte, as before v1.5.0.
+miss = (b"\x1b_anuenue:of\x1b\\", b"\x1b_ANUENUE:off\x1b\\", b"\x1b_anuenue:off\x07",
+        b"\x1b_anuenue:off \x1b\\", b"\x1b_anuenue:on", b"\x1b_Ga=T\x1b\\", b"\x1b_\x1b\\")
+bad = [x for x in miss if OURS.sub(b"", run(m16, b"a" + x + b"b\n")) != b"a" + x + b"b\n"]
+print("NEARMISS", "ok" if not bad else "bad %r" % bad)
+# Either marker split across the 4096-byte read at every offset: still a
+# marker, the span intact, and the tint sequence that of the text alone.
+SP = b"\x1b[31mX\x1b[1mY"                     # no reset inside: OURS keeps it
+fails = []
+for k in range(0, len(OFF) + 1):
+    pre = b"a" * (4096 - k)
+    out = run(["--color=24bit"], pre + OFF + SP + ON + b"z\n")
+    alone = run(["--color=24bit"], pre + b"z\n")
+    if OURS.sub(b"", out) != pre + SP + b"z\n" or TINT.findall(out) != TINT.findall(alone) \
+            or (RESET + SP + RESET) not in out:
+        fails.append("off@%d" % k)
+for k in range(0, len(ON) + 1):
+    pre = b"a" * (4096 - k - len(OFF) - len(SP))
+    out = run(["--color=24bit"], pre + OFF + SP + ON + b"z\n")
+    alone = run(["--color=24bit"], pre + b"z\n")
+    if OURS.sub(b"", out) != pre + SP + b"z\n" or TINT.findall(out) != TINT.findall(alone) \
+            or (RESET + SP + RESET) not in out:
+        fails.append("on@%d" % k)
+# A span long enough to cross the boundary itself.
+long_sp = b"\x1b[31m" + b"s" * 200
+pre = b"a" * 4000
+out = run(["--color=24bit"], pre + OFF + long_sp + ON + b"z\n")
+if OURS.sub(b"", out) != pre + long_sp + b"z\n" \
+        or TINT.findall(out) != TINT.findall(run(["--color=24bit"], pre + b"z\n")):
+    fails.append("straddle")
+print("BOUNDARY", "ok" if not fails else "bad %s" % fails)
+# One byte per write: identical to the whole input, colour and MONO.
+d = b"a\x1b[32mb" + OFF + b"\x1b[31mR\nS" + ON + b"c\n"
+drib = []
+for m in (["--color=16"], ["--color=none"]):
+    p = subprocess.Popen([BIN] + m, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    for byte in d:
+        p.stdin.write(bytes([byte])); p.stdin.flush(); time.sleep(0.002)
+    p.stdin.close()
+    got = p.stdout.read(); p.wait()
+    if got != run(m, d):
+        drib.append(m[0])
+print("DRIBBLE", "ok" if not drib else "bad %s" % drib)
+# MONO: markers consumed, every other byte kept — SGR, other APCs,
+# near-misses — and the read boundary inside a marker at every offset.
+mono_in = b"\x1b[01;34mbin\x1b[0m " + OFF + b"\x1b[31mx\x1b_G\x1b\\" + ON + b"\x1b_anuenue:of\n"
+mono_ok = run(["--color=none"], mono_in) == mono_in.replace(OFF, b"").replace(ON, b"")
+for k in range(0, len(OFF) + 1):
+    pre = b"a" * (4096 - k)
+    if run(["--color=none"], pre + OFF + b"X" + ON + b"\n") != pre + b"X\n":
+        mono_ok = False
+mono_ok = mono_ok and run(["--color=none", (b"a" + OFF + b"b" + ON + b"c").decode()],
+                          b"", stdin=False) == b"abc\n"
+print("MONO", "ok" if mono_ok else "bad")
+PYEOF
+for _k in "FILTER 24bit" "FILTER 256" "FILTER 16" "ONESHOT 24bit" "ONESHOT 256" "ONESHOT 16" \
+          "ANIM 24bit" "ANIM 256" "ANIM 16"; do
+    if grep -q "^$_k ok" "$WORK/span.out"; then
+        ok "no-colour span intact, reset at both ends, phase paused: $_k"
+    else
+        bad "no-colour span: $_k ($(grep "^$_k " "$WORK/span.out" || head -3 "$WORK/span.out"))"
+    fi
+done
+for _k in LF EOF ADJACENT RESERVE EMPTY ROUTES LENIENT NEARMISS BOUNDARY DRIBBLE MONO; do
+    if grep -q "^$_k ok" "$WORK/span.out"; then
+        case $_k in
+            LF)       ok "an LF inside a span gets no reset (filter, one-shot)" ;;
+            EOF)      ok "an unclosed span runs to the end, which closes it with one reset" ;;
+            ADJACENT) ok "adjacent spans are reset apart (filter, one-shot, animation)" ;;
+            RESERVE)  ok "a reserve flush inside a span writes no reset" ;;
+            EMPTY)    ok "100 000 empty spans stay inside the line buffer (filter, one-shot)" ;;
+            ROUTES)   ok "filter, one-shot and animation agree on hues and bytes at span edges (10 inputs)" ;;
+            LENIENT)  ok "a stray on, a nested off and a repeated on are no-ops" ;;
+            NEARMISS) ok "near-miss markers and other APCs pass byte for byte" ;;
+            BOUNDARY) ok "a marker split across the 4096-byte read at every offset, and a span across it" ;;
+            DRIBBLE)  ok "a span arriving one byte per write equals the whole input (colour, MONO)" ;;
+            MONO)     ok "MONO consumes the markers and keeps every other byte, at every read offset" ;;
+        esac
+    else
+        bad "$_k: $(grep "^$_k " "$WORK/span.out" || head -3 "$WORK/span.out")"
     fi
 done
 

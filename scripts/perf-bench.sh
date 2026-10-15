@@ -17,19 +17,24 @@
 #   FIXTURE_BYTES=2800000 sh ...       # larger corpus for noisier hosts
 #   BIN=build/anuenue-old sh ...       # bench a different binary
 #   COLOR=256 sh scripts/perf-bench.sh # 256 / 16 instead of truecolor
+#   COLOR=none sh scripts/perf-bench.sh # MONO passthrough (v1.5.0)
 #
 # COLOR (v1.4.0) exists because the phase-cached escape table's value
 # differs by mode: deleting it was measured −15% on truecolor and
 # +33% / +42% on 256 / 16 (docs/benchmarks.md § v1.4.0). A harness
 # that could only measure truecolor would have recommended deleting it.
+#
+# COLOR=none (v1.5.0) times MONO. Through v1.4.5 MONO was a bare copy loop;
+# from v1.5.0 it scans each chunk for an ESC, to consume the no-colour
+# markers (ADR 0006), and that scan is what this measures.
 
 set -eu
 
 BIN="${BIN:-build/anuenue}"
 COLOR="${COLOR:-24bit}"
 case "$COLOR" in
-    24bit|truecolor|256|16) ;;
-    *) echo "perf-bench: COLOR must be 24bit, 256 or 16 (got '$COLOR')" >&2; exit 2 ;;
+    24bit|truecolor|256|16|none) ;;
+    *) echo "perf-bench: COLOR must be 24bit, 256, 16 or none (got '$COLOR')" >&2; exit 2 ;;
 esac
 RUNS="${RUNS:-7}"
 FIXTURE_BYTES="${FIXTURE_BYTES:-1400000}"   # ~1.4 MB matches docs/benchmarks.md baseline

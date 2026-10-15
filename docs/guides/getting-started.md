@@ -44,7 +44,7 @@ iam | ./build/anuenue                          # MOTD pipeline composition
 | `-a`  | `--animate`       | —   | Buffer input once, repaint with phase shifted per frame (~60 fps) | M4 (v0.5.0) |
 | `-d`  | `--duration <N>`  | int | Animation duration in seconds (default 5; 0 = until SIGINT) | M4 |
 | `-S`  | `--speed <N>`     | int | Animation phase advance per frame (default 1) | M4 |
-| `-n`  | `--no-color`      | —   | Force MONO passthrough (byte-identical to `cat`) | M6 (v0.7.0) |
+| `-n`  | `--no-color`      | —   | Force MONO passthrough (byte-identical to `cat`, less any no-colour markers — v1.5.0) | M6 (v0.7.0) |
 | `-C`  | `--force-color`   | —   | Emit colour even when stdout isn't a TTY | M6 |
 | `-c`  | `--color <mode>`  | str | `auto` / `24bit` (alias `truecolor`) / `256` / `16` / `none` (alias `off`/`never`) | M6 |
 

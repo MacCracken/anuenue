@@ -667,6 +667,79 @@ table emit is 8–9 ns.
 
 - **1.4.5 binary**: **235 848 bytes**, +48 B.
 
+## v1.5.0 — no-colour spans
+
+### MONO: the marker scan
+
+From v1.5.0 MONO consumes the no-colour markers ([ADR 0006](adr/0006-no-colour-spans.md)),
+so it is no longer a bare copy: every chunk is scanned for ESC. Three designs
+measured against a rebuilt v1.4.5 (`COLOR=none`, which `perf-bench.sh` gains
+for this, `RUNS=11`, a 14 MB corpus, three interleaved rounds, ns/byte):
+
+| Design | ascii no-LF | ascii w/ LFs | utf8 mixed |
+|---|---:|---:|---:|
+| v1.4.5: a bare copy | 0.25 | 0.25 | 0.25 |
+| a byte loop looking for ESC | 2.04 | 2.04 | 2.04 |
+| `_find_esc`, one word per step | 0.67 | 0.67 | 0.66 |
+| **`_find_esc`, four words per step (shipped)** | **0.55** | **0.55** | **0.55** |
+
+`_find_esc` XORs each 8-byte word with ESC in every byte and tests for a zero
+byte, as the stdlib's `strlen` does. Until the first marker is removed the
+strip moves nothing, so marker-free input is only scanned. MONO stays more than
+25 times cheaper than a colour route.
+
+### Release ratchet — v1.4.5 vs v1.5.0
+
+Ten interleaved rounds (the second five in reversed order), `RUNS=11`, medians,
+ns/byte; MONO on a 14 MB corpus. The host was shared, with other sessions'
+compiler builds starting and stopping, but interleaving keeps both binaries
+under the same conditions in each round:
+
+| Mode | corpus | v1.4.5 | v1.5.0 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 15.12 | **15.16** | +0.2% |
+| | ascii w/ LFs | 19.68 | **19.70** | +0.2% |
+| | utf8 mixed | 20.08 | **20.43** | +1.7% |
+| 256 | ascii no-LF | 15.10 | **15.13** | +0.2% |
+| | ascii w/ LFs | 19.69 | **19.64** | −0.2% |
+| | utf8 mixed | 19.99 | **20.48** | +2.4% |
+| 16 | ascii no-LF | 14.94 | **14.97** | +0.2% |
+| | ascii w/ LFs | 19.59 | **19.63** | +0.2% |
+| | utf8 mixed | 19.99 | **20.27** | +1.4% |
+| MONO | ascii no-LF | 0.25 | **0.55** | +0.30 ns |
+| | ascii w/ LFs | 0.26 | **0.55** | +0.29 ns |
+| | utf8 mixed | 0.24 | **0.55** | +0.31 ns |
+
+**ASCII is flat** (v1.5.0 is the slower binary in 6 of 10 rounds). The marker test
+sits inside the ESC branch of the existing `b < 0x20` gate, so a printable byte
+costs what it did.
+
+**UTF-8 mixed is +0.3 to +0.5 ns/byte (+1.4% to +2.4%)**, and v1.5.0 is the
+slower binary in all ten rounds in every mode. The corpus contains no ESC, so
+none of the span code runs on it, and the filter's multi-byte path is unchanged
+line for line. The suspect was the frame layout: Cyrius gives every `var` a
+function-wide stack slot in declaration order, and the span state added 32
+bytes of locals ahead of every hot-loop variable. Two variants tested that,
+interleaved with v1.4.5 and v1.5.0 (24-bit, utf8 mixed):
+
+| Variant | 6 rounds | 10 rounds |
+|---|---:|---:|
+| v1.4.5 | 20.27 | 20.34 |
+| v1.5.0 (shipped) | 20.75 | 20.80 |
+| span state in one heap block (one 8-byte local) | 20.40 | 20.62 |
+| no new locals at all (a module global; the marker result in `sgr`'s slot) | 20.56 | — |
+
+Neither recovers it reliably, and the variant with no new locals recovers less
+than the one with one. So the layout explains part of the cost at most. The rest
+is where the compiler placed the larger loop, which Cyrius offers no control
+over. Kept as shipped: about 1 µs on a 2 KB MOTD, and the variants complicate
+the span state for less than half of it.
+
+**MONO** scans for the markers: 0.25 → 0.55 ns/byte (see above; a byte loop was
+2.04). Micro rows are unchanged; the table emit is 8–9 ns.
+
+- **1.5.0 binary**: **248 288 bytes**, +12 440 B, all anuenue's own source.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -697,7 +770,8 @@ table emit is 8–9 ns.
 | v1.4.2  | 47.41¤              | 8§               | 22§                 | 226 624      | stderr hygiene: one line per failure; parse errors name a sanitized token |
 | v1.4.3  | 15.40¤              | 9§               | 22§                 | 226 624      | escape-table word copy: 9 ns per escape in every mode; −68% end to end |
 | v1.4.4  | 15.60¤              | 8§               | 22§                 | 235 800      | v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep |
-| **v1.4.5** | **15.43**¤       | 8§               | 22§                 | **235 848**  | **input colour codes stripped on the colour routes; flat by design** |
+| v1.4.5  | 15.43¤              | 8§               | 22§                 | 235 848      | input colour codes stripped on the colour routes; flat by design |
+| **v1.5.0** | **15.16**¤       | 8§               | 22§                 | **248 288**  | **no-colour spans: ASCII flat, utf8 +1.4–2.4%, MONO 0.25 → 0.55** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.

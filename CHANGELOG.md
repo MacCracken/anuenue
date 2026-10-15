@@ -4,6 +4,176 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-10-15 (no-colour spans)
+
+The counterpart to v1.4.5. With anuenue owning the colour on its colour routes,
+a producer had no way to keep part of its output out of the rainbow — a logo
+with its own colours, a warning that must stay red, a prompt — short of
+splitting its output around anuenue. The user asked for a "no color" code on the
+producer's side (2026-10-14) and chose an ECMA-48 **application program
+command** pair; the design questions were decided with the user on 2026-10-15
+and recorded in [ADR 0006](docs/adr/0006-no-colour-spans.md).
+
+```
+ESC _ anuenue:off ESC \      ← from here, untinted
+ESC _ anuenue:on  ESC \      ← the rainbow resumes
+```
+
+**stdout is byte-identical to v1.4.5 for every input without a marker**: 209
+filter and one-shot comparisons and 18 animation streams (144 frames), over
+twelve corpora that include SGR, OSC, DCS, kitty-style APCs and near-miss
+markers. Audit delta:
+[`docs/audit/2026-10-15-v150-delta.md`](docs/audit/2026-10-15-v150-delta.md) —
+**12 findings, 1 HIGH + 2 MEDIUM + 5 LOW + 4 INFO, all in this release's own
+new code, ten fixed before release and two recorded; zero HIGH+ open.**
+
+### Added — no-colour spans (ADR 0006)
+
+- **Inside a span the producer's bytes pass through intact**, colour codes
+  included: the span is the producer's. A span with no codes shows in the
+  terminal's default colour.
+- **A combining mark straight after a span continues the cluster before it**,
+  with its hue, as it would with the span removed. ZWJ and flag joins do not
+  reach across a span, empty or not.
+- **One SGR reset at each marker**, and nothing else of anuenue's inside the
+  span — no reset before an LF either, so a producer's colour may run across
+  lines. The end of the input closes a span still open, with one reset.
+- **The rainbow pauses**: span bytes take no phase step, so the text after a
+  span takes the hue that would have followed the text before it.
+- **Lenient**: `off` with no `on` runs to the end of the input; a stray `on`,
+  or an `off` inside a span, is a no-op. Markers are always consumed, never
+  written, and nothing errors.
+- **Exact markers only** — lower case, no whitespace, ST (`ESC \`) as the
+  terminator. Every other APC passes as before.
+- **Every route consumes the markers, MONO included.** They are commands to
+  anuenue, not text. MONO stays byte-exact for every other byte.
+- **Streaming**: a marker a 4096-byte read cuts off is carried into the next
+  read, like a split UTF-8 sequence or an unfinished SGR, at most 14 bytes. The
+  filter tests for the marker only at an ESC, inside the existing `b < 0x20`
+  gate, so ordinary text pays nothing.
+- **Animation** draws a span raw in every frame while the text around it
+  cycles. Escape sequences inside a span reach the terminal intact, so the
+  physical-row count (v1.4.4's H-01) parses them as the terminal does: a
+  VT500-parser step, `_span_vt`, covering CSI, OSC, DCS / SOS / PM / APC
+  strings, escape intermediates, C0 controls executed mid-sequence, and
+  CAN / SUB.
+- **`-v`** reports `no-colour markers consumed count=N` at debug level.
+
+**Contract**: [ADR 0001](docs/adr/0001-pipe-purity.md) is amended a second
+time — markers are removed on every route. MONO is byte-identical to `cat` for
+every input without a marker.
+
+### Security — caught before release
+
+**V-06 (HIGH): empty spans overflowed the line buffer.** The first cut wrote
+the reset at each marker without the reserve check that follows every other
+write ([architecture 001](docs/architecture/001-buffer-geometry.md)). An empty
+span (`off` then `on`) writes two resets and no byte, so nothing flushed, and
+a run of them grew the write position without bound until the next LF:
+- 4 200 empty spans in a one-shot argument: SIGSEGV;
+- 5 000 on stdin: a 40 KB line from a 32 KB buffer, overwriting the read
+  buffer (markers leaked to stdout);
+- 100 000: the phase table overwritten (wrong colours).
+
+Found by the cut's independent code review; it never shipped. Every marker
+reset is now `_reset_checked`, and robustness gate 11 `EMPTY` runs 100 000
+empty spans through the filter and 4 400 through the one-shot route.
+
+### Review — found and fixed before release
+
+Writing the gates found five defects (V-01 to V-05) and the independent review
+four more (V-07 to V-10). In brief:
+- **V-02 (MEDIUM)**: animation's row count misread intact sequences inside a
+  span — an LF inside an unfinished CSI (a terminal executes it), an ESC
+  restarting a CSI, DCS / APC strings and escape intermediates. Each frame
+  climbed a row short (scrolling a copy into scrollback) or too far (drawing
+  over what is above). Now `_span_vt`.
+- **V-07 (MEDIUM)**: a combining mark after a span got its own phase step in
+  animation, so every later cluster was a hue behind the filter, and a column
+  it does not take.
+- **V-01**: a span still open at the end left the producer's colour set into
+  the shell prompt. **V-03**: adjacent spans shared attributes in animation.
+  **V-08**: animation did not see empty spans (joins survived them).
+  **V-09**: a UTF-8 sequence cut by a span was decoded whole in animation.
+  **V-10**: after `ESC (`, a `[` or `_` began a sequence in the row count.
+- **V-04, V-05 (INFO)**: a reserve flush inside a span wrote a reset; the PTY
+  gate could not see a climb that went too far — it now checks that every
+  frame climbs back to the same row.
+
+Recorded, not changed here: **V-11**, two phase disagreements between the
+routes that predate v1.5.0 (pinned to roadmap v1.5.2), and **V-12**, two
+terminal-dependent cases in the span row count (trigger-gated).
+
+### Performance
+
+A rebuilt v1.4.5 against v1.5.0, `RUNS=11`, **ten** interleaved rounds (the
+second five reversed), medians, ns/byte:
+
+| Corpus | truecolor | 256 | 16 | MONO |
+|---|---:|---:|---:|---:|
+| ascii no-LF (M5 metric) | 15.12 → **15.16** (+0.2%) | 15.10 → **15.13** | 14.94 → **14.97** | 0.25 → **0.55** |
+| ascii w/ LFs | 19.68 → **19.70** | 19.69 → **19.64** | 19.59 → **19.63** | 0.26 → **0.55** |
+| utf8 mixed | 20.08 → **20.43** (+1.7%) | 19.99 → **20.48** (+2.4%) | 19.99 → **20.27** (+1.4%) | 0.24 → **0.55** |
+
+- **ASCII is flat**: the marker test sits inside the existing ESC branch.
+- **UTF-8 is +0.3–0.5 ns/byte**, consistently. None of the span code runs on
+  that corpus, and the multi-byte path is unchanged. Two variants that took the
+  span state's 32 bytes of locals out of the frame recovered under half of it,
+  so it stays as shipped: about 1 µs on a 2 KB MOTD. `docs/benchmarks.md` has
+  both variants' figures.
+- **MONO now scans for the markers**, eight bytes at a time (`_find_esc`): +0.3
+  ns/byte, still over 25× cheaper than a colour route. A byte loop measured 2.04.
+
+**Binary** 235 848 → **248 288 B** (+12 440), all anuenue's own source. Non-DCE
+997 856.
+
+### Added — tests
+
+- **Unit** (506 → **595** assertions, 60 → **73** groups) in three new
+  functions: `test_v150_markers` (recognition, MONO strip, the prepare pass,
+  raw clusters, the row count inside a span), `test_v150_vt` (`_span_vt`'s
+  transitions, the row count over intact sequences, adjacent spans) and
+  `test_v150_review` (V-07 to V-10, one group each, and `_find_esc` at every
+  offset of every length to 72).
+- **Fuzz** — `fuzz/no-colour-markers.fcyr`, an **eighth harness** (258 175
+  assertions). The MONO strip and the animation prepare pass are checked
+  against an independently written reference, whole and in two chunks with
+  the held tail carried. The pre-tag's clusters are checked for coverage: raw
+  clusters hold only span bytes, no span edge falls inside a cluster, and
+  `CF_OPEN` / `CF_JOIN` / `CF_CONT` sit exactly where they should. The tokens
+  cut UTF-8 sequences and markers. Fuzz total 1 521 882 → **1 780 057**.
+- **`scripts/robustness-check.sh` gate 11** (60 → **80** checks): spans on the
+  filter, one-shot and animation in all three modes, with the phase pause
+  checked by removing the span and comparing. Also: an LF inside a span; the
+  end of the input closing a span; adjacent spans; a reserve flush inside a
+  span; 100 000 empty spans (V-06); the routes agreeing on hues and bytes at
+  span edges; lenient markers; near-misses; either marker split across the
+  4096-byte read at every offset; one byte per write; MONO.
+- **`scripts/pty-check.sh` gate 5** (25 → **33** checks): eight span cases
+  played into the terminal model — producer SGR with wide characters, a
+  multi-line span, an APC, an OSC 8 hyperlink, an LF inside a CSI, adjacent
+  spans, a mark after a span, an escape intermediate. Two things changed in
+  the gate itself: `scripts/term-model.py` now parses OSC, DCS, SOS, PM, APC
+  and intermediates as xterm does, and the gate requires every frame to climb
+  back to the same row and never past the top.
+- **Mutation-checked**: 34 deliberate breaks of the new code, each failing at
+  least one of the new tests.
+- `scripts/perf-bench.sh` takes `COLOR=none` (MONO).
+
+### Docs
+
+- **ADR 0006** (new): the marker and the seven decisions, with the review's
+  refinements (the end of the input closes a span; an extender after a span;
+  the VT parser). **ADR 0001** amended. **Architecture 001**: the span write
+  paths, and V-06's lesson.
+- The integration guide's *No-colour spans* section, the README, getting
+  started, and `docs/examples/10-no-colour-span.sh` (new; the examples index
+  also gains the missing `09`).
+- **Roadmap**: the v1.5.0 slot is shipped and removed. The cyrius 6.7.x slot is
+  **v1.5.1** (renumbered from v1.4.6, as the user asked). **v1.5.2** is new,
+  for V-11. Adoption and `-vvv` move to v1.6.0. V-12 is added to the trigger
+  table.
+
 ## [1.4.5] — 2026-10-15 (input colour codes stripped)
 
 The v1.4.4 audit's H-06, decided on 2026-10-14. On the routes where anuenue
@@ -574,8 +744,8 @@ differently** — each reproduced on the v1.4.0 binary before it was handled (se
 *Changed — behaviour*). The toolchain stays at **cyrius 6.7.9**: every latest
 dep tag pins 6.7.9; 6.7.10, the latest tag, brings nothing anuenue needs; and the
 release worth taking, 6.7.11, is not tagged yet. It is
-[roadmap v1.4.6](docs/development/roadmap.md#v146--cyrius-67x--sakshi-2510-through-the-snapshot)
-(filed as v1.4.2; renumbered at v1.4.2 and v1.4.5).
+[roadmap v1.5.1](docs/development/roadmap.md#v151--cyrius-67x--sakshi-2510-through-the-snapshot)
+(filed as v1.4.2; renumbered at v1.4.2, v1.4.5 and v1.5.0).
 
 **stdout is byte-identical to v1.4.0** for every input v1.4.0 handled
 correctly: 138 stdout + exit-code comparisons (7 corpora × 18 flag sets,
