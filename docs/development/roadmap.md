@@ -28,84 +28,32 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.4.1.** The v1.x contract — exit codes, output shape, capability surface —
+**v1.4.2.** The v1.x contract — exit codes, output shape, capability surface —
 has been frozen since GA and is unbroken; the flag set has only ever grown. Zero
-HIGH+ findings open across five audits. The 1.4.x arc below is all actionable or
-one upstream tag away; the 1.5+ minors are gated on things anuenue cannot do
-itself (a consumer landing, a sibling filter appearing).
+HIGH+ findings open across five audits. The 1.4.x arc below is all actionable
+except its last slot, which waits on the cyrius 6.7.11 tag; the 1.5+ minors are
+gated on things anuenue cannot do itself (a consumer landing, a sibling filter
+appearing).
 
 ## Release map
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.4.2](#v142--cyrius-6711--sakshi-2510-through-the-snapshot) | cyrius 6.7.11 — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
-| [v1.4.3](#v143--stderr-hygiene) | stderr hygiene | none — actionable |
-| [v1.4.4](#v144--escape-table-word-copy) | Escape-table word copy | none — actionable |
-| [v1.4.5](#v145--v14x-closeout--p-1-sweep) | v1.4.x closeout + P(-1) sweep | last patch before v1.5.0 |
+| [v1.4.3](#v143--escape-table-word-copy) | Escape-table word copy | none — actionable |
+| [v1.4.4](#v144--v14x-closeout--p-1-sweep) | v1.4.x closeout + P(-1) sweep | none — actionable |
+| [v1.4.5](#v145--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
 | [v1.5.0](#v150--adoption) | Adoption | a consumer integration lands |
 | [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family | a second pipe-decorator wants a rainbow |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
 
-The 1.4.x slots are ordered by readiness, not dependency. v1.4.2 waits on an
-upstream tag; if v1.4.3's work is ready first it ships first and the two swap
-numbers. The slot *names* are the stable anchors.
+The 1.4.x order is fixed (set at v1.4.2): the toolchain move is the arc's last
+patch, after the closeout, so v1.4.5 re-runs the closeout's build-level gates
+itself — see that slot.
 
 ---
 
-## v1.4.2 — cyrius 6.7.11 + sakshi 2.5.10 through the snapshot
-
-> **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
-> the latest tag as of 2026-10-14).
-
-From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
-nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
-taking for what the snapshot carries, not for the compiler:
-
-| Toolchain | sakshi in its snapshot | What it changes for anuenue |
-|-----------|------------------------|-----------------------------|
-| 6.7.9 (current) | 2.5.8 | — |
-| 6.7.10 | 2.5.9 | cx-target support only; native output byte-identical. `str.cyr` gains three JSON helpers. **Nothing anuenue needs** — not worth a cut on its own. |
-| **6.7.11** | **2.5.10** | sakshi's four private buffers declared in bytes, not slots: **−60 144 B** of static data. Measured at v1.4.1 in a scratch trial (6.7.10 + a shadowing 2.5.10): 223 872 → **163 728 B**, about a quarter of the binary. |
-
-Work:
-
-- `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps`, then
-  `cyrius distlib --all`. Confirm `lib/sakshi.cyr`'s `# Version:` reads 2.5.10.
-- **6.7.11 adds cyrlint rules for array overrun and write length.**
-  `scripts/lint-check.sh` lints `src/`, `tests/` and `fuzz/`, so expect them to
-  run over all three. v1.4.1 fixed one overrun of exactly that shape by hand
-  (`fuzz/flag-parser.fcyr`'s `solo_tokens[44]` holding 88 bytes); others may
-  surface.
-- **If cyrius fixes `args_init`'s 2 MiB cut**
-  (`docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`
-  upstream), `robustness-check.sh` gate 7's over-2 MiB check inverts: the command
-  line parses whole and `--seed 99` is honoured. Update the check to assert that.
-  The `--nofile=3` check is unaffected — no descriptor is no descriptor.
-- Gates: stdout identity against v1.4.1 across corpora × flags, every
-  `scripts/*-check.sh`, a size-attribution row in `state.md`.
-
-## v1.4.3 — stderr hygiene
-
-> **Status:** actionable. Both items measured at v1.4.1; neither touches stdout
-> or an exit code.
-
-- **Every `anuenue_fail` line is followed by a blank line.**
-  `agnostik_err_print` already ends its line with `\n`, and `anuenue_fail`
-  writes another. Measured: `anuenue --log-level=bogus` stderr ends
-  `…debug trace\n\n`, on v1.4.0 and v1.4.1 alike, and the same holds for every
-  runtime and validation failure. Drop the second newline on the agnostik path
-  only — the `str_new`-OOM path prints the bare message and needs its own. Gate:
-  `observe-check.sh` asserts each failure ends in exactly one newline.
-- **Name the offending token in parse-error lines.** `anuenue: unknown flag`
-  does not say which. cmdit 1.3.x added `cmdit_err_token` / `cmdit_err_value`,
-  so the four usage lines in `src/main.cyr` can say `unknown flag: --bogus`
-  without anuenue re-tokenizing argv (which [ADR 0004](../adr/0004-stderr-only-observability.md)
-  declined). The token is attacker-controlled argv on its way to a terminal:
-  bound its length and write it through the same path as the rest of the line,
-  never as a format string.
-
-## v1.4.4 — escape-table word copy
+## v1.4.3 — escape-table word copy
 
 > **Status:** actionable. A measurement looking for a slot, not a defect.
 
@@ -134,12 +82,13 @@ benches functions. The word copy is the first change whose gate wants both
 numbers side by side; adopt the corpus here, or move the item to
 [§ Explicitly declined](#explicitly-declined).
 
-## v1.4.5 — v1.4.x closeout + P(-1) sweep
+## v1.4.4 — v1.4.x closeout + P(-1) sweep
 
-> **Status:** the last patch of the arc, cut before v1.5.0 — CLAUDE.md
-> § Closeout Pass, plus the audit cadence's minor-cut sweep, recorded as
-> `docs/audit/YYYY-MM-DD-v14x-delta.md` against the
-> [v1.4.0 delta](../audit/2026-10-12-v140-delta.md).
+> **Status:** actionable — CLAUDE.md § Closeout Pass, plus the audit
+> cadence's minor-cut sweep, recorded as `docs/audit/YYYY-MM-DD-v14x-delta.md`
+> against the [v1.4.0 delta](../audit/2026-10-12-v140-delta.md). Not the arc's
+> last patch: v1.4.5's toolchain move follows it and re-runs the build-level
+> gates.
 
 The sweep's surfaces, picked by the v1.3.3 method — *what has never been looked
 at*, not what worked last time:
@@ -166,6 +115,44 @@ at*, not what worked last time:
 
 The closeout's own steps — dead code, refactor, cleanup, security re-scan,
 downstream check, clean build — run as written in CLAUDE.md.
+
+## v1.4.5 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
+
+> **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
+> the latest tag as of 2026-10-14). Take the latest 6.7.x tag at the time of
+> the cut; 6.7.11 is the first that carries sakshi 2.5.10.
+>
+> **The arc's last patch, after the closeout.** Because it lands after v1.4.4,
+> it re-runs the closeout's build-level steps itself: full test suite, benchmark
+> baseline, downstream check, version verify, and the clean build
+> (`rm -rf build && cyrius deps && CYRIUS_DCE=1 cyrius build`).
+
+From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
+nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
+taking for what the snapshot carries, not for the compiler:
+
+| Toolchain | sakshi in its snapshot | What it changes for anuenue |
+|-----------|------------------------|-----------------------------|
+| 6.7.9 (current) | 2.5.8 | — |
+| 6.7.10 | 2.5.9 | cx-target support only; native output byte-identical. `str.cyr` gains three JSON helpers. **Nothing anuenue needs** — not worth a cut on its own. |
+| **6.7.11** | **2.5.10** | sakshi's four private buffers declared in bytes, not slots: **−60 144 B** of static data. Measured at v1.4.1 in a scratch trial (6.7.10 + a shadowing 2.5.10): 223 872 → **163 728 B**, about a quarter of the binary. |
+
+Work:
+
+- `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps`, then
+  `cyrius distlib --all`. Confirm `lib/sakshi.cyr`'s `# Version:` reads 2.5.10.
+- **6.7.11 adds cyrlint rules for array overrun and write length.**
+  `scripts/lint-check.sh` lints `src/`, `tests/` and `fuzz/`, so expect them to
+  run over all three. v1.4.1 fixed one overrun of exactly that shape by hand
+  (`fuzz/flag-parser.fcyr`'s `solo_tokens[44]` holding 88 bytes); others may
+  surface.
+- **If cyrius fixes `args_init`'s 2 MiB cut**
+  (`docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`
+  upstream), `robustness-check.sh` gate 7's over-2 MiB check inverts: the command
+  line parses whole and `--seed 99` is honoured. Update the check to assert that.
+  The `--nofile=3` check is unaffected — no descriptor is no descriptor.
+- Gates: stdout identity against the previous release across corpora × flags,
+  every `scripts/*-check.sh`, a size-attribution row in `state.md`.
 
 ---
 
@@ -224,18 +211,20 @@ Recorded so they are not re-raised as findings.
 - **Logging parse errors.** Observability is configured *from* parsed flags, so
   a `cmdit` parse failure precedes the level being known. A pre-parse argv scan
   for `-v` would duplicate cmdit's tokenizer — exactly the duplication adopting
-  cmdit at v1.1.4 removed. Those paths keep their existing stderr wording.
-  ([ADR 0004](../adr/0004-stderr-only-observability.md))
+  cmdit at v1.1.4 removed. Those paths print their own stderr line instead —
+  naming the offending token since v1.4.2, via `cmdit_err_token`, without
+  re-tokenizing argv. ([ADR 0004](../adr/0004-stderr-only-observability.md))
 - **darshana's `TTY_SIGMASK_PIPE`** (1.3.0). It keeps a TUI from being killed by
   SIGPIPE mid-teardown with the terminal raw. anuenue has no terminal state at
   risk when stdout is a pipe — its escapes went down the pipe — and adopting it
   would put a signalfd on the *filter* path, whose capability surface is
   read/write/brk, and turn the default-disposition `anuenue | head -1` from exit
   141 into exit 0. ([v1.4.0 audit delta](../audit/2026-10-12-v140-delta.md))
-- **darshana's `tty_sanitize_buf`** (1.2.0). anuenue's contract is byte
-  preservation; `robustness-check.sh` asserts all 256 byte values pass through.
-  Neutralising control bytes in stdin would break the contract it exists to
-  keep.
+- **darshana's `tty_sanitize_buf` on the filter path** (1.2.0). anuenue's
+  contract is byte preservation; `robustness-check.sh` asserts all 256 byte
+  values pass through. Neutralising control bytes in stdin would break the
+  contract it exists to keep. (Diagnostics are not the stream: since v1.4.2 it
+  sanitizes the argv tokens that parse-error lines echo to stderr.)
 - **Flattening `src/filter.cyr`'s `} } } }` chain.** A genuine 4-way dispatch at
   ≤24 columns that passes `cyrius fmt`. (`src/main.cyr`'s parse-error chain was
   flattened at v1.4.1 because cmdit 1.4.0 pushed it to five levels; this one has
@@ -252,7 +241,7 @@ Re-checked at every bump of the dep named.
 - **cyrius: `args_init` cuts the command line at 2 MiB** (one read of
   `/proc/self/cmdline` into a fixed buffer). Filed upstream 2026-10-14. Since
   v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
-  parsing a prefix; the fix is the stdlib's. See v1.4.2 for what changes here
+  parsing a prefix; the fix is the stdlib's. See v1.4.5 for what changes here
   when it lands.
 - **darshana: `cyrius distlib` reports `tty_winsize` undefined on
   x86_64-windows / x86_64-macos / aarch64-macos.** A warning on every
@@ -283,7 +272,7 @@ documented form ever put `=value` on a boolean.
 These run every cut and never "complete".
 
 - **Audit cadence.** A P(-1) sweep at every minor cut, recorded as a delta vs the
-  previous report — the next is [v1.4.5](#v145--v14x-closeout--p-1-sweep).
+  previous report — the next is [v1.4.4](#v144--v14x-closeout--p-1-sweep).
   Five have run, latest the [v1.4.0 delta](../audit/2026-10-12-v140-delta.md).
   Standing policy from v1.2.2: **an accepted INFO finding is a hypothesis about
   behaviour, not a measurement of it** — re-measure accepted items rather than

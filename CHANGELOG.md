@@ -4,6 +4,100 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-14 (stderr hygiene)
+
+The roadmap's stderr-hygiene slot, both items measured at v1.4.1. **Nothing on
+stdout and no exit code changes**: 138 stdout + exit-code comparisons against
+v1.4.1 (7 corpora × 18 flag sets, positional text in four modes) plus eleven
+help and error invocations, all identical. stderr changes in exactly the two
+ways below. The roadmap is renumbered to match: the escape-table word copy is
+now v1.4.3, the closeout + P(-1) sweep v1.4.4, and the cyrius 6.7.x move v1.4.5.
+
+### Fixed — every failure printed a blank line after its message
+
+`anuenue_fail` wrote `anuenue: `, then `agnostik_err_print` — which ends its own
+line, `<kind>[: <msg>]\n`, and has since agnostik 1.5.1 — then a second `\n`.
+So every runtime and validation failure since v1.2.1, when `anuenue_fail` was
+wired, printed its line and then an empty one; in a log, one record became two.
+Measured on v1.4.0 and v1.4.1 alike: `anuenue --log-level=bogus` stderr ended
+`…debug trace\n\n`. The second newline is gone; the `str_new`-OOM fallback,
+which prints the bare message, keeps its own.
+
+### Changed — parse-error lines name the token that tripped them
+
+`anuenue: unknown flag` did not say which. Each usage line now carries the argv
+token as typed, from cmdit's `cmdit_err_token` (and, for a bad integer given as
+its own argv word, `cmdit_err_value`):
+
+```
+anuenue: unknown flag: --bogus
+anuenue: flag missing value: -p
+anuenue: bad integer value: -p abc
+anuenue: bad integer value: --freq=abc
+anuenue: bundled short flags not supported: -an (use -x -y, not -xy)
+anuenue: boolean flags take no value: --no-color=0 (use --flag, not --flag=value)
+```
+
+### Security — argv echoed to a terminal is sanitized and bounded
+
+The token is argv — attacker-controlled whenever a wrapper passes untrusted text
+as arguments — on its way to the user's terminal, so it is never written raw.
+`anuenue_eprint_arg` (`src/observe.cyr`) runs it through darshana's
+`tty_sanitize_buf` in UTF-8 mode with no control byte kept: ESC, the rest of C0,
+DEL, C1 (raw or as UTF-8) and malformed UTF-8 each become one `?`. Without it,
+`anuenue $'--\e]0;owned\a'` would have retitled the terminal from inside an error
+message; it now prints `unknown flag: --?]0;owned?`. The echo is capped at 64
+bytes (`ANUENUE_ERR_ARG_MAX`), stepped back so the cut does not split a UTF-8
+character, with `...` after a cut token. Nothing on the path interprets the
+bytes.
+
+This is darshana's sanitizer on the *diagnostic* path only. The filter path's
+byte-preservation contract is untouched and its decline stays on the roadmap;
+`robustness-check.sh` still asserts all 256 byte values pass through.
+
+### Added — tests
+
+- **Unit** (410 → **429** assertions, 54 → **55** groups): the cut (short,
+  long, stepping back over a split 2- and 3-byte character, at most three steps
+  on malformed input), the render (ESC, BEL, LF and a 2-byte C1 each one `?`;
+  the rest of the sequence inert text), and `anuenue_arg_attached`.
+  Mutation-checked: keeping C0 controls fails 2, removing the UTF-8 step-back
+  fails 3.
+- **`scripts/observe-check.sh` gate 5** (22 → **27** checks): a closed-stdin
+  read failure, a bad `--log-level`, a negative `--duration`, a zero
+  `--interval` and an unreadable command line (`--nofile=3`) are each exactly
+  one stderr line ending in one newline. All five fail on v1.4.1.
+- **`scripts/robustness-check.sh` gate 8** (29 → **37** checks): the six lines
+  above verbatim, an OSC-0 + BEL + CSI token rendered with no `0x1b` / `0x07`
+  byte on stderr, and a 302-byte token echoed as 64 bytes + `...`. The injection
+  check is mutation-checked: a build that keeps BEL fails it.
+
+### Performance
+
+The change is on the error path, which runs once and only on a failure. A
+rebuilt v1.4.1 binary against v1.4.2, `RUNS=11`, three interleaved rounds per
+mode, medians:
+
+| ascii no-LF, ns/byte | v1.4.1 | v1.4.2 | Δ |
+|---|---:|---:|---:|
+| truecolor (M5 metric) | 47.38 | **47.41** | +0.1% |
+| 256 | 34.58 | **34.74** | +0.5% |
+| 16 | 23.12 | **23.20** | +0.3% |
+
+Flat — all nine corpus × mode rows within ±1%.
+
+**Binary** 222 520 → **226 624 B** (+4 104), all of it this change: DCE now
+keeps darshana's `tty_sanitize_buf` and its UTF-8 validator, which the filter
+path never called, plus the four helpers.
+
+### Docs
+
+- Roadmap renumbered (above); the stderr-hygiene slot is removed. The
+  "declined: `tty_sanitize_buf`" entry is narrowed to the filter path, and the
+  "declined: logging parse errors" entry notes the named token.
+- ADR 0004 and `src/observe.cyr`'s header note the darshana dependency (a dep,
+  not an anuenue module — architecture 004's rule holds).
+
 ## [1.4.1] — 2026-10-14 (cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib)
 
 The dependency refresh to every first-party dep's latest tag, and the repairs
@@ -13,7 +107,8 @@ differently** — each reproduced on the v1.4.0 binary before it was handled (se
 *Changed — behaviour*). The toolchain stays at **cyrius 6.7.9**: every latest
 dep tag pins 6.7.9; 6.7.10, the latest tag, brings nothing anuenue needs; and the
 release worth taking, 6.7.11, is not tagged yet. It is
-[roadmap v1.4.2](docs/development/roadmap.md#v142--cyrius-6711--sakshi-2510-through-the-snapshot).
+[roadmap v1.4.5](docs/development/roadmap.md#v145--cyrius-67x--sakshi-2510-through-the-snapshot)
+(filed as v1.4.2; renumbered at v1.4.2).
 
 **stdout is byte-identical to v1.4.0** for every input v1.4.0 handled
 correctly: 138 stdout + exit-code comparisons (7 corpora × 18 flag sets,
@@ -87,7 +182,8 @@ always holds the handle (the 16 MiB small-board fallback included), and no
 `prlimit --as` value between "`alloc_init` fails" and "everything fits" exists
 to drive it. The 0-handle contract it rests on is pinned in the unit suite; a
 fault-injection probe is filed under
-[roadmap v1.4.5](docs/development/roadmap.md#v145--v14x-closeout--p-1-sweep).
+[roadmap v1.4.4](docs/development/roadmap.md#v144--v14x-closeout--p-1-sweep)
+(filed as v1.4.5; renumbered at v1.4.2).
 
 ### Fixed — `src/main.cyr`'s parse-error switch
 

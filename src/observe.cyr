@@ -31,7 +31,8 @@
 # WHAT LIVES HERE VS IN color.cyr
 #
 # This module depends on nothing from anuenue — only on sakshi,
-# agnostik and the stdlib — so it can be included first and every
+# agnostik, the stdlib and (from v1.4.2, for the argv echo below)
+# darshana's tty_sanitize_buf — so it can be included first and every
 # other module can call `anuenue_fail`. The colour-decision reason
 # codes (`ANUENUE_CR_*`, `ANUENUE_COLOR_REASON`,
 # `anuenue_color_reason_name`) live in src/color.cyr instead: they
@@ -107,6 +108,83 @@ var ANUENUE_STDOUT_EPIPE = 0;
 fn _eprint(s): i64 {
     var len = strlen(s);
     syscall(1, 2, s, len);
+    return 0;
+}
+
+# ---- argv echo in diagnostics (v1.4.2) ----------------------------
+#
+# A parse-error line names the token that tripped it (`anuenue: unknown
+# flag: --bogus`). That token is argv — attacker-controlled whenever a
+# wrapper passes untrusted text as arguments — on its way to a terminal,
+# so it is never written raw:
+#
+#   - sanitized by darshana's tty_sanitize_buf in UTF-8 mode, keeping no
+#     control byte: ESC, the rest of C0, DEL, C1 and malformed UTF-8
+#     each become one '?'. Unsanitized, `anuenue $'--\e]0;x\a'` would
+#     retitle the user's terminal from inside an error message. (Byte
+#     preservation is the STDOUT contract, which is why darshana's
+#     sanitizer stays declined for the filter path; a diagnostic is not
+#     the stream.)
+#   - bounded to ANUENUE_ERR_ARG_MAX bytes, cut back to a UTF-8 boundary,
+#     with "..." after a cut token. A 100 KB token is a page of noise.
+#   - written as bytes. Nothing on this path interprets them.
+enum AnuenueErrArg {
+    ANUENUE_ERR_ARG_MAX = 64;   # = anuenue_eprint_arg's buffer, in bytes
+}
+
+# Bytes of `s` (length `len`) to echo: all of them, or at most
+# ANUENUE_ERR_ARG_MAX, stepped back up to three bytes so the cut does
+# not split a multi-byte character. (A UTF-8 sequence is at most four
+# bytes; past three continuation bytes the input is malformed anyway
+# and the sanitizer turns the fragment into '?'.) Pure.
+fn anuenue_arg_cut(s, len): i64 {
+    if (len <= ANUENUE_ERR_ARG_MAX) { return len; }
+    var cut  = ANUENUE_ERR_ARG_MAX;
+    var back = 0;
+    while (back < 3) {
+        if ((load8(s + cut) & 0xC0) == 0x80) {
+            cut  = cut - 1;
+            back = back + 1;
+        } else {
+            back = 3;
+        }
+    }
+    return cut;
+}
+
+# Sanitized copy of the cut of cstr `s` into `out`, which must hold
+# ANUENUE_ERR_ARG_MAX bytes (tty_sanitize_buf never writes more than it
+# reads). Returns the byte count; 0 for a 0 token. Pure.
+fn anuenue_arg_render(s, out): i64 {
+    if (s == 0) { return 0; }
+    var cut = anuenue_arg_cut(s, strlen(s));
+    var n   = tty_sanitize_buf(out, 0, s, cut, TTY_SANITIZE_UTF8, 0);
+    if (n < 0) { return 0; }
+    return n;
+}
+
+# 1 when argv token `s` carries its own value (`--freq=abc`), 0 when it
+# does not (`-p`, whose value was the next argv word). Pure.
+fn anuenue_arg_attached(s): i64 {
+    if (s == 0) { return 0; }
+    var found = 0;
+    var i     = 0;
+    while (load8(s + i) != 0) {
+        if (load8(s + i) == 61) { found = 1; }   # '='
+        i = i + 1;
+    }
+    return found;
+}
+
+# Write argv token `s` to stderr through anuenue_arg_render, then "..."
+# if it was cut. A 0 token writes nothing.
+fn anuenue_eprint_arg(s): i64 {
+    if (s == 0) { return 0; }
+    var abuf[64];                             # ANUENUE_ERR_ARG_MAX bytes
+    var n = anuenue_arg_render(s, &abuf);
+    if (n > 0) { syscall(1, 2, &abuf, n); }
+    var len = strlen(s);
+    if (anuenue_arg_cut(s, len) < len) { _eprint("..."); }
     return 0;
 }
 
@@ -450,9 +528,12 @@ fn anuenue_fail(kind, msg): i64 {
         sakshi_log_kv(SK_ERROR, msg, mlen, "code", 4, &nbuf, nlen);
     }
 
+    # agnostik_err_print ends the line itself (`<kind>[: <msg>]\n`, since
+    # agnostik 1.5.1). Through v1.4.1 a second `\n` followed it here, so
+    # every failure since v1.2.1 printed a blank line after its message.
+    # The str_new-OOM path above prints the bare message and keeps its own.
     _eprint("anuenue: ");
     agnostik_err_print(e);
-    _eprint("\n");
 
     if (kind == STIK_ERR_INVALID_ARGUMENT) { return ANUENUE_EXIT_USAGE; }
     return ANUENUE_EXIT_RUN;

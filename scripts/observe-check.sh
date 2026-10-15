@@ -22,6 +22,8 @@
 #      report needs (version, colour mode, colour REASON, route)
 #   4. a real failure path emits an agnostik-typed error with its
 #      numeric code, and still exits with the v1.x code
+#   5. every failure is ONE stderr line, ending in exactly one newline
+#      (v1.4.2 — through v1.4.1 each was followed by a blank line)
 #
 # Usage:
 #   sh scripts/observe-check.sh
@@ -196,6 +198,43 @@ if grep -q 'invalid argument: --log-level must be one of' "$WORK/l.err"; then
     ok "bad --log-level explains the accepted values"
 else
     bad "bad --log-level did not explain the accepted values"
+fi
+
+# --- gate 5: one failure, one line --------------------------------
+#
+# agnostik_err_print ends its line itself; through v1.4.1 anuenue_fail
+# wrote a second newline after it, so every failure since v1.2.1 left a
+# blank line on stderr — in a log, one record became two. At default
+# verbosity a failure's stderr is exactly that line, so: one line, no
+# empty line, final byte a newline.
+echo "[observe-check] each failure is one stderr line"
+_one_line() {   # $1 = label, $2 = stderr file
+    _lines=$(wc -l < "$2" | tr -d ' ')
+    _empty=$(grep -c '^$' "$2" || true)
+    _last=$(tail -c 1 "$2" | od -An -tx1 | tr -d ' \n')
+    if [ "$_lines" -eq 1 ] && [ "$_empty" -eq 0 ] && [ "$_last" = "0a" ]; then
+        ok "$1: one line, one trailing newline"
+    else
+        bad "$1: $_lines line(s), $_empty empty, last byte 0x$_last"
+    fi
+}
+set +e
+"$BIN" --color=24bit 0<&- > /dev/null 2> "$WORK/o1.err"
+"$BIN" --log-level=loud < "$WORK/ascii.in" > /dev/null 2> "$WORK/o2.err"
+"$BIN" -d -1 < "$WORK/ascii.in" > /dev/null 2> "$WORK/o3.err"
+"$BIN" -i 0 < "$WORK/ascii.in" > /dev/null 2> "$WORK/o4.err"
+set -e
+_one_line "read failure (closed stdin)" "$WORK/o1.err"
+_one_line "bad --log-level"             "$WORK/o2.err"
+_one_line "negative --duration"         "$WORK/o3.err"
+_one_line "zero --interval"             "$WORK/o4.err"
+if command -v prlimit >/dev/null 2>&1; then
+    set +e
+    prlimit --nofile=3 "$BIN" --color=none < "$WORK/ascii.in" > /dev/null 2> "$WORK/o5.err"
+    set -e
+    _one_line "unreadable command line (--nofile=3)" "$WORK/o5.err"
+else
+    echo "  skip: prlimit(1) unavailable — unreadable-argv case not run"
 fi
 
 echo

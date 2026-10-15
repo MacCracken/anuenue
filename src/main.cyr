@@ -202,17 +202,45 @@ fn main(): i64 {
         # to five levels when cmdit 1.4.0 added UNEXPECTED_VALUE — `--bool=value`,
         # which 1.2.4 parsed as ON whatever the value (`--no-color=0` disabled
         # colour). Codes this flag set cannot produce keep the generic line.
-        var perr_msg = "anuenue: argument parse error\n";
-        if (err == CMDIT_ERR_UNKNOWN)          { perr_msg = "anuenue: unknown flag\n"; }
-        if (err == CMDIT_ERR_MISSING_VALUE)    { perr_msg = "anuenue: flag missing value\n"; }
-        if (err == CMDIT_ERR_BAD_INT)          { perr_msg = "anuenue: bad integer value\n"; }
+        #
+        # v1.4.2: the line names what tripped it — cmdit_err_token, the argv
+        # token exactly as typed — so `anuenue -p abc` says
+        # `bad integer value: -p abc`, not just `bad integer value`. The
+        # token goes through anuenue_eprint_arg (sanitized, bounded; see
+        # src/observe.cyr): it is argv, headed for a terminal.
+        var perr_msg  = "anuenue: argument parse error";
+        var perr_hint = "";
+        var perr_val  = 0;
+        if (err == CMDIT_ERR_UNKNOWN)       { perr_msg = "anuenue: unknown flag"; }
+        if (err == CMDIT_ERR_MISSING_VALUE) { perr_msg = "anuenue: flag missing value"; }
+        if (err == CMDIT_ERR_BAD_INT) {
+            perr_msg = "anuenue: bad integer value";
+            perr_val = cmdit_err_value(fs);
+        }
         if (err == CMDIT_ERR_BUNDLED) {
-            perr_msg = "anuenue: bundled short flags not supported (use -x -y, not -xy)\n";
+            perr_msg  = "anuenue: bundled short flags not supported";
+            perr_hint = " (use -x -y, not -xy)";
         }
         if (err == CMDIT_ERR_UNEXPECTED_VALUE) {
-            perr_msg = "anuenue: boolean flags take no value (use --flag, not --flag=value)\n";
+            perr_msg  = "anuenue: boolean flags take no value";
+            perr_hint = " (use --flag, not --flag=value)";
         }
+        var perr_tok = cmdit_err_token(fs);
         _eprint(perr_msg);
+        if (perr_tok != 0) {
+            _eprint(": ");
+            anuenue_eprint_arg(perr_tok);
+            # A rejected value is inside the token when attached
+            # (`--freq=abc`); as its own argv word (`-p abc`) it follows.
+            if (perr_val != 0) {
+                if (anuenue_arg_attached(perr_tok) == 0) {
+                    _eprint(" ");
+                    anuenue_eprint_arg(perr_val);
+                }
+            }
+        }
+        _eprint(perr_hint);
+        _eprint("\n");
         print_usage(fs);
         return ANUENUE_EXIT_USAGE;
     }

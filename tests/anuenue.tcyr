@@ -1188,6 +1188,60 @@ fn main(): i64 {
     assert_eq(CMDIT_ERR_NOMEM, 12, "NOMEM == 12");
     assert_eq(CMDIT_ERR_ARGV, 13, "ARGV == 13");
 
+    test_group("v1.4.2 — argv tokens echoed in diagnostics are bounded and sanitized");
+    assert_eq(ANUENUE_ERR_ARG_MAX, 64, "the cap matches anuenue_eprint_arg's 64-byte buffer");
+    assert_eq(anuenue_arg_cut("--bogus", 7), 7, "a short token is echoed whole");
+    # 100 x 'x': cut at the cap.
+    var e142_long[104];
+    var e142_i = 0;
+    while (e142_i < 100) { store8(&e142_long + e142_i, 120); e142_i = e142_i + 1; }
+    store8(&e142_long + 100, 0);
+    assert_eq(anuenue_arg_cut(&e142_long, 100), 64, "a long ASCII token is cut at the cap");
+    var e142_out[64];
+    assert_eq(anuenue_arg_render(&e142_long, &e142_out), 64, "and renders exactly the cap");
+    # 63 x 'x' + U+00E9 (C3 A9 at bytes 63-64): the cap falls inside it.
+    store8(&e142_long + 63, 0xC3);
+    store8(&e142_long + 64, 0xA9);
+    assert_eq(anuenue_arg_cut(&e142_long, 100), 63, "the cut steps back over a split 2-byte char");
+    # 62 x 'x' + U+20AC (E2 82 AC at bytes 62-64).
+    store8(&e142_long + 62, 0xE2);
+    store8(&e142_long + 63, 0x82);
+    store8(&e142_long + 64, 0xAC);
+    assert_eq(anuenue_arg_cut(&e142_long, 100), 62, "and over a split 3-byte char");
+    # Bytes 61-64 all continuation bytes (malformed): at most three steps back.
+    store8(&e142_long + 61, 0x80);
+    store8(&e142_long + 62, 0x80);
+    store8(&e142_long + 63, 0x80);
+    store8(&e142_long + 64, 0x80);
+    assert_eq(anuenue_arg_cut(&e142_long, 100), 61, "malformed input stops after three steps");
+    # Controls: "a" ESC "[31m" BEL LF C1(C2 9B) "b" -> each control one '?'.
+    var e142_ctl[16];
+    store8(&e142_ctl + 0, 97);
+    store8(&e142_ctl + 1, 27);
+    store8(&e142_ctl + 2, 91);
+    store8(&e142_ctl + 3, 51);
+    store8(&e142_ctl + 4, 49);
+    store8(&e142_ctl + 5, 109);
+    store8(&e142_ctl + 6, 7);
+    store8(&e142_ctl + 7, 10);
+    store8(&e142_ctl + 8, 0xC2);
+    store8(&e142_ctl + 9, 0x9B);
+    store8(&e142_ctl + 10, 98);
+    store8(&e142_ctl + 11, 0);
+    var e142_n = anuenue_arg_render(&e142_ctl, &e142_out);
+    assert_eq(e142_n, 10, "11 bytes in, 10 out: the 2-byte C1 control is one '?'");
+    assert_eq(load8(&e142_out + 1), 63, "ESC becomes '?'");
+    assert_eq(load8(&e142_out + 2), 91, "and the rest of the sequence is inert text");
+    assert_eq(load8(&e142_out + 6), 63, "BEL becomes '?'");
+    assert_eq(load8(&e142_out + 7), 63, "LF becomes '?' — a token cannot break the line");
+    assert_eq(load8(&e142_out + 8), 63, "C1 CSI (C2 9B) becomes one '?'");
+    assert_eq(load8(&e142_out + 9), 98, "text after the controls is kept");
+    assert_eq(anuenue_arg_render(0, &e142_out), 0, "a 0 token renders nothing");
+    assert_eq(anuenue_arg_attached("--freq=abc"), 1, "--freq=abc carries its value");
+    assert_eq(anuenue_arg_attached("--animate="), 1, "--animate= carries an empty value");
+    assert_eq(anuenue_arg_attached("-p"), 0, "-p does not");
+    assert_eq(anuenue_arg_attached(0), 0, "a 0 token does not");
+
     return assert_summary();
 }
 

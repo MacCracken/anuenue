@@ -110,11 +110,15 @@ if a consumer asks.
   silent about success and never silent about failure.
 - **Parse errors cannot be logged.** Observability is configured *from* parsed
   flags, so a `cmdit` parse failure happens before the level is known. Those
-  paths keep their existing stderr wording. Accepted rather than solved: a
+  paths print their own stderr line (since v1.4.2 it names the offending token,
+  which cmdit reports via `cmdit_err_token`, sanitized and bounded — still no
+  pre-parse scan). Accepted rather than solved: a
   pre-parse argv scan for `-v` would duplicate cmdit's tokenizer, which is
   exactly the duplication adopting cmdit at v1.1.4 removed.
 - `src/observe.cyr` must depend on nothing from anuenue — only sakshi, agnostik
-  and the stdlib. That is what lets it be included first so every other module
+  and the stdlib (plus, from v1.4.2, darshana's `tty_sanitize_buf` for argv
+  echoed in diagnostics: a dep, not an anuenue module, so the rule holds). That
+  is what lets it be included first so every other module
   can call `anuenue_fail` without an include cycle. The colour-reason codes live
   in `src/color.cyr` for the mirror-image reason: they need `ANUENUE_COLOR_*`.
   If a future change makes `observe.cyr` reach back into anuenue, the cycle

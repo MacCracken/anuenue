@@ -36,6 +36,9 @@
 #   7. The parse failures cmdit 1.4.0 made visible (v1.4.1): a boolean
 #      given `=value` is a usage error, not ON; a command line the stdlib
 #      cannot read whole is a runtime failure, not a silent prefix.
+#   8. Parse-error lines name the offending token (v1.4.2) — and since
+#      that token is argv headed for a terminal, it is echoed sanitized
+#      (no ESC / BEL / C0 / C1 survives) and bounded (64 bytes + "...").
 #
 # Usage:
 #   sh scripts/robustness-check.sh
@@ -522,6 +525,56 @@ if command -v prlimit >/dev/null 2>&1; then
     fi
 else
     echo "  skip: prlimit(1) unavailable — cannot bound the descriptor table"
+fi
+
+# --- gate 8: parse-error lines name the token, safely ---------------
+echo "[robustness] parse-error lines name the token (v1.4.2)"
+_perr() {   # $1 = expected first stderr line; remaining args = argv
+    _want=$1; shift
+    set +e
+    "$BIN" "$@" < /dev/null > /dev/null 2> "$WORK/pe.err"
+    _rc=$?
+    set -e
+    _got=$(head -n 1 "$WORK/pe.err")
+    if [ "$_rc" -eq 2 ] && [ "$_got" = "$_want" ]; then
+        ok "$*: '$_got'"
+    else
+        bad "$*: rc=$_rc, got '$_got', want '$_want'"
+    fi
+}
+_perr "anuenue: unknown flag: --bogus"                --bogus
+_perr "anuenue: flag missing value: -p"               -p
+_perr "anuenue: bad integer value: -p abc"            -p abc
+_perr "anuenue: bad integer value: --freq=abc"        --freq=abc
+_perr "anuenue: bundled short flags not supported: -an (use -x -y, not -xy)" -an
+_perr "anuenue: boolean flags take no value: --no-color=0 (use --flag, not --flag=value)" --no-color=0
+
+# A terminal escape in argv must not reach the terminal through stderr:
+# OSC 0 (set window title) with a BEL terminator, and a CSI colour.
+_esc=$(printf '\033')
+_bel=$(printf '\007')
+set +e
+"$BIN" "--${_esc}]0;owned${_bel}${_esc}[31mred" < /dev/null > /dev/null 2> "$WORK/inj.err"
+set -e
+_first=$(head -n 1 "$WORK/inj.err")
+if printf '%s' "$_first" | od -An -tx1 | grep -qE '(^| )(1b|07)( |$)'; then
+    bad "ESC or BEL from argv reached stderr: $(printf '%s' "$_first" | od -An -c | head -2)"
+elif [ "$_first" = "anuenue: unknown flag: --?]0;owned??[31mred" ]; then
+    ok "ESC / BEL in a token are echoed as '?', never raw"
+else
+    bad "escape-bearing token rendered as '$_first'"
+fi
+
+# A long token is bounded: 64 bytes of it, then "...".
+_long=$(python3 -I -c 'print("--" + "x" * 300)')
+set +e
+"$BIN" "$_long" < /dev/null > /dev/null 2> "$WORK/long.err"
+set -e
+_want="anuenue: unknown flag: $(python3 -I -c 'print("--" + "x" * 62)')..."
+if [ "$(head -n 1 "$WORK/long.err")" = "$_want" ]; then
+    ok "a 302-byte token is echoed as its first 64 bytes + '...'"
+else
+    bad "long token: '$(head -c 120 "$WORK/long.err")'"
 fi
 
 echo

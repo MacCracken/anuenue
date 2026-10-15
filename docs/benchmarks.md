@@ -522,6 +522,34 @@ the v1.4.0 ordering, slightly faster on the quieter host.
   agnostik +2 480 B, sakshi-as-stdlib 0 B, anuenue +104 B; see
   [`state.md` § Binary](development/state.md#binary).
 
+## v1.4.2 — stderr hygiene
+
+### Release ratchet — v1.4.1 vs v1.4.2
+
+The change is on the error path — `anuenue_fail`'s newline and the
+parse-error token echo — which runs once and only on a failure. A rebuilt
+v1.4.1 binary against v1.4.2, `RUNS=11`, three interleaved rounds per mode,
+medians of the rounds, ns/byte, same host as § v1.4.1:
+
+| Mode | corpus | v1.4.1 | v1.4.2 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 47.38 | **47.41** | +0.1% |
+| | ascii w/ LFs | 51.64 | **52.14** | +1.0% |
+| | utf8 mixed | 41.98 | **42.21** | +0.5% |
+| 256 | ascii no-LF | 34.58 | **34.74** | +0.5% |
+| | ascii w/ LFs | 39.21 | **39.32** | +0.3% |
+| | utf8 mixed | 33.61 | **33.52** | −0.3% |
+| 16 | ascii no-LF | 23.12 | **23.20** | +0.3% |
+| | ascii w/ LFs | 27.78 | **27.77** | 0.0% |
+| | utf8 mixed | 25.67 | **25.83** | +0.6% |
+
+**Flat** — every row within ±1%. v1.4.1 reads 0.7 ns/byte above its own § v1.4.1
+row: same host, a different hour; compare the pair.
+
+- **1.4.2 binary**: **226 624 bytes**, +4 104 B over v1.4.1 — DCE now keeps
+  darshana's `tty_sanitize_buf` for the argv echo; see
+  [`state.md` § Binary](development/state.md#binary).
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -548,7 +576,8 @@ the v1.4.0 ordering, slightly faster on the quieter host.
 | v1.3.5  | 46.90‡              | 8§               | 51§                 | 814 488      | F-01: transient read errors are not failures |
 | v1.3.6  | 48.53‖              | 8§               | 37§                 | 204 312      | Toolchain 6.6.2 + dep refresh. Figures measured at v1.4.0 from a rebuilt v1.3.6 binary; binary compacted by 6.6.x DCE |
 | v1.4.0  | 48.56‖              | 9§               | 23§                 | 210 696      | cyrius 6.7.9 + darshana 1.3.0; exit signalfd via darshana; escape table re-measured and kept |
-| **v1.4.1** | **46.74**¤       | 8§               | 21§                 | **222 520**  | **cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed** |
+| v1.4.1  | 46.74¤              | 8§               | 21§                 | 222 520      | cmdit 1.4.0 + agnostik 1.12.0; sakshi to the stdlib; cmdit's new parse failures routed |
+| **v1.4.2** | **47.41**¤       | 8§               | 22§                 | **226 624**  | **stderr hygiene: one line per failure; parse errors name a sanitized token** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -570,6 +599,7 @@ shipped; neither touches the per-cluster hot path.
 
 ¤ v1.4.1 measured back-to-back with a rebuilt v1.4.0 on a quieter host (load
 1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
+v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both
