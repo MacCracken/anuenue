@@ -1848,15 +1848,103 @@ fn test_v150_vt(): i64 {
     return 0;
 }
 
+# Store the UTF-8 encoding of `cp` at `buf + at`. Returns the index after it.
+fn _t_utf8(buf, at, cp): i64 {
+    if (cp < 0x80) {
+        store8(buf + at, cp);
+        return at + 1;
+    }
+    if (cp < 0x800) {
+        store8(buf + at, 0xC0 | (cp >> 6));
+        store8(buf + at + 1, 0x80 | (cp & 0x3F));
+        return at + 2;
+    }
+    if (cp < 0x10000) {
+        store8(buf + at, 0xE0 | (cp >> 12));
+        store8(buf + at + 1, 0x80 | ((cp >> 6) & 0x3F));
+        store8(buf + at + 2, 0x80 | (cp & 0x3F));
+        return at + 3;
+    }
+    store8(buf + at, 0xF0 | (cp >> 18));
+    store8(buf + at + 1, 0x80 | ((cp >> 12) & 0x3F));
+    store8(buf + at + 2, 0x80 | ((cp >> 6) & 0x3F));
+    store8(buf + at + 3, 0x80 | (cp & 0x3F));
+    return at + 4;
+}
+
+# v1.5.2 — V-11: a cluster that starts with an extender (at the start of
+# the input, or after an LF) is as wide as its first codepoint that is not
+# one. The phase half of V-11 is a process-level property, gated by
+# robustness gate 12. Returns 0.
+fn test_v152_ext_cols(): i64 {
+    test_group("v1.5.2 V-11 — columns of a cluster that starts with an extender");
+    var xb = alloc(64);
+    var xn = _t_utf8(xb, 0, 0x0301);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 0, "a lone combining mark takes no columns");
+    xn = _t_utf8(xb, xn, 0x0302);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 0, "two marks take none");
+    xn = _t_utf8(xb, 0, 0xFE0F);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 0, "a lone VS-16 takes none");
+    xn = _t_utf8(xb, 0, 0x200D);
+    xn = _t_utf8(xb, xn, 0x78);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 1, "ZWJ x: the x's 1 column");
+    xn = _t_utf8(xb, 0, 0x200D);
+    xn = _t_utf8(xb, xn, 0x1F469);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 2, "ZWJ + woman: the emoji's 2 columns");
+    xn = _t_utf8(xb, 0, 0x200D);
+    xn = _t_utf8(xb, xn, 0x0301);
+    xn = _t_utf8(xb, xn, 0x4E2D);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 2, "extenders are skipped to the first base: CJK is 2");
+    xn = _t_utf8(xb, 0, 0x200D);
+    xn = _t_utf8(xb, xn, 9);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 0, "ZWJ + a control: no columns");
+    xn = _t_utf8(xb, 0, 0x200D);
+    xn = _t_utf8(xb, xn, 0x85);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 0, "ZWJ + a C1 control: no columns");
+    xn = _t_utf8(xb, 0, 0x200D);
+    store8(xb + xn, 0xFF);
+    xn = xn + 1;
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 1, "ZWJ + a malformed byte: one U+FFFD");
+    xn = _t_utf8(xb, 0, 0x4E2D);
+    assert_eq(_cluster_cols_mb(xb, 0, xn), 2, "a base that is no extender is measured as before");
+
+    test_group("v1.5.2 V-11 — the climb for lines that start with an extender");
+    var xr = alloc(512);
+    var xt = alloc(4097 * 8);
+    # mark + 80 x + LF: 80 columns, one row (it counted 81, two rows).
+    xn = _t_utf8(xr, 0, 0x0301);
+    xn = _t_fill(xr, xn, 80, 120);
+    store8(xr + xn, 10);
+    xn = xn + 1;
+    assert_eq(_t_rows(xr, xn, xt, 80), 1, "a mark at the start + 80 columns is 1 row");
+    # "a\n" + mark + 80 x + LF: the same after an LF.
+    store8(xr, 97);
+    store8(xr + 1, 10);
+    xn = _t_utf8(xr, 2, 0x0301);
+    xn = _t_fill(xr, xn, 80, 120);
+    store8(xr + xn, 10);
+    xn = xn + 1;
+    assert_eq(_t_rows(xr, xn, xt, 80), 2, "after an LF: 1 + 1 rows");
+    # "\n" + ZWJ + woman + 79 y + LF: 81 columns, two rows (it counted 80).
+    store8(xr, 10);
+    xn = _t_utf8(xr, 1, 0x200D);
+    xn = _t_utf8(xr, xn, 0x1F469);
+    xn = _t_fill(xr, xn, 79, 121);
+    store8(xr + xn, 10);
+    xn = xn + 1;
+    assert_eq(_t_rows(xr, xn, xt, 80), 3, "ZWJ + woman + 79 columns after an LF: 1 + 2 rows");
+    return 0;
+}
+
 # Unit-suite entry: runs every cut's groups in order and returns
 # assert_summary() — the failure count, so a failed assertion fails `cyrius test`.
 #
 # One function per milestone or cut (v1.4.4). Through v1.4.3 every group
 # since M1 lived in this one function; at v1.4.3 growing it by one more
-# group made the suite die with SIGSEGV in an unrelated early group (filed
-# as cyrius issue 2026-10-14-anuenue-growing-a-large-fn-segfaults-an-
-# earlier-call). A new cut's groups go in a new function, called below in
-# order.
+# group made the suite die with SIGSEGV in an unrelated early group. It was
+# filed as a cyrius miscompile; cyrius 6.7.14 traced it to three byte-sized
+# argv arrays in test_m2_flags holding more pointers than bytes, fixed at
+# v1.5.1. A new cut's groups go in a new function, called below in order.
 fn main(): i64 {
     alloc_init();
 
@@ -1882,6 +1970,7 @@ fn main(): i64 {
     test_v150_markers();
     test_v150_vt();
     test_v150_review();
+    test_v152_ext_cols();
 
     return assert_summary();
 }

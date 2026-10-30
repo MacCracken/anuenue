@@ -4,6 +4,144 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-10-29 (the routes agree on the phase of an extender)
+
+The v1.5.0 delta's **V-11**: two inputs where the filter gave a different hue
+from the other routes to everything that followed. Both predate v1.5.0. Fixing
+them found a third case of the same kind. Now the filter, the one-shot route
+and animation agree on all three. A stdout change for those inputs only.
+
+**stdout is byte-identical to v1.5.1 for every other input**: 301 comparisons
+over the same corpora, flag sets and animation streams as v1.5.1's. The only
+differences are `-V` / `--version`.
+
+### Fixed — an extender after an LF takes a phase step
+
+UAX #29 breaks after a control (GB4), so nothing extends an LF. Animation has
+given an extender there a cluster of its own, with a step, since v1.4.4 (H-05).
+The filter and the one-shot route folded it into the LF with no step. So for
+`a LF U+0301 b` every cluster after the mark was a hue behind animation's.
+
+- **The filter and `anuenue_render_bytes` now step there too.** `saw_any`, the
+  "a cluster has been emitted" flag, gains a third value: 2 when that cluster
+  was an LF. A multi-byte extender then opens a cluster. A third value rather
+  than a latch of its own, so the ASCII hot path stores nothing new per byte.
+  An ASCII byte never extends an LF anyway: the LF clears the ZWJ latch, and
+  only a cluster sets it again.
+- **It holds across what anuenue removes**: an input SGR, a no-colour span or an
+  empty span between the LF and the mark. Markers and spans leave the flag as
+  it is, matching animation, whose span bytes leave its own LF flag set. It
+  also holds across the 4096-byte read, with the LF ending one read and the
+  mark in the next, or the mark itself split.
+- **Other controls are unchanged.** After a CR or a TAB, a mark still joins that
+  cluster on every route. The routes agree there, so there was nothing to fix.
+
+### Fixed — the byte after a ZWJ joins at the end of the input
+
+Mid-stream, the byte after a ZWJ joins the ZWJ's cluster on every route,
+whatever it is, invalid bytes included. At the end of the input it did not:
+
+- **The filter's EOF carry** (a lone ESC, `ESC _`, an unfinished SGR or marker,
+  a truncated UTF-8 sequence) stepped on every carried byte. One-shot and
+  animation joined the ESC-led ones. This is V-11's recorded case.
+- **The one-shot route's truncated tail** (`a ZWJ \xf0\x9f` as the last bytes)
+  stepped too, while animation joined. V-11 did not list this one. The
+  reproduction for the recorded case found it.
+
+Both now apply the main loop's latches: the carried byte after a ZWJ joins, and
+each later carried byte is a 1-byte cluster of its own. With nothing after the
+carry, only the hue of the carried bytes themselves changes.
+
+### Fixed — the row count for a line that starts with an extender
+
+A cluster can start with an extender only where there is nothing to extend: at
+the start of the input, or after an LF. The row count took the extender as the
+cluster's base, and `anuenue_cp_cols` gives a combining mark 1 column. A
+terminal gives it none. So a line of exactly the terminal's width that began
+with a mark counted 81 columns, two rows, and the block climbed a row too far
+every frame. A ZWJ + 👩 line start counted 1 column where the terminal shows 2,
+so the block climbed a row short and scrolled.
+
+`_cluster_cols_mb` now measures such a cluster past its extenders, with a new
+`_cluster_cols_past_ext`: the width of the first codepoint that is not one
+(`ZWJ x` is 1, ZWJ + 👩 is 2), or 0 if there is none. It never reads past the
+cluster. ADR 0005 is amended.
+
+### Tests
+
+- **Robustness gate 12** (new, 80 → **83** checks):
+  - `LF`: eight extender-after-LF inputs, compared across the filter, the
+    one-shot route and animation frame 0 in all three colour modes. An oracle
+    that does not rest on the routes agreeing checks that a mark after an LF
+    hues as a base character there does.
+  - `LFREAD`: the LF ending one read with the mark in the next, the mark split
+    across reads, and one byte per write.
+  - `EOF`: seven ZWJ-then-carry inputs across the routes and modes, with an
+    oracle: the carried byte joins as an ASCII byte would.
+
+  Every check fails on the v1.5.1 binary.
+- **PTY gate** (33 → **35**): `mark-starts-line` (on v1.5.1, 6 of 7 frames
+  climbed past the top) and `zwj-emoji-starts-line` (on v1.5.1 a row scrolled
+  after the first frame).
+- **Unit** (595 → **608** assertions, 73 → **75** groups): `test_v152_ext_cols`
+  pins `_cluster_cols_mb` on extender-led clusters (a lone mark, two marks,
+  VS-16, ZWJ + ASCII / emoji / control / C1 / a malformed byte, extenders
+  skipped to a CJK base) and the climb for lines that start with one.
+- **Fuzz**: the pretag token corpus gains VS-16 and a wide ideograph. Every
+  multi-byte cluster's columns are checked against a reference written apart
+  from `_cluster_cols_mb`, and the climb against the LF count at three widths.
+  `pretag-clusters` 108 687 → **118 646**, total 1 780 057 → **1 790 016**.
+- **Mutation-checked**: eight breaks of the new code, each caught. Dropping the
+  LF test on the filter or the one-shot route, an LF that sets 1, and a carry
+  or truncated tail that never joins are caught by gate 12. Taking the mark as
+  the base, an ASCII byte after a ZWJ counted 0, and stopping at the first
+  extender are caught by the unit suite and the fuzz harness.
+
+### Performance
+
+The filter's hot loop changed: `saw_any`'s tests went from `== 1` to `!= 0`,
+and the multi-byte path gained one comparison. The rebuilt v1.5.1 against
+v1.5.2, `RUNS=11`, ten interleaved rounds (the second five reversed), medians,
+ns/byte. MONO uses a 14 MB corpus, eight rounds. The host was busier than at
+v1.5.1's run (load average about 1.7–2.2), so both binaries read about 0.3
+above that run's figures. Compare the pair, not across releases.
+
+| Corpus | truecolor | 256 | 16 | MONO |
+|---|---:|---:|---:|---:|
+| ascii no-LF (M5 metric) | 15.48 → **15.42** | 15.39 → **15.36** | 15.27 → **15.24** | 0.57 → **0.57** |
+| ascii w/ LFs | 20.20 → **20.13** | 20.18 → **20.11** | 20.19 → **20.07** | 0.58 → **0.58** |
+| utf8 mixed | 20.43 → **20.59** | 20.41 → **20.54** | 20.33 → **20.30** | 0.58 → **0.57** |
+
+Flat: every median is within ±1%, and in every row the two binaries' ranges
+overlap.
+
+### Binary
+
+532 448 → **536 544 B** (+4 096). `.text` grew 872 B, for
+`_cluster_cols_past_ext` and the filter's LF and carry branches. That moved the
+data segment to the next page. `.rodata` and the in-file `.bss` are unchanged.
+Non-DCE 1 531 872 B, unchanged.
+
+### Security
+
+No new syscall, buffer or allocation. `_cluster_cols_past_ext` reads only inside
+the cluster it measures: every decode follows a `utf8_seq_len` bounded by the
+cluster's end, so a truncated or malformed tail is one U+FFFD and nothing past
+it is read. The EOF carry change touches only which phase a carried byte gets.
+Every route's syscall set is unchanged (fault-check).
+
+### Docs
+
+- **ADR 0003** amended: nothing extends an LF, and the byte after a ZWJ joins at
+  the end of the input too. **ADR 0005** amended: a cluster that starts with an
+  extender is as wide as its first non-extender.
+- **The v1.5.0 delta's V-11** is marked resolved at v1.5.2, with the third case.
+- **Roadmap**: the v1.5.2 slot is shipped and removed; v1.6.0 is next, on its
+  trigger. **state.md**, the README's quality bar, and getting started's
+  grapheme list (a combining mark at the start of a line) are updated.
+- The unit suite's `main()` doc no longer calls the v1.4.3 crash a cyrius
+  miscompile.
+
 ## [1.5.1] — 2026-10-29 (cyrius 6.7.18 + dependency refresh)
 
 The toolchain moves from cyrius 6.7.9 to **6.7.18**, and every dependency moves
@@ -52,7 +190,7 @@ code reads (§ Binary).
   are body-identical to 1.3.0's; `tty_isatty` changed only in its AGNOS arm
   (1.5.0). New and unused here: `tty_sgr_len` / `tty_sgr_strip_buf` (1.4.0,
   built from anuenue's 2026-10-15 proposal and modelled on its stand-in, so
-  swapping them in is its own change, roadmap v1.5.3) and
+  swapping them in is its own change, riding along with roadmap v1.6.0) and
   `tty_isatty_is_per_fd` (1.6.0).
 - **agnostik 2.0.0** — a major. One of its renames reaches anuenue: accessors
   take their struct's name, so `agnostik_err_code` is `AgnostikError_code`
@@ -151,10 +289,10 @@ overlaps. Micro rows (`cyrius bench`): `hsv_rainbow` 8 ns, `tty_fg_rgb_buf`
 
 ### Docs
 
-- **Roadmap**: the v1.5.1 slot is shipped and removed. **v1.5.3** is new: swap
-  the SGR stand-in for darshana's scanner. § Upstream: the `args_init`, the
-  "miscompile" and the `agnostik_err_new` items are closed, and the DCE-literal
-  issue is added.
+- **Roadmap**: the v1.5.1 slot is shipped and removed. Swapping the SGR
+  stand-in for darshana's scanner joins v1.6.0 as a ride-along. § Upstream:
+  the `args_init`, the "miscompile" and the `agnostik_err_new` items are
+  closed, and the DCE-literal issue is added.
 - **CLAUDE.md**: the large-function rule now names the real cause (byte-sized
   arrays) and keeps per-group test functions.
 - **`state.md`**: darshana's row named twelve symbols and listed

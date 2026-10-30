@@ -28,86 +28,35 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.5.1.** The v1.x contract — exit codes, output shape, capability surface —
+**v1.5.2.** The v1.x contract — exit codes, output shape, capability surface —
 has been frozen since GA and is unbroken; the flag set has only ever grown.
 v1.4.5 stripped the input's own colour codes on the colour routes (audit H-06);
 v1.5.0 added their counterpart, a producer-side no-colour span marked with an APC
 pair ([ADR 0006](../adr/0006-no-colour-spans.md)). v1.5.1 moved the toolchain to
-cyrius 6.7.18 and every dep to its latest tag, with stdout unchanged. Seven
-audits have run, the latest the
-[v1.5.0 delta](../audit/2026-10-15-v150-delta.md), all with zero HIGH+ open.
-Next: v1.5.2 settles two older phase disagreements between the routes; v1.5.3
-swaps anuenue's SGR stand-in for the scanner darshana 1.4.0 ships.
+cyrius 6.7.18 and every dep to its latest tag, with stdout unchanged. v1.5.2
+made the three routes agree on the phase of an extender (V-11). Seven audits
+have run, the latest the [v1.5.0 delta](../audit/2026-10-15-v150-delta.md), all
+with zero HIGH+ open. Next: v1.6.0, the pipe-decorator family, which waits on
+its trigger; swapping anuenue's SGR stand-in for darshana 1.4.0's scanner rides
+along with it.
 
 ## Release map
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.5.2](#v152--the-routes-agree-on-the-phase-of-an-extender) | The routes agree on the phase of an extender | none — actionable |
-| [v1.5.3](#v153--the-sgr-stand-in-gives-way-to-darshanas-scanner) | The SGR stand-in gives way to darshana's scanner | none — actionable after v1.5.2 |
-| [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family (+ adoption, if a consumer has landed) | a second pipe-decorator wants a rainbow, or a consumer's ask |
+| [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family (+ adoption, if a consumer has landed; + the SGR scanner swap) | a second pipe-decorator wants a rainbow, or a consumer's ask |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
 
 ---
-
-## v1.5.2 — The routes agree on the phase of an extender
-
-> **Status:** actionable — the next patch. Recorded as V-11 in the
-> [v1.5.0 delta](../audit/2026-10-15-v150-delta.md); both cases predate v1.5.0.
-
-Two rare inputs where the filter and the other routes give a different hue to
-what follows. A stdout change on the filter for those inputs only, so it gets
-its own patch:
-
-- **An extender straight after an LF.** The filter folds it into the LF with
-  no phase step. Animation gives it a cluster of its own with a step (H-05,
-  v1.4.4), which is UAX #29's answer (GB4: break after a control). Change the
-  filter (and `anuenue_render_bytes`) to match. Animation's row count gives
-  such a mark 1 column where terminals give it none; settle that in the same
-  slot.
-- **The filter's EOF carry ignores the ZWJ and RI latches.** A ZWJ, then a
-  carried prefix at the very end of the input (a lone ESC, `ESC _`), steps the
-  phase on the filter but not on the one-shot route.
-
-Gates: robustness gate 11's `ROUTES` comparison, widened to inputs with an
-extender after an LF, and stdout identity against v1.5.1 for every input
-without one.
-
-## v1.5.3 — The SGR stand-in gives way to darshana's scanner
-
-> **Status:** actionable after v1.5.2. Added at v1.5.1, when the pin reached
-> darshana 1.6.0; placed after V-11 so each patch moves one thing. The user may
-> re-place it.
-
-anuenue proposed an input-side SGR scanner to darshana on 2026-10-15, shaped on
-its own stand-in (`_sgr_len` and `anuenue_sgr_strip` in `src/filter.cyr`, v1.4.5).
-darshana 1.4.0 shipped it as `tty_sgr_len(buf, s, n, max)` and
-`tty_sgr_strip_buf(buf, n, final, out_held)` (darshana ADR 0006), and v1.5.1 pins
-1.6.0, so both are in the bundle unused. This is the swap half of the sandhi
-pattern: proposal → swap → goldens unchanged.
-
-- **Where darshana differs** (its ADR 0006): `max` is a parameter (anuenue
-  passes 128); `tty_sgr_len` checks the byte at `s` is ESC; out-of-contract
-  arguments answer 0, never -1; `tty_sgr_strip_buf` rejects a negative `n` or a
-  `final` other than 0 / 1 with -1; and there is no strip counter — `-v`'s count
-  stays anuenue's, kept around the call.
-- **The filter's inline check is the hot path.** v1.4.5 tests for ESC inline
-  next to LF behind one `b < 0x20` comparison, and a separate pass measured +1.7
-  ns/byte. Swap the length test there only if `scripts/perf-bench.sh` shows it
-  flat, head-to-head in all four `COLOR=` modes; otherwise swap one-shot and
-  animation's buffer strip alone and record why.
-- **Gates:** stdout identity against v1.5.2 across corpora × flags (SGR,
-  near-miss SGR, SGR split across the 4096-byte read), `fuzz/sgr-strip.fcyr`
-  re-pointed at darshana's functions against its independent reference,
-  robustness gate 10 unchanged, the dead-code floor (the stand-in goes).
 
 ## v1.6.0 — Pipe-decorator family
 
 > **Status:** gated on a second pipe-decorator wanting a rainbow tint. Adoption
 > and any additive surface a consumer asks for ride along with this minor, or
 > cut it on their own if they arrive first (moved here from v1.5.0, which
-> shipped the no-colour marker).
+> shipped the no-colour marker). The SGR scanner swap rides along too (folded
+> in from a v1.5.3 slot at the user's ask, 2026-10-29).
 
 - **Extract the HSV phase model to a shared crate** (or pull `abaco`). Until a
   second consumer exists the inline copy is free.
@@ -139,6 +88,33 @@ retroactively once an integration lands.
 - **A first producer of no-colour spans** (v1.5.0). The marker is only worth its
   grammar if a producer emits it. When `iam`, `bnrmr` or the MOTD chain adopts
   it, add that pipeline to the PTY gate's span cases.
+
+**The SGR stand-in gives way to darshana's scanner.** Added at v1.5.1, when the
+pin reached darshana 1.6.0, as a v1.5.3 slot; the user folded it into this minor
+on 2026-10-29. It rides along with whichever trigger cuts v1.6.0.
+
+anuenue proposed an input-side SGR scanner to darshana on 2026-10-15, shaped on
+its own stand-in (`_sgr_len` and `anuenue_sgr_strip` in `src/filter.cyr`, v1.4.5).
+darshana 1.4.0 shipped it as `tty_sgr_len(buf, s, n, max)` and
+`tty_sgr_strip_buf(buf, n, final, out_held)` (darshana ADR 0006), and v1.5.1 pins
+1.6.0, so both are in the bundle unused. This is the swap half of the sandhi
+pattern: proposal → swap → goldens unchanged.
+
+- **Where darshana differs** (its ADR 0006): `max` is a parameter (anuenue
+  passes 128); `tty_sgr_len` checks the byte at `s` is ESC; out-of-contract
+  arguments answer 0, never -1; `tty_sgr_strip_buf` rejects a negative `n` or a
+  `final` other than 0 / 1 with -1; and there is no strip counter — `-v`'s count
+  stays anuenue's, kept around the call.
+- **The filter's inline check is the hot path.** v1.4.5 tests for ESC inline
+  next to LF behind one `b < 0x20` comparison, and a separate pass measured +1.7
+  ns/byte. Swap the length test there only if `scripts/perf-bench.sh` shows it
+  flat, head-to-head in all four `COLOR=` modes; otherwise swap one-shot and
+  animation's buffer strip alone and record why.
+- **Gates:** stdout identity against the previous release across corpora ×
+  flags (SGR, near-miss SGR, SGR split across the 4096-byte read),
+  `fuzz/sgr-strip.fcyr` re-pointed at darshana's functions against its
+  independent reference, robustness gate 10 unchanged, the dead-code floor (the
+  stand-in goes).
 
 Additive surface an integration asks for lands here. One candidate is on file:
 

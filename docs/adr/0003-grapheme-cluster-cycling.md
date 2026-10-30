@@ -91,6 +91,22 @@ ASCII short-circuit boundary) gets a `prev_was_zwj` latch so the next
 codepoint after ZWJ is treated as extending — matching the most
 common emoji ZWJ-sequence shape.
 
+*Amended at v1.5.2 (V-11):* **nothing extends an LF** (UAX #29 GB4,
+break after a control). An extender after an LF opens a cluster of its
+own and takes a phase step on every route. Animation has done this since
+v1.4.4 (H-05); through v1.5.1 the filter and the one-shot route folded
+it into the LF with no step, so everything after it was a hue behind
+animation. The rule holds across what anuenue removes between the LF and
+the extender: an input SGR, a no-colour span, an empty span. Other
+controls (CR, TAB) still take a following extender into their cluster:
+every route agrees there, so nothing disagrees to fix.
+
+*Also v1.5.2:* **the byte after a ZWJ joins its cluster, whatever the
+byte** — at the end of the input as well as mid-stream. The filter's EOF
+carry (a lone ESC, an unfinished SGR or marker, a truncated UTF-8
+sequence) and the one-shot route's truncated tail used to step there;
+animation joined.
+
 ## Consequences
 
 ### Positive

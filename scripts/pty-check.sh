@@ -342,6 +342,12 @@ open(w + "/span-adjacent.in", "w").write(OFF + "\x1b]0;title" + ON + "".join(OFF
 # byte, not an APC (so the 100 x's print: two rows).
 open(w + "/span-mark.in", "w").write(("ab" + OFF + "x" * 78 + ON + "\u0301\n") * 3)
 open(w + "/span-esc-inter.in", "w").write((OFF + "\x1b(_" + "x" * 100 + ON + "\n") * 3)
+# v1.5.2 (V-11): a line that starts with an extender — at the start of the
+# input, or after an LF. A terminal gives the mark no columns, so each line
+# below is exactly 80 (one row; the count said 81, two, and the block climbed
+# a row too far), and ZWJ + woman + 79 is 81 (two rows; the count said 80).
+open(w + "/lf-mark.in", "w").write(("́" + "x" * 80 + "\n") * 3)
+open(w + "/lf-zwj.in", "w").write(("‍\U0001F469" + "y" * 79 + "\n") * 3)
 PYEOF
     # name input rows cols expect(anim|once)
     for _case in "fits fit3 24 80 anim" "wraps-but-fits wide 24 80 anim" \
@@ -353,7 +359,8 @@ PYEOF
                  "span-apc span-apc 24 80 anim" "span-hyperlink span-link 24 80 anim" \
                  "span-lf-inside-csi span-csi-lf 24 80 anim" \
                  "span-adjacent span-adjacent 24 80 anim" "span-mark-after span-mark 24 80 anim" \
-                 "span-esc-intermediate span-esc-inter 24 80 anim"; do
+                 "span-esc-intermediate span-esc-inter 24 80 anim" \
+                 "mark-starts-line lf-mark 24 80 anim" "zwj-emoji-starts-line lf-zwj 24 80 anim"; do
         set -- $_case
         in_pty "stty rows $3 cols $4; $BIN -a -d 1 -i 150 --color=24bit < $WORK/$2.in" > "$WORK/sized.out"
         _m=$(python3 -I scripts/term-model.py "$3" "$4" "$WORK/sized.out")

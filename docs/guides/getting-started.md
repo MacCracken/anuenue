@@ -70,6 +70,9 @@ Phase advances **per grapheme cluster**, not per byte. Practical effect:
 - `é` written as base `e` + combining acute (U+0301): one phase advance
 - Emoji ZWJ sequences (`👨‍👩‍👧`): one phase advance for the whole family
 - Regional-indicator pairs (`🇺🇸`): one phase advance for the flag
+- A combining mark at the start of a line has nothing to join, so it is a
+  cluster of its own with its own phase advance — the same on every route
+  (pipe, one-shot `TEXT`, `-a`) from v1.5.2
 - Invalid UTF-8: graceful per-byte cycling (never panics, never over-reads)
 
 See [ADR 0003](../adr/0003-grapheme-cluster-cycling.md) for the practical-subset classifier and the documented trade vs full UAX #29 (Hangul L/V/T, Devanagari spacing marks, tag sequences accepted as over-segmented).

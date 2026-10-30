@@ -336,8 +336,9 @@ fn _pretag_spans(buf, n_bytes, ctab, max_clusters, span_map, cflags): i64 {
         # of its own — at the start of the input (through v1.4.3 no cluster
         # was opened, so ctab[0] pointed past it and it never rendered) and
         # straight after an LF (it folded into the LF's cluster, which
-        # renders as reset + LF only). The filter path renders both, under
-        # the current phase; here they get a phase step of their own.
+        # renders as reset + LF only). After an LF it takes a phase step of
+        # its own, which the filter and the one-shot route match from v1.5.2
+        # (V-11; through v1.5.1 they drew it at the LF's phase, no step).
         if (n_clusters == 0) { extending = 0; }
         # v1.5.0 (V-07): straight after a span an extender cannot join the
         # raw cluster. It opens a JOIN cluster, which takes no columns. The
@@ -510,10 +511,11 @@ fn _cp_wide_init(): i64 {
 # calls it Wide or Fullwidth, 1 otherwise — and 2 for the regional
 # indicators, which UAX #11 calls Neutral but which only ever start a
 # cluster as half of a flag, which terminals draw 2 columns wide. Zero-width
-# input never reaches here: combining marks never start a cluster, and
-# controls are handled byte-wise in _block_rows. If the table cannot be
-# allocated, every codepoint is 1 (an undercount — the v1.4.3 behaviour —
-# rather than a crash). ADR 0005.
+# input never reaches here: a cluster that starts with an extender (at the
+# start of the input or after an LF, H-05) is measured past it by
+# _cluster_cols_mb, and controls are handled byte-wise in _block_rows. If
+# the table cannot be allocated, every codepoint is 1 (an undercount — the
+# v1.4.3 behaviour — rather than a crash). ADR 0005.
 fn anuenue_cp_cols(cp): i64 {
     if (cp < 0x1100) { return 1; }
     if (cp >= 0x1F1E6) {
@@ -544,12 +546,61 @@ fn anuenue_cp_cols(cp): i64 {
 # Display columns of the cluster at `off` (`clen` bytes) whose first byte
 # is non-ASCII. A malformed or truncated sequence shows as one U+FFFD,
 # and a C1 control (U+0080..U+009F) as nothing.
+#
+# A cluster can start with an extender only where there is nothing to
+# extend: at the start of the input, or after an LF (H-05). A terminal
+# gives the combining marks, ZWJ and variation selectors cp_is_extending
+# names no columns, so the cluster is as wide as its first codepoint that
+# is not one — `ZWJ x` is 1, a lone mark 0. Through v1.5.1 the mark itself
+# was the base and counted 1, so a line of exactly the terminal's width
+# that began with one counted a row too many, and the block climbed a row
+# too far every frame (V-11, v1.5.2).
 fn _cluster_cols_mb(buf, off, clen): i64 {
     var seqlen = utf8_seq_len(buf, off, off + clen);
     if (seqlen <= 1) { return 1; }
     var cp = utf8_decode(buf, off, seqlen);
     if (cp < 0xA0) { return 0; }
+    if (cp_is_extending(cp) == 1) {
+        return _cluster_cols_past_ext(buf, off + seqlen, off + clen);
+    }
     return anuenue_cp_cols(cp);
+}
+
+# Columns of the first codepoint in [at, end) that is not an extender, or 0
+# if there is none: a printable ASCII byte is 1, any other ASCII byte 0; a
+# non-ASCII one is measured as _cluster_cols_mb measures a base.
+fn _cluster_cols_past_ext(buf, at, end): i64 {
+    var cols = 0;
+    var k = at;
+    while (k < end) {
+        var b = load8(buf + k);
+        var sl = 1;
+        if (b < 0x80) {
+            if (b >= 0x20) {
+                if (b < 0x7F) { cols = 1; }
+            }
+            k = end;
+        } else {
+            sl = utf8_seq_len(buf, k, end);
+            if (sl <= 1) {
+                cols = 1;
+                k = end;
+            } else {
+                var ecp = utf8_decode(buf, k, sl);
+                if (ecp < 0xA0) {
+                    k = end;
+                } else {
+                    if (cp_is_extending(ecp) == 1) {
+                        k = k + sl;
+                    } else {
+                        cols = anuenue_cp_cols(ecp);
+                        k = end;
+                    }
+                }
+            }
+        }
+    }
+    return cols;
 }
 
 # Inside a no-colour span (v1.5.0, ADR 0006) the producer's escape

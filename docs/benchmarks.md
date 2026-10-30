@@ -781,6 +781,43 @@ emit 9 ns in all three modes, `hsv_rainbow` + composer 29 / 36 / 23 ns
 no live code reads them. They arrive through agnostik's deps sidecar. One row per
 change is in the CHANGELOG and `state.md` § Binary. `.text` grew 1 088 B in all.
 
+## v1.5.2 — the routes agree on the phase of an extender
+
+The filter's hot loop changed for V-11: `saw_any` gained a third value (2, the
+last cluster was an LF), so its tests went from `== 1` to `!= 0`, and the
+multi-byte path gained one `saw_any == 2` comparison. The ASCII path stores
+nothing new; a latch of its own would have cost a store per byte.
+
+### Release ratchet — v1.5.1 vs v1.5.2
+
+A rebuilt v1.5.1 against v1.5.2, `RUNS=11`, ten interleaved rounds (the second
+five reversed), medians, ns/byte; MONO on a 14 MB corpus, eight rounds. Load
+average about 1.7–2.2, busier than v1.5.1's run, so both binaries read about
+0.3 above it. Compare the pair.
+
+| Mode | corpus | v1.5.1 | v1.5.2 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 15.48 | **15.42** | −0.4% |
+| | ascii w/ LFs | 20.20 | **20.13** | −0.3% |
+| | utf8 mixed | 20.43 | **20.59** | +0.8% |
+| 256 | ascii no-LF | 15.39 | **15.36** | −0.2% |
+| | ascii w/ LFs | 20.18 | **20.11** | −0.3% |
+| | utf8 mixed | 20.41 | **20.54** | +0.6% |
+| 16 | ascii no-LF | 15.27 | **15.24** | −0.2% |
+| | ascii w/ LFs | 20.19 | **20.07** | −0.6% |
+| | utf8 mixed | 20.33 | **20.30** | −0.1% |
+| MONO | ascii no-LF | 0.57 | **0.57** | 0 |
+| | ascii w/ LFs | 0.58 | **0.58** | 0 |
+| | utf8 mixed | 0.58 | **0.57** | −0.01 ns |
+
+**Flat.** Every median is within ±1%, and every pair of ranges overlaps
+(truecolor utf8 mixed, the largest move: 20.15–20.80 vs 20.31–20.72).
+
+### Binary
+
+532 448 → **536 544 B**: `.text` +872 B crossed a page boundary, moving the
+data segment by 4 096. Non-DCE unchanged at 1 531 872 B.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -813,7 +850,8 @@ change is in the CHANGELOG and `state.md` § Binary. `.text` grew 1 088 B in all
 | v1.4.4  | 15.60¤              | 8§               | 22§                 | 235 800      | v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep |
 | v1.4.5  | 15.43¤              | 8§               | 22§                 | 235 848      | input colour codes stripped on the colour routes; flat by design |
 | v1.5.0  | 15.16¤              | 8§               | 22§                 | 248 288      | no-colour spans: ASCII flat, utf8 +1.4–2.4%, MONO 0.25 → 0.55 |
-| **v1.5.1** | **15.16**¤       | 8§               | 22§                 | **532 448**  | **cyrius 6.7.18 + dep refresh: flat in all four modes; +307 KB of Unicode tables DCE keeps** |
+| v1.5.1  | 15.16¤              | 8§               | 22§                 | 532 448      | cyrius 6.7.18 + dep refresh: flat in all four modes; +307 KB of Unicode tables DCE keeps |
+| **v1.5.2** | **15.42**¤       | 8§               | 22§                 | **536 544**  | **V-11: the routes agree on an extender's phase; flat (a busier host — see § v1.5.2)** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -838,7 +876,8 @@ shipped; neither touches the per-cluster hot path.
 v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), v1.4.3
 against a rebuilt v1.4.2 (47.72), v1.4.4 against a rebuilt v1.4.3 (15.59),
 v1.4.5 against a rebuilt v1.4.4 (15.30), v1.5.0 against a rebuilt v1.4.5
-(15.12), and v1.5.1 against a rebuilt v1.5.0 (15.25).
+(15.12), v1.5.1 against a rebuilt v1.5.0 (15.25), and v1.5.2 against a
+rebuilt v1.5.1 on a busier host (15.48).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

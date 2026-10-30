@@ -91,10 +91,38 @@ fn _check_invariants(buf, n_bytes, ctab, max_clusters, n_clusters) {
     return 0;
 }
 
+# v1.5.2 (V-11) — the reference for a multi-byte cluster's columns, written
+# apart from _cluster_cols_mb: decode every codepoint of the cluster in
+# order, and the width is the first one's that is not zero-width (marks, ZWJ
+# and VS in this corpus), per the ADR 0005 base rule; 0 if none is.
+fn _ref_cols(buf, off, clen) {
+    var w = 0 - 1;
+    var k = off;
+    while (k < off + clen) {
+        var sl = utf8_seq_len(buf, k, off + clen);
+        if (sl < 1) { sl = 1; }
+        var cp = utf8_decode(buf, k, sl);
+        if (w < 0) {
+            if (cp < 0x80) {
+                w = 0;
+                if (cp >= 0x20) {
+                    if (cp < 0x7F) { w = 1; }
+                }
+            } else {
+                if (cp_is_extending(cp) == 0) { w = anuenue_cp_cols(cp); }
+            }
+        }
+        k = k + sl;
+    }
+    if (w < 0) { w = 0; }
+    return w;
+}
+
 # v1.4.4 — token corpus. Random sequences of the shapes that exercise
 # cluster boundaries: ASCII, LF, a combining acute (U+0301), a precomposed
-# e-acute, ZWJ (U+200D) and a regional indicator (U+1F1EF). Random bytes
-# almost never produce "LF then a valid combining mark"; this does.
+# e-acute, ZWJ (U+200D) and a regional indicator (U+1F1EF); v1.5.2 adds
+# VS-16 (U+FE0F) and a wide ideograph (U+4E2D). Random bytes almost never
+# produce "LF then a valid combining mark"; this does.
 fn fuzz_pretag_tokens(seed, n_tokens) {
     _fuzz_seed(seed);
     var buf = alloc(n_tokens * 4 + 4);
@@ -103,7 +131,7 @@ fn fuzz_pretag_tokens(seed, n_tokens) {
     var n = 0;
     var t = 0;
     while (t < n_tokens) {
-        var k = _fuzz_next() % 6;
+        var k = _fuzz_next() % 8;
         if (k == 0) { store8(buf + n, 97); n = n + 1; }
         if (k == 1) { store8(buf + n, 10); n = n + 1; }
         if (k == 2) { store8(buf + n, 0xCC); store8(buf + n + 1, 0x81); n = n + 2; }
@@ -117,11 +145,40 @@ fn fuzz_pretag_tokens(seed, n_tokens) {
             store8(buf + n + 3, 0xAF);
             n = n + 4;
         }
+        if (k == 6) {
+            store8(buf + n, 0xEF); store8(buf + n + 1, 0xB8); store8(buf + n + 2, 0x8F);
+            n = n + 3;
+        }
+        if (k == 7) {
+            store8(buf + n, 0xE4); store8(buf + n + 1, 0xB8); store8(buf + n + 2, 0xAD);
+            n = n + 3;
+        }
         t = t + 1;
     }
     var nc = _pretag_clusters(buf, n, ctab, n + 1);
     _check_invariants(buf, n, ctab, n + 1, nc);
     assert(load64(ctab + nc * 8) == n, "token corpus: not every byte was tagged");
+
+    # v1.5.2 (V-11): every multi-byte cluster's columns match the reference,
+    # including the ones that start with an extender (at byte 0, after an
+    # LF), and the climb is never below the LF count at any width.
+    var c = 0;
+    while (c < nc) {
+        var coff = load64(ctab + c * 8);
+        var clen = load64(ctab + (c + 1) * 8) - coff;
+        if (load8(buf + coff) >= 0x80) {
+            var cw = _cluster_cols_mb(buf, coff, clen);
+            assert(cw >= 0, "a cluster's columns are negative");
+            assert(cw <= 2, "a cluster is wider than 2 columns");
+            assert(cw == _ref_cols(buf, coff, clen), "a cluster's columns differ from the reference");
+        }
+        c = c + 1;
+    }
+    var lfs = _count_lf_clusters(buf, ctab, nc);
+    assert(_block_rows(buf, ctab, nc, 0) == lfs, "unknown width: the climb is the LF count");
+    assert(_block_rows(buf, ctab, nc, 80) >= lfs, "the climb at 80 columns is below the LF count");
+    assert(_block_rows(buf, ctab, nc, 7) >= _block_rows(buf, ctab, nc, 80),
+      "a narrower terminal climbs less than a wider one");
     return 0;
 }
 

@@ -1038,6 +1038,106 @@ for _k in LF EOF ADJACENT RESERVE EMPTY ROUTES LENIENT NEARMISS BOUNDARY DRIBBLE
     fi
 done
 
+# --- gate 12: the routes agree on the phase of an extender ----------------
+#
+# v1.5.2, V-11 in the v1.5.0 audit delta. Two inputs where the filter gave a
+# different hue from the other routes to everything that followed:
+#
+#   An extender straight after an LF. The filter folded it into the LF with
+#   no phase step; animation gives it a cluster and a step (H-05), which is
+#   UAX #29's answer (GB4: break after a control). Now the filter and the
+#   one-shot route step too — after a stripped SGR, a span or an empty span
+#   as well, and with the LF ending one read and the mark in the next.
+#
+#   A ZWJ, then a byte carried to the end of the input (a lone ESC, an
+#   unfinished SGR or marker, a truncated UTF-8 sequence). The filter's EOF
+#   carry stepped on every carried byte; the one-shot route stepped on a
+#   truncated sequence. Now the byte after the ZWJ joins its cluster on every
+#   route, as any byte after a ZWJ does mid-stream.
+#
+# Each input is compared across the filter, the one-shot route and animation
+# frame 0 in all three colour modes, and against an oracle that does not
+# involve the routes agreeing: the mark hues as a base character would, the
+# carried byte as an ASCII byte would. Every check fails on v1.5.1.
+echo "[robustness] the routes agree on the phase of an extender (v1.5.2)"
+python3 -I - "$BIN" > "$WORK/ext.out" 2>&1 <<'PYEOF' || true
+import re, subprocess, sys, time
+BIN = sys.argv[1]
+OFF = b"\x1b_anuenue:off\x1b\\"
+ON = b"\x1b_anuenue:on\x1b\\"
+TINT = re.compile(rb"\x1b\[(?:9[0-7]|38;5;\d+|38;2;\d+;\d+;\d+)m")   # anuenue's tints
+M, M2, ZWJ, VS = (c.encode() for c in ("́", "̂", "‍", "️"))
+def run(args, data, stdin=True):
+    return subprocess.run([BIN] + args, input=data if stdin else None,
+                          capture_output=True).stdout
+def frame0(out):
+    # A block with no LF climbs no rows: its frames are separated by a CR.
+    sep = rb"\x1b\[\d+A" if re.search(rb"\x1b\[\d+A", out) else rb"\r"
+    return re.split(sep, out)[0].replace(b"\x1b[?25l", b"")
+def hues(out):
+    seq = []
+    for t in TINT.findall(out):
+        if not seq or seq[-1] != t:
+            seq.append(t)
+    return seq
+def routes(mode, d):
+    m = ["--color=" + mode]
+    one = d[:-1] if d.endswith(b"\n") else d
+    return (hues(run(m, d)), hues(run(m + [one], b"", stdin=False)),
+            hues(frame0(run(["-a", "-d", "1", "-i", "300"] + m, d))))
+MODES = ("24bit", "256", "16")
+def agree(inputs):
+    return [(mode, d) for d in inputs for mode in MODES if len(set(map(tuple, routes(mode, d)))) != 1]
+
+LF = [b"a\n" + M + b"b\n", b"a\n" + M + M2 + b"b\n", b"a\n" + ZWJ + b"xb\n",
+      b"a\n" + VS + b"b\n", b"a\n\x1b[31m" + M + b"b\n", b"a\n" + OFF + b"x" + ON + M + b"b\n",
+      b"a\n" + OFF + ON + M + b"b\n", b"ab\n\n" + M + "中\U0001F308x\n".encode()]
+bad = agree(LF)
+# The oracle: a mark after an LF hues as a base character there does.
+m24 = ["--color=24bit"]
+if hues(run(m24, b"a\n" + M + b"b\n")) != hues(run(m24, b"a\nxb\n")):
+    bad.append(("oracle", "mark"))
+print("LF", "ok" if not bad else "bad %r" % bad[:4])
+
+# The LF the last byte of one read and the mark the first of the next; the
+# mark itself split across the read; one byte per write.
+pre = b"a" * 4095
+bnd = []
+for d in (pre + b"\n" + M + b"b\n", pre[:-1] + b"\n" + M + b"b\n"):
+    f, o, a = routes("24bit", d)
+    if not (f == o == a):
+        bnd.append(len(d))
+drib = b"a\n" + M + b"b\n" + ZWJ + b"\x1b"
+p = subprocess.Popen([BIN] + m24, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+for byte in drib:
+    p.stdin.write(bytes([byte])); p.stdin.flush(); time.sleep(0.002)
+p.stdin.close()
+got = p.stdout.read(); p.wait()
+if got != run(m24, drib):
+    bnd.append("dribble")
+print("LFREAD", "ok" if not bnd else "bad %r" % bnd)
+
+EOF = [b"a" + ZWJ + b"\x1b", b"a" + ZWJ + b"\x1b_", b"a" + ZWJ + b"\x1b[3",
+       b"a" + ZWJ + b"\x1b_anuenue:o", b"a" + ZWJ + b"\xf0\x9f", b"a" + ZWJ + b"\xe4",
+       b"x\n" + "\U0001F468".encode() + ZWJ + b"\x1b"]
+bad = agree(EOF)
+# The oracle: the carried byte joins as an ASCII byte after a ZWJ does.
+if hues(run(m24, b"a" + ZWJ + b"\x1b_")) != hues(run(m24, b"a" + ZWJ + b"x_")):
+    bad.append(("oracle", "carry"))
+print("EOF", "ok" if not bad else "bad %r" % bad[:4])
+PYEOF
+for _k in LF LFREAD EOF; do
+    if grep -q "^$_k ok" "$WORK/ext.out"; then
+        case $_k in
+            LF)     ok "an extender after an LF steps on every route, 3 modes (8 inputs, + the oracle)" ;;
+            LFREAD) ok "the LF ending one read, the mark split across reads, one byte per write" ;;
+            EOF)    ok "a byte carried to the end after a ZWJ joins on every route, 3 modes (7 inputs, + the oracle)" ;;
+        esac
+    else
+        bad "$_k: $(grep "^$_k " "$WORK/ext.out" || head -3 "$WORK/ext.out")"
+    fi
+done
+
 echo
 if [ "$FAIL" -eq 0 ]; then
     echo "robustness-check: PASS"

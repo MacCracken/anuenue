@@ -65,8 +65,18 @@ cannot fit the terminal once, and do not animate it.**
   v1.4.4's first CI run the runner's older Python reported 188
   codepoints of drift.)
 
-  Combining marks take no columns *because they never start a cluster*: the
-  ADR 0003 classifier already folds them into their base.
+  Combining marks take no columns *because they almost never start a
+  cluster*: the ADR 0003 classifier folds them into their base.
+
+  *Amended at v1.5.2 (V-11):* where there is no base to fold into — at the
+  start of the input, or after an LF (H-05) — an extender does start a
+  cluster. Such a cluster is as wide as its first codepoint that is not an
+  extender (`ZWJ x` is 1, ZWJ + 👩 is 2), and 0 if it has none (a lone mark),
+  which is what a terminal shows. Through v1.5.1 the mark itself was taken as
+  the base and counted 1 column, so a line of exactly the terminal's width
+  that began with one counted a row too many and the block climbed a row too
+  far. `_cluster_cols_past_ext`; PTY cases `mark-starts-line` and
+  `zwj-emoji-starts-line`.
 - **Byte-level cases** (`_block_rows`):
   - controls take no columns;
   - an ESC in the input takes none, but **the bytes after it do**. The

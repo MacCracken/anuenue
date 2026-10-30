@@ -77,37 +77,40 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.5.1
+### Quality bar at v1.5.2
 
-- **595** unit assertions across 73 groups (`cyrius test`)
+- **608** unit assertions across 75 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
 - **17** animation structural assertions (`scripts/animate-smoke.sh`)
 - **27** observability + pipe-purity checks (`scripts/observe-check.sh`), including
   stdout byte-equality across 144 corpus × colour-mode × verbosity combinations
   and one stderr line per failure
-- **80** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
+- **83** robustness checks (`scripts/robustness-check.sh`): UTF-8 carry across the
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
   clean (`--bool=value`, an unreadable command line, >128 positionals), a
-  command line over 2 MiB parsed whole to its last flag, parse-error lines that echo argv sanitized and bounded, and
-  no escape-copy scratch byte ever reaching stdout, a stalled non-blocking peer
-  costing no CPU, animation keeping every byte, the input's colour codes
-  stripped on the colour routes (never on MONO), and no-colour spans — intact,
-  reset at both ends, the phase paused, the routes agreeing at span edges, and
-  100 000 empty spans inside the line buffer
-- **1,780,057** fuzz assertions per run across 8 harnesses (`cyrius fuzz`)
+  command line over 2 MiB parsed whole to its last flag, parse-error lines
+  that echo argv sanitized and bounded, no escape-copy scratch byte ever
+  reaching stdout, a stalled non-blocking peer costing no CPU, animation
+  keeping every byte, the input's colour codes stripped on the colour routes
+  (never on MONO), no-colour spans — intact, reset at both ends, the phase
+  paused, the routes agreeing at span edges, 100 000 empty spans inside the
+  line buffer — and the three routes agreeing on the phase of an extender
+  after an LF, and of a byte carried to the end after a ZWJ
+- **1,790,016** fuzz assertions per run across 8 harnesses (`cyrius fuzz`)
 - **0** HIGH+ security audit findings open — seven audits, latest
   [`docs/audit/2026-10-15-v150-delta.md`](docs/audit/2026-10-15-v150-delta.md) (its one HIGH was caught before
   release); no guard recorded as unproven
-- **33** PTY checks (animation on sized terminals, no-colour spans included,
+- **35** PTY checks (animation on sized terminals, no-colour spans and lines
+  that start with a combining mark included,
   played into a terminal model) + **18** signal/pacing + **23** allocation-failure + **17**
   fault-injection checks (`scripts/pty-check.sh`, `scripts/signal-check.sh`,
   `scripts/allocfail-check.sh`, `scripts/fault-check.sh` — the last injects
   syscall faults under gdb and gates the per-route syscall surface)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 15.2 ns/byte ASCII no-LF in every colour mode at v1.5.1, MONO 0.57 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
+- **Perf**: 15.2–15.4 ns/byte ASCII no-LF in every colour mode at v1.5.2 (host-dependent; flat against v1.5.1 head to head), MONO 0.57 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics

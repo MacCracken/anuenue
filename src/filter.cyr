@@ -906,6 +906,12 @@ fn anuenue_filter(): i64 {
     # at PHASE_START exactly, and each subsequent non-extending
     # cluster bumps by STEP. saw_any = 0 suppresses the bump on the
     # very first emit (which otherwise would over-advance by one).
+    # v1.5.2 (V-11): 2 when the last cluster was an LF, which nothing
+    # extends (UAX #29 GB4: break after a control) — an extender there
+    # opens a cluster and takes a step, as animation's pre-tag does
+    # (H-05). Markers, spans and stripped SGRs leave it as it is, so an
+    # extender after `LF <span>` steps too. A third value rather than a
+    # latch of its own, so the ASCII path stores nothing extra per byte.
     var saw_any = 0;
 
     # v1.5.0 (ADR 0006): 1 inside a producer's no-colour span. The span walk
@@ -940,11 +946,20 @@ fn anuenue_filter(): i64 {
             var ci = 0;
             while (ci < carry_len) {
                 # Inside a span the carried bytes (an unfinished `on`) are
-                # span text: raw, no escape, no phase.
+                # span text: raw, no escape, no phase. Otherwise each is a
+                # 1-byte cluster under the main loop's latches (V-11, v1.5.2):
+                # the byte after a ZWJ joins its cluster, as any byte does
+                # mid-stream, on the one-shot route and in animation. Through
+                # v1.5.1 every carried byte stepped.
                 if (off_span == 0) {
-                    if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+                    var cjoin = prev_was_zwj;
+                    if (saw_any != 0) {
+                        if (cjoin == 0) { phase = phase + ANUENUE_PHASE_STEP; }
+                    }
                     pos = _emit_phase_esc(line_buf, pos, phase);
                     saw_any = 1;
+                    prev_was_zwj = 0;
+                    if (cjoin == 0) { prev_unpaired_ri = 0; }
                 }
                 store8(line_buf + pos, load8(read_buf + ci));
                 pos = pos + 1;
@@ -1006,14 +1021,14 @@ fn anuenue_filter(): i64 {
                     # other non-extending codepoint), then reset SGR,
                     # emit the LF, flush the line, drop RI candidacy
                     # and the ZWJ latch (newline breaks any open
-                    # ZWJ sequence).
-                    if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+                    # ZWJ sequence). saw_any = 2: nothing extends an LF.
+                    if (saw_any != 0) { phase = phase + ANUENUE_PHASE_STEP; }
                     pos = tty_sgr_reset_buf(line_buf, pos);
                     store8(line_buf + pos, 10);
                     pos = pos + 1;
                     if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
                     pos = 0;
-                    saw_any = 1;
+                    saw_any = 2;
                     prev_unpaired_ri = 0;
                     prev_was_zwj = 0;
                     i = i + 1;
@@ -1074,8 +1089,11 @@ fn anuenue_filter(): i64 {
             # path cuts ~30 ns/byte on ASCII-heavy MOTD traffic
             # (the v0.4.0 86 ns/byte → v0.6.0 acceptance ≤ 60).
             if (b < 0x80) {
+                # After an LF prev_was_zwj is 0 (the LF cleared it, and only
+                # a cluster sets it again), so an ASCII byte never extends
+                # one: no saw_any == 2 test here.
                 var ascii_extending = prev_was_zwj;
-                if (saw_any == 1) {
+                if (saw_any != 0) {
                     if (ascii_extending == 0) { phase = phase + ANUENUE_PHASE_STEP; }
                 }
                 pos = _emit_phase_esc(line_buf, pos, phase);
@@ -1114,13 +1132,17 @@ fn anuenue_filter(): i64 {
             if (cp_is_regional_indicator(cp) == 1) {
                 if (prev_unpaired_ri == 1) { extending = 1; }
             }
+            # V-11 (v1.5.2): nothing extends an LF. Through v1.5.1 an
+            # extender here folded into the LF with no step, a hue behind
+            # animation for the rest of the input.
+            if (saw_any == 2) { extending = 0; }
 
             # Phase advance BEFORE emitting — applies to every non-
             # extending cluster after the first. Result: cluster N
             # always renders at PHASE_START + N*STEP, exactly the
             # M1/M2 semantics for the ASCII-only case (one cluster
             # per byte).
-            if (saw_any == 1) {
+            if (saw_any != 0) {
                 if (extending == 0) { phase = phase + ANUENUE_PHASE_STEP; }
             }
 
@@ -1212,7 +1234,7 @@ fn anuenue_render_bytes(src, len): i64 {
     var phase = ANUENUE_PHASE_START;
     var prev_unpaired_ri = 0;
     var prev_was_zwj = 0;
-    var saw_any = 0;
+    var saw_any = 0;                        # 0 / 1 / 2 after an LF, as in anuenue_filter
     # v1.5.0 (ADR 0006): no-colour spans, as in anuenue_filter. The text is
     # all in memory, so nothing is carried: a marker or colour code that is
     # unfinished at the end is ordinary bytes.
@@ -1267,13 +1289,13 @@ fn anuenue_render_bytes(src, len): i64 {
         }
 
         if (b == 10) {                      # LF: reset SGR, emit, flush line
-            if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+            if (saw_any != 0) { phase = phase + ANUENUE_PHASE_STEP; }
             pos = tty_sgr_reset_buf(line_buf, pos);
             store8(line_buf + pos, 10);
             pos = pos + 1;
             if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
             pos = 0;
-            saw_any = 1;
+            saw_any = 2;
             prev_unpaired_ri = 0;
             prev_was_zwj = 0;
             i = i + 1;
@@ -1282,7 +1304,7 @@ fn anuenue_render_bytes(src, len): i64 {
 
         if (b < 0x80) {                     # ASCII: 1-byte cluster
             var ascii_extending = prev_was_zwj;
-            if (saw_any == 1) {
+            if (saw_any != 0) {
                 if (ascii_extending == 0) { phase = phase + ANUENUE_PHASE_STEP; }
             }
             pos = _emit_phase_esc(line_buf, pos, phase);
@@ -1302,13 +1324,19 @@ fn anuenue_render_bytes(src, len): i64 {
 
         var seqlen = utf8_seq_len(src, i, len);
         if (seqlen == 0) {                  # truncated trailing UTF-8 → 1 byte
-            if (saw_any == 1) { phase = phase + ANUENUE_PHASE_STEP; }
+            # It joins after a ZWJ, as an invalid byte does mid-text and as
+            # the filter's EOF carry does from v1.5.2 (V-11); through v1.5.1
+            # it always stepped, and animation joined.
+            var tjoin = prev_was_zwj;
+            if (saw_any != 0) {
+                if (tjoin == 0) { phase = phase + ANUENUE_PHASE_STEP; }
+            }
             pos = _emit_phase_esc(line_buf, pos, phase);
             store8(line_buf + pos, b);
             pos = pos + 1;
             saw_any = 1;
             prev_was_zwj = 0;
-            prev_unpaired_ri = 0;
+            if (tjoin == 0) { prev_unpaired_ri = 0; }
             if (pos + ANUENUE_FLUSH_RESERVE > ANUENUE_LINE_BUF) {
                 pos = tty_sgr_reset_buf(line_buf, pos);
                 if (anuenue_write_all(line_buf, pos) != 0) { return anuenue_write_failed(); }
@@ -1325,7 +1353,8 @@ fn anuenue_render_bytes(src, len): i64 {
         if (cp_is_regional_indicator(cp) == 1) {
             if (prev_unpaired_ri == 1) { extending = 1; }
         }
-        if (saw_any == 1) {
+        if (saw_any == 2) { extending = 0; }    # nothing extends an LF (V-11)
+        if (saw_any != 0) {
             if (extending == 0) { phase = phase + ANUENUE_PHASE_STEP; }
         }
         pos = _emit_phase_esc(line_buf, pos, phase);
