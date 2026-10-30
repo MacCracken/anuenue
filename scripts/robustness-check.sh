@@ -539,6 +539,10 @@ fi
 #   A command line over 2 MiB was cut at 2 MiB by stdlib args_init (one
 #   read of /proc/self/cmdline into a fixed buffer) and the prefix parsed
 #   as OK: every token past the cut, flags included, vanished at exit 0.
+#   v1.4.1 (cmdit 1.4.0) reported it instead, exit 1. v1.5.1 inverts the
+#   check: from cyrius 6.7.12 args_init reads to EOF, and cmdit 1.4.2
+#   refuses only a read of exactly 2 MiB, so a longer command line parses
+#   whole and the `--seed 99` at its very end is honoured.
 #   Reaching it needs ARG_MAX above 2 MiB, i.e. an unlimited stack — so
 #   the child raises RLIMIT_STACK before exec, and the check skips if the
 #   hard limit forbids that.
@@ -584,26 +588,35 @@ try:
     if hard != resource.RLIM_INFINITY:
         print("SKIP stack hard limit is %d" % hard); sys.exit(0)
     argv = [binary, "--color=24bit"] + ["x" * 100000] * npad + ["--seed", "99"]
-    r = subprocess.run(argv, input=b"", stdout=subprocess.DEVNULL,
+    r = subprocess.run(argv, input=b"", stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, preexec_fn=unlimit)
 except OSError as e:
     print("SKIP exec refused: %s" % e); sys.exit(0)
 msg = b"could not read the full command line" in r.stderr
-print("RC %d %d" % (r.returncode, 1 if msg else 0))
+# The seed is the last token, so the first cluster's escape shows whether
+# the tail was read: it must match `--seed 99 x`, and differ from seed 0.
+def first(out):
+    return out[:out.find(b"x") + 1]
+seeded = subprocess.run([binary, "--color=24bit", "--seed", "99", "x"],
+                        stdout=subprocess.PIPE).stdout
+unseeded = subprocess.run([binary, "--color=24bit", "x"], stdout=subprocess.PIPE).stdout
+seed_ok = first(r.stdout) == first(seeded) and first(seeded) != first(unseeded)
+print("RC %d %d %d" % (r.returncode, 1 if msg else 0, 1 if seed_ok else 0))
 PYEOF
 _r=$(python3 -I "$WORK/bigargv.py" "$BIN" 24)
 case "$_r" in
     SKIP*) echo "  skip: argv over 2 MiB — ${_r#SKIP }" ;;
     *)  set -- $_r
-        if [ "$2" -eq 1 ] && [ "$3" -eq 1 ]; then
-            ok "a 2.4 MB command line is reported and exits 1, not parsed as a prefix"
+        if [ "$2" -eq 0 ] && [ "$3" -eq 0 ] && [ "$4" -eq 1 ]; then
+            ok "a 2.4 MB command line parses whole: exit 0, and the trailing --seed 99 is honoured"
         else
-            bad "2.4 MB command line: rc=$2, message=$3"
+            bad "2.4 MB command line: rc=$2, message=$3, seed honoured=$4"
         fi
-        # Control: the same shape under 2 MiB still parses, so the gate is
-        # measuring the cut rather than rejecting long command lines.
+        # Control: the same shape under 2 MiB parses too and passes the same
+        # seed check, so the check itself is shown to work at a size every
+        # toolchain reads whole.
         set -- $(python3 -I "$WORK/bigargv.py" "$BIN" 10)
-        if [ "$2" -eq 0 ]; then
+        if [ "$2" -eq 0 ] && [ "$4" -eq 1 ]; then
             ok "a 1.0 MB command line still parses (control)"
         else
             bad "1.0 MB command line: rc=$2 (the control must pass)"

@@ -592,7 +592,7 @@ fn anuenue_fail(kind, msg): i64 {
     # is the stable machine-readable identity (CODE_IO = 1010 etc.).
     if (ANUENUE_VERBOSE == 1) {
         var nbuf[24];                        # fmt_int_buf needs 24 bytes
-        var nlen = fmt_int_buf(agnostik_err_code(e), &nbuf);
+        var nlen = fmt_int_buf(AgnostikError_code(e), &nbuf);
         sakshi_log_kv(SK_ERROR, msg, mlen, "code", 4, &nbuf, nlen);
     }
 

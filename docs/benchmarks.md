@@ -740,6 +740,47 @@ the span state for less than half of it.
 
 - **1.5.0 binary**: **248 288 bytes**, +12 440 B, all anuenue's own source.
 
+## v1.5.1 — cyrius 6.7.18 + dependency refresh
+
+No `src/` logic changed: a toolchain and dependency move, one accessor rename and
+one paren that only re-indents. The question for the cut was whether the new
+compiler and stdlib moved the hot path.
+
+### Release ratchet — v1.5.0 vs v1.5.1
+
+A rebuilt v1.5.0 (cyrius 6.7.9) against v1.5.1 (cyrius 6.7.18), `RUNS=11`,
+**ten** interleaved rounds (the second five reversed), medians, ns/byte, load
+average about 0.7–1.0. MONO uses a 14 MB corpus and eight rounds: at the default
+1.4 MB its whole overhead is under a millisecond, the script's resolution.
+
+| Mode | corpus | v1.5.0 | v1.5.1 | Δ |
+|---|---|---:|---:|---:|
+| truecolor | ascii no-LF | 15.25 | **15.16** | −0.6% |
+| | ascii w/ LFs | 19.74 | **19.93** | +1.0% |
+| | utf8 mixed | 20.55 | **20.16** | −1.9% |
+| 256 | ascii no-LF | 15.14 | **15.13** | −0.1% |
+| | ascii w/ LFs | 19.79 | **19.87** | +0.4% |
+| | utf8 mixed | 20.45 | **20.21** | −1.2% |
+| 16 | ascii no-LF | 15.00 | **15.06** | +0.4% |
+| | ascii w/ LFs | 19.73 | **19.88** | +0.8% |
+| | utf8 mixed | 20.33 | **20.11** | −1.1% |
+| MONO | ascii no-LF | 0.56 | **0.57** | +0.01 ns |
+| | ascii w/ LFs | 0.56 | **0.57** | +0.01 ns |
+| | utf8 mixed | 0.55 | **0.56** | +0.01 ns |
+
+**Flat.** Every median is within ±2%, and in every row the two binaries' ranges
+overlap (truecolor ascii no-LF: 15.04–15.73 vs 15.09–15.62). Micro rows under
+6.7.18's `bench`: `hsv_rainbow` 8 ns, `tty_fg_rgb_buf` 22 ns, the escape-table
+emit 9 ns in all three modes, `hsv_rainbow` + composer 29 / 36 / 23 ns
+(truecolor / 256 / 16).
+
+### Binary
+
+248 288 → **532 448 B**. The step is the toolchain snapshot's data: `.rodata`
++341 961 B, of which 307 252 B are bayan's Unicode tables, kept by DCE although
+no live code reads them. They arrive through agnostik's deps sidecar. One row per
+change is in the CHANGELOG and `state.md` § Binary. `.text` grew 1 088 B in all.
+
 ## Trend
 
 | Release | Per-byte ASCII (ns) | hsv_rainbow (ns) | tty_fg_rgb_buf (ns) | Binary (B) | Notes |
@@ -771,7 +812,8 @@ the span state for less than half of it.
 | v1.4.3  | 15.40¤              | 9§               | 22§                 | 226 624      | escape-table word copy: 9 ns per escape in every mode; −68% end to end |
 | v1.4.4  | 15.60¤              | 8§               | 22§                 | 235 800      | v1.4.x closeout + P(-1) sweep: animation fits the terminal; poll, not sleep |
 | v1.4.5  | 15.43¤              | 8§               | 22§                 | 235 848      | input colour codes stripped on the colour routes; flat by design |
-| **v1.5.0** | **15.16**¤       | 8§               | 22§                 | **248 288**  | **no-colour spans: ASCII flat, utf8 +1.4–2.4%, MONO 0.25 → 0.55** |
+| v1.5.0  | 15.16¤              | 8§               | 22§                 | 248 288      | no-colour spans: ASCII flat, utf8 +1.4–2.4%, MONO 0.25 → 0.55 |
+| **v1.5.1** | **15.16**¤       | 8§               | 22§                 | **532 448**  | **cyrius 6.7.18 + dep refresh: flat in all four modes; +307 KB of Unicode tables DCE keeps** |
 
 \* v0.3.0 added flag-parsing at startup but the filter hot path
 was unchanged; per-byte cost stayed flat.
@@ -795,7 +837,8 @@ shipped; neither touches the per-cluster hot path.
 1–3), where v1.4.0 read 46.68 — compare that pair, not v1.4.1 against the ‖ row.
 v1.4.2 likewise against a rebuilt v1.4.1 (47.38 in that run), v1.4.3
 against a rebuilt v1.4.2 (47.72), v1.4.4 against a rebuilt v1.4.3 (15.59),
-and v1.4.5 against a rebuilt v1.4.4 (15.30).
+v1.4.5 against a rebuilt v1.4.4 (15.30), v1.5.0 against a rebuilt v1.4.5
+(15.12), and v1.5.1 against a rebuilt v1.5.0 (15.25).
 
 † v0.5.0 figure captured by perf-bench.sh on the M5 cut host
 (slightly slower than the v0.4.0 86 ns/byte doc number — both

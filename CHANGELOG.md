@@ -4,6 +4,163 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-10-29 (cyrius 6.7.18 + dependency refresh)
+
+The toolchain moves from cyrius 6.7.9 to **6.7.18**, and every dependency moves
+to its latest tag: cmdit 1.4.0 → **1.5.0**, darshana 1.3.0 → **1.6.0**,
+agnostik 1.12.0 → **2.0.0**, and sakshi 2.5.8 → **2.5.10** through the
+toolchain snapshot. Moving to the latest 6.7.x tag at the cut is what the roadmap
+slot asked for.
+
+**stdout is byte-identical to v1.5.0**: 301 comparisons against a rebuilt v1.5.0
+(stdout and exit code), over twelve corpora × sixteen flag sets, three
+environments, one-shot text, eighteen help / error invocations (stderr too) and
+18 animation streams (126 frames). One input class changes behaviour: a command
+line longer than 2 MiB now parses (below). The binary grows 248 288 →
+**532 448 B**, almost all of it data from the toolchain snapshot that no live
+code reads (§ Binary).
+
+### Changed — toolchain `6.7.9` → `6.7.18`
+
+- **`lib/` re-vendored** with `rm -rf lib cyrius.lock && cyrius lib sync --full
+  && cyrius deps`. It holds the same 116 files as before: 113 stdlib files,
+  byte-identical to the 6.7.18 snapshot (69 changed upstream), plus the three
+  dep bundles. CI reads the pin from `cyrius.cyml`, so no workflow edit.
+- **sakshi 2.5.10** (folded at 6.7.11) declares its four private buffers in
+  bytes, not slots. The in-file `.bss` shrinks 82 168 → 23 896 B.
+- **`args_init` reads `/proc/self/cmdline` to EOF** (6.7.12), growing a heap
+  buffer instead of reading once into 2 MiB. On a failed read it returns a
+  negative errno and publishes nothing; anuenue never reads the return value, and
+  `argc()` is still 0, which is still `CMDIT_ERR_ARGV` → exit 1. Every route's
+  syscall *set* is unchanged (fault-check); `args_init` now makes one more `read`
+  (the 0 at EOF).
+- **`cyrfmt` checks continuation indents** (6.7.12): 2 spaces per open paren,
+  4 accepted. Two continuations were re-indented, and `_find_esc`'s four-word
+  test in `src/filter.cyr` gains one pair of parentheses so its 4-space
+  continuation is canonical. The binary is byte-identical before and after.
+- **cyrlint's array-overrun and write-length rules** (6.7.11, widened at 6.7.12)
+  run over `src/`, `tests/` and `fuzz/`. They found three overruns in the unit
+  suite (§ Fixed) and nothing in `src/` or `fuzz/`.
+
+### Changed — dependencies
+
+- **cmdit 1.5.0.** No API or error-code change. Every cmdit function anuenue
+  calls is body-identical to 1.4.0's; the only change on anuenue's path is the
+  private `_cmdit_argv_whole` (1.4.2, below). 1.5.0 fixes the bash and fish
+  completion scripts, which anuenue does not emit.
+- **darshana 1.6.0.** Additive only. All fourteen Linux functions anuenue calls
+  are body-identical to 1.3.0's; `tty_isatty` changed only in its AGNOS arm
+  (1.5.0). New and unused here: `tty_sgr_len` / `tty_sgr_strip_buf` (1.4.0,
+  built from anuenue's 2026-10-15 proposal and modelled on its stand-in, so
+  swapping them in is its own change, roadmap v1.5.3) and
+  `tty_isatty_is_per_fd` (1.6.0).
+- **agnostik 2.0.0** — a major. One of its renames reaches anuenue: accessors
+  take their struct's name, so `agnostik_err_code` is `AgnostikError_code`
+  (`src/observe.cyr`, `tests/anuenue.tcyr`). `agnostik_err_new` and
+  `agnostik_err_print` keep their names. Two body changes on anuenue's path, both
+  from 1.12.3:
+  - `agnostik_err_new` never fails. When its 24 bytes cannot be had, it returns a
+    static `RESOURCE_EXHAUSTED` "out of memory" error instead of writing through
+    address 0. This closes the issue anuenue filed on 2026-10-14.
+  - `agnostik_err_print` skips the zero-length `write` it made for an empty
+    message.
+
+### Changed — a command line past 2 MiB parses whole
+
+Through v1.5.0 a command line over 2 MiB was refused (exit 1, `could not read
+the full command line`), because the stdlib could only read its first 2 MiB.
+With 6.7.12's `args_init` and cmdit 1.4.2, which narrowed its check to the one
+ambiguous length (exactly 2 097 152 bytes, still refused), a longer one parses
+whole. **Robustness gate 7 is inverted to match**: a 2.4 MB command line now
+exits 0, and the `--seed 99` at its very end is honoured. The gate checks the
+seed by comparing the first cluster's escape with `--seed 99 x`'s. The new check
+fails on the v1.5.0 binary (exit 1, seed lost) and passes here. The 1.0 MB
+control and the `--nofile=3` check are unchanged.
+
+### Fixed — three stack overruns in the unit suite
+
+`tests/anuenue.tcyr` declared `var argv1[8]`, `var argv2[8]` and `var
+argv5[32]`, then stored 2, 2 and 5 pointers into them. A bare `var a[N]` in a fn
+is N **bytes**, so each last `store64` overwrote the next local's stack slot.
+They are now `[16]`, `[16]` and `[40]`. Test code only: the shipped binary never
+had them, and the suite stays 595 / 595.
+
+This was the v1.4.3 crash anuenue filed as a cyrius miscompile ("growing a large
+function segfaults an earlier call"). cyrius 6.7.14 closed that issue as **not a
+cyrius bug**. `store64(&argv2 + 8, …)` overwrote `fs2`'s slot, which was only
+read once `main()` passed 256 local slots and the register allocator stopped
+keeping `fs2` in a register. The new lint rule names all three lines.
+CLAUDE.md's "large functions are a miscompile risk" rule is corrected.
+
+### Binary
+
+**248 288 → 532 448 B** (+284 160). One change per row, each built from the same
+source:
+
+| Step | Size | Δ |
+|---|---:|---:|
+| v1.5.0 on cyrius 6.7.9 | 248 288 | — |
+| cyrius 6.7.18, deps at the v1.5.0 tags | 531 824 | **+283 536** |
+| + cmdit 1.5.0 | 531 960 | +136 |
+| + darshana 1.6.0 | 531 960 | 0 |
+| + agnostik 2.0.0 (and the rename) | 532 448 | +488 |
+
+The toolchain row is data. `.text` grows 125 616 → 126 448 B (+832), the
+in-file `.bss` shrinks by 58 424 B (sakshi 2.5.10), and `.rodata` grows 38 790 →
+380 751 B (+341 961). agnostik measured the same `.rodata` growth in its own
+build at this pin (+341 994 B, its 1.12.1 CHANGELOG). The cause is the `bayan`
+fold, which agnostik's `dist/agnostik.deps` pulls in: from 6.7.13 it includes
+`lib/unicode/`. All three Unicode tables are in anuenue's binary byte for byte:
+`_normalize_data` 154 002 B, `_casefold_data` 95 234 B and `_categories_data`
+58 016 B, **307 252 B** of global string literals. DCE drops every function
+that reads them but keeps the data. anuenue calls none of them and cannot drop
+`bayan` (agnostik requires it), so this is recorded, not capped. Filed as cyrius
+`docs/development/issues/2026-10-29-anuenue-dce-keeps-literals-of-dead-code.md`,
+with a three-program repro (a 100 000-byte literal read only by a dead fn
+survives `CYRIUS_DCE=1`). Non-DCE 997 856 → 1 531 872 B.
+
+### Performance
+
+The rebuilt v1.5.0 against v1.5.1, `RUNS=11`, ten interleaved rounds (the
+second five reversed), medians, ns/byte. MONO uses a 14 MB corpus, eight
+rounds; at the default 1.4 MB its overhead is below the script's millisecond
+resolution.
+
+| Corpus | truecolor | 256 | 16 | MONO |
+|---|---:|---:|---:|---:|
+| ascii no-LF (M5 metric) | 15.25 → **15.16** | 15.14 → **15.13** | 15.00 → **15.06** | 0.56 → **0.57** |
+| ascii w/ LFs | 19.74 → **19.93** | 19.79 → **19.87** | 19.73 → **19.88** | 0.56 → **0.57** |
+| utf8 mixed | 20.55 → **20.16** | 20.45 → **20.21** | 20.33 → **20.11** | 0.55 → **0.56** |
+
+Flat: every colour-route median is within ±2% and every pair of ranges
+overlaps. Micro rows (`cyrius bench`): `hsv_rainbow` 8 ns, `tty_fg_rgb_buf`
+22 ns, the escape-table emit 9 ns in every mode.
+
+### Verification
+
+- Unit **595 / 595**; fuzz **8 harnesses, 1 780 057**; robustness **80**; PTY
+  **33**; allocfail **23**; signal **18**; observe **27**; golden **10**;
+  animate-smoke **17**; fault-check **17**. Every route's syscall set is identical
+  to v1.5.0's.
+- `scripts/lint-check.sh`: 22 files, zero warnings. `cyrius audit` clean.
+  `cyrius distlib --check` current.
+- **Downstream**: `dist/anuenue.cyr` changes only its `# Version:` line, and
+  `src/hsv.cyr` is unchanged since 1.3.6, so thoth's vendored copy is unaffected.
+- Clean build: `rm -rf build && cyrius deps && CYRIUS_DCE=1 cyrius build
+  src/main.cyr build/anuenue` → 532 448 B.
+
+### Docs
+
+- **Roadmap**: the v1.5.1 slot is shipped and removed. **v1.5.3** is new: swap
+  the SGR stand-in for darshana's scanner. § Upstream: the `args_init`, the
+  "miscompile" and the `agnostik_err_new` items are closed, and the DCE-literal
+  issue is added.
+- **CLAUDE.md**: the large-function rule now names the real cause (byte-sized
+  arrays) and keeps per-group test functions.
+- **`state.md`**: darshana's row named twelve symbols and listed
+  `tty_sanitize_buf` as unused. anuenue has called it since v1.4.2, and
+  `tty_winsize` since v1.4.4, so the row now names fourteen.
+
 ## [1.5.0] — 2026-10-15 (no-colour spans)
 
 The counterpart to v1.4.5. With anuenue owning the colour on its colour routes,

@@ -77,7 +77,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
 
 **v1.0.0 — GA.** Public API contract frozen for the v1.x line. The flag surface above, exit codes, capability surface, and output shape are stable; sandhi bumps within v1.x update internal helpers without breaking the contract. See [`docs/development/roadmap.md`](docs/development/roadmap.md) for the forward plan (the 1.4.x arc through the 1.x minors, including the two open v1.0 acceptance items), and [`docs/development/state.md`](docs/development/state.md) for the live snapshot.
 
-### Quality bar at v1.5.0
+### Quality bar at v1.5.1
 
 - **595** unit assertions across 73 groups (`cyrius test`)
 - **10** golden fixture + equivalence checks (`scripts/golden-check.sh`)
@@ -89,8 +89,8 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
   read-chunk boundary, byte preservation under malformed UTF-8 (all 256 byte
   values, overlongs, surrogates), argv at both i64 extremes, both SIGPIPE
   dispositions, a non-blocking stdin, and the argv states cmdit 1.2.4 parsed
-  clean (`--bool=value`, a command line over 2 MiB or unreadable, >128
-  positionals), parse-error lines that echo argv sanitized and bounded, and
+  clean (`--bool=value`, an unreadable command line, >128 positionals), a
+  command line over 2 MiB parsed whole to its last flag, parse-error lines that echo argv sanitized and bounded, and
   no escape-copy scratch byte ever reaching stdout, a stalled non-blocking peer
   costing no CPU, animation keeping every byte, the input's colour codes
   stripped on the colour routes (never on MONO), and no-colour spans — intact,
@@ -107,7 +107,7 @@ It's also the founder of the **pipe-decorator family** in AGNOS userland — std
   syscall faults under gdb and gates the per-route syscall surface)
 - **Binary** tracked every release, **not capped** — see
   [`state.md` § Binary](docs/development/state.md#binary)
-- **Perf**: 15.2 ns/byte ASCII no-LF in every colour mode at v1.5.0, MONO 0.55 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
+- **Perf**: 15.2 ns/byte ASCII no-LF in every colour mode at v1.5.1, MONO 0.57 — see [`docs/benchmarks.md`](docs/benchmarks.md) (M5 acceptance ≤60)
 - **0** `cyrius lint` warnings, 0 untracked deferrals; `cyrius audit` clean
 
 ### Diagnostics
@@ -143,11 +143,11 @@ $ echo AGNOS | anuenue --color=24bit -v 2>&1 >/dev/null
 
 | Dep | Tag | Role |
 |-----|-----|------|
-| [`darshana`](https://github.com/MacCracken/darshana) | 1.3.0 | ANSI escape primitives + the animation exit-signal fd (frozen v1.0 API) |
-| [`cmdit`](https://github.com/MacCracken/cmdit) | 1.4.0 | CLI / argument parsing (getopt-long) |
-| [`sakshi`](https://github.com/MacCracken/sakshi) | stdlib (2.5.8 in cyrius 6.7.9) | Errors / tracing (first-party-standards-required); a stdlib module, so it follows the toolchain pin |
-| [`agnostik`](https://github.com/MacCracken/agnostik) | 1.12.0 | Shared Result / Error shapes |
-| Cyrius toolchain | 6.7.9 | `cyrius.cyml [package].cyrius` |
+| [`darshana`](https://github.com/MacCracken/darshana) | 1.6.0 | ANSI escape primitives + the animation exit-signal fd (frozen v1.0 API) |
+| [`cmdit`](https://github.com/MacCracken/cmdit) | 1.5.0 | CLI / argument parsing (getopt-long) |
+| [`sakshi`](https://github.com/MacCracken/sakshi) | stdlib (2.5.10 in cyrius 6.7.18) | Errors / tracing (first-party-standards-required); a stdlib module, so it follows the toolchain pin |
+| [`agnostik`](https://github.com/MacCracken/agnostik) | 2.0.0 | Shared Result / Error shapes |
+| Cyrius toolchain | 6.7.18 | `cyrius.cyml [package].cyrius` |
 
 ## Documentation
 

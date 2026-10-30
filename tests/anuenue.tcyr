@@ -224,7 +224,7 @@ fn test_m2_flags(): i64 {
     var f_seed    = cmdit_int(fs1, 115, "seed",   0, "s");
     var f_offset  = cmdit_int(fs1, 70,  "offset", 0, "F");
     # Argv: ["anuenue", "--help"]
-    var argv1[8];
+    var argv1[16];                       # 2 pointers = 16 bytes (v1.5.1: was [8])
     store64(&argv1 + 0,  "anuenue");
     store64(&argv1 + 8,  "--help");
     assert_eq(cmdit_parse_argv(fs1, 2, &argv1), CMDIT_HELP, "--help → CMDIT_HELP");
@@ -232,7 +232,7 @@ fn test_m2_flags(): i64 {
 
     test_group("M2 flags — short -V short-circuits to CMDIT_VERSION");
     var fs2 = cmdit_new("anuenue");
-    var argv2[8];
+    var argv2[16];                       # 2 pointers = 16 bytes (v1.5.1: was [8])
     store64(&argv2 + 0, "anuenue");
     store64(&argv2 + 8, "-V");
     assert_eq(cmdit_parse_argv(fs2, 2, &argv2), CMDIT_VERSION, "-V → CMDIT_VERSION");
@@ -271,7 +271,7 @@ fn test_m2_flags(): i64 {
     var fs5 = cmdit_new("anuenue");
     var f5_s = cmdit_int(fs5, 115, "seed",   0, "s");
     var f5_F = cmdit_int(fs5, 70,  "offset", 0, "F");
-    var argv5[32];
+    var argv5[40];                       # 5 pointers = 40 bytes (v1.5.1: was [32])
     store64(&argv5 + 0,  "anuenue");
     store64(&argv5 + 8,  "-s");
     store64(&argv5 + 16, "510");
@@ -958,9 +958,9 @@ fn test_v121_observe(): i64 {
     # And the agnostik codes those kinds carry are the stable
     # machine-readable identity a consumer would key on.
     var obs_e_io = agnostik_err_new(STIK_ERR_IO, str_new("x", 1));
-    assert_eq(agnostik_err_code(obs_e_io), CODE_IO, "IO error carries CODE_IO");
+    assert_eq(AgnostikError_code(obs_e_io), CODE_IO, "IO error carries CODE_IO");
     var obs_e_ia = agnostik_err_new(STIK_ERR_INVALID_ARGUMENT, str_new("x", 1));
-    assert_eq(agnostik_err_code(obs_e_ia), CODE_INVALID_ARGUMENT, "usage error carries CODE_INVALID_ARGUMENT");
+    assert_eq(AgnostikError_code(obs_e_ia), CODE_INVALID_ARGUMENT, "usage error carries CODE_INVALID_ARGUMENT");
 
     test_group("v1.2.1 observe — exit codes unchanged from v1.x contract");
     assert_eq(ANUENUE_EXIT_OK,    0, "exit OK    == 0");
@@ -1643,7 +1643,7 @@ fn test_v150_markers(): i64 {
     assert_eq(load8(cf + 2), ANUENUE_CF_RAW, "the LF inside the span is a raw cluster of its own");
     assert_eq(load8(cf + 3), ANUENUE_CF_RAW, "Z is a raw cluster");
     assert_eq(load8(cf + 4), ANUENUE_CF_JOIN + ANUENUE_CF_CONT,
-              "an extender after a span continues the cluster before it");
+      "an extender after a span continues the cluster before it");
     assert_eq(load8(cf + 5), 0, "b is ordinary");
 
     test_group("v1.5.0 — the row count inside a span: the producer's escapes are intact");

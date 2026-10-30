@@ -680,10 +680,10 @@ fn _find_esc(buf, r, n): i64 {
             var v1 = load64(buf + k + 8) ^ esc8;
             var v2 = load64(buf + k + 16) ^ esc8;
             var v3 = load64(buf + k + 24) ^ esc8;
-            var t = ((v0 - lo) & (v0 ^ 0xFFFFFFFFFFFFFFFF))
-                  | ((v1 - lo) & (v1 ^ 0xFFFFFFFFFFFFFFFF))
-                  | ((v2 - lo) & (v2 ^ 0xFFFFFFFFFFFFFFFF))
-                  | ((v3 - lo) & (v3 ^ 0xFFFFFFFFFFFFFFFF));
+            var t = (((v0 - lo) & (v0 ^ 0xFFFFFFFFFFFFFFFF))
+                | ((v1 - lo) & (v1 ^ 0xFFFFFFFFFFFFFFFF))
+                | ((v2 - lo) & (v2 ^ 0xFFFFFFFFFFFFFFFF))
+                | ((v3 - lo) & (v3 ^ 0xFFFFFFFFFFFFFFFF)));
             if ((t & hi) != 0) {
                 found = 1;
             } else {

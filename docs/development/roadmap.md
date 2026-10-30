@@ -28,79 +28,32 @@ own output, pipe-decorators are pure filters on what passes through them.
 
 ## Where things stand
 
-**v1.5.0.** The v1.x contract — exit codes, output shape, capability surface —
+**v1.5.1.** The v1.x contract — exit codes, output shape, capability surface —
 has been frozen since GA and is unbroken; the flag set has only ever grown.
 v1.4.5 stripped the input's own colour codes on the colour routes (audit H-06);
-v1.5.0 adds their counterpart, a producer-side no-colour span marked with an APC
-pair ([ADR 0006](../adr/0006-no-colour-spans.md)). Seven audits have run, the
-latest the [v1.5.0 delta](../audit/2026-10-15-v150-delta.md), all with zero
-HIGH+ open. Next: v1.5.1 waits on the cyrius 6.7.11 tag; v1.5.2 settles two
-older phase disagreements between the routes.
+v1.5.0 added their counterpart, a producer-side no-colour span marked with an APC
+pair ([ADR 0006](../adr/0006-no-colour-spans.md)). v1.5.1 moved the toolchain to
+cyrius 6.7.18 and every dep to its latest tag, with stdout unchanged. Seven
+audits have run, the latest the
+[v1.5.0 delta](../audit/2026-10-15-v150-delta.md), all with zero HIGH+ open.
+Next: v1.5.2 settles two older phase disagreements between the routes; v1.5.3
+swaps anuenue's SGR stand-in for the scanner darshana 1.4.0 ships.
 
 ## Release map
 
 | Release | Slot | Gate |
 |---------|------|------|
-| [v1.5.1](#v151--cyrius-67x--sakshi-2510-through-the-snapshot) | cyrius 6.7.x — sakshi 2.5.10 through the snapshot | cyrius 6.7.11 tagged |
-| [v1.5.2](#v152--the-routes-agree-on-the-phase-of-an-extender) | The routes agree on the phase of an extender | none — actionable after v1.5.1 |
+| [v1.5.2](#v152--the-routes-agree-on-the-phase-of-an-extender) | The routes agree on the phase of an extender | none — actionable |
+| [v1.5.3](#v153--the-sgr-stand-in-gives-way-to-darshanas-scanner) | The SGR stand-in gives way to darshana's scanner | none — actionable after v1.5.2 |
 | [v1.6.0](#v160--pipe-decorator-family) | Pipe-decorator family (+ adoption, if a consumer has landed) | a second pipe-decorator wants a rainbow, or a consumer's ask |
 | [v1.x](#v1x--trigger-gated) | Trigger-gated | the first minor after each trigger fires |
 | [v2.0](#v20--reserved) | Reserved | nothing queued |
-
-The toolchain move was the 1.4.x arc's last patch until 2026-10-15, when the
-user moved it behind the no-colour marker: v1.4.5 → v1.4.6 (2026-10-14, when
-v1.4.5 took the input colour codes) → **v1.5.1**. It lands after the v1.5.0
-cut's P(-1) sweep, so it re-runs that sweep's build-level gates itself — see the
-slot.
-
----
-
-## v1.5.1 — cyrius 6.7.x + sakshi 2.5.10 through the snapshot
-
-> **Status:** waiting on the cyrius 6.7.11 tag (in progress upstream; 6.7.10 is
-> the latest tag as of 2026-10-15). Take the latest 6.7.x tag at the time of
-> the cut; 6.7.11 is the first that carries sakshi 2.5.10.
->
-> **A patch after the v1.5.0 cut** (renumbered from v1.4.5, then v1.4.6). Because
-> it lands after v1.5.0's P(-1) sweep, it re-runs that sweep's build-level steps
-> itself: full test suite, benchmark baseline, downstream check (thoth's
-> vendored `dist/anuenue.cyr`), version verify, and the clean build (`rm -rf
-> build && cyrius deps && CYRIUS_DCE=1 cyrius build`). Also re-run
-> `scripts/fault-check.sh`'s capability-surface layer: a stdlib change is
-> exactly what moves a route's syscall set.
-
-From v1.4.1 sakshi is a stdlib module, so it moves with the toolchain pin and
-nothing else ([`cyrius.cyml`](../../cyrius.cyml) `[deps]`). The bump is worth
-taking for what the snapshot carries, not for the compiler:
-
-| Toolchain | sakshi in its snapshot | What it changes for anuenue |
-|-----------|------------------------|-----------------------------|
-| 6.7.9 (current) | 2.5.8 | — |
-| 6.7.10 | 2.5.9 | cx-target support only; native output byte-identical. `str.cyr` gains three JSON helpers. **Nothing anuenue needs** — not worth a cut on its own. |
-| **6.7.11** | **2.5.10** | sakshi's four private buffers declared in bytes, not slots: **−60 144 B** of static data. Measured at v1.4.1 in a scratch trial (6.7.10 + a shadowing 2.5.10): 223 872 → **163 728 B**, about a quarter of the binary. |
-
-Work:
-
-- `rm -rf lib cyrius.lock && cyrius lib sync --full && cyrius deps`, then
-  `cyrius distlib --all`. Confirm `lib/sakshi.cyr`'s `# Version:` reads 2.5.10.
-- **6.7.11 adds cyrlint rules for array overrun and write length.**
-  `scripts/lint-check.sh` lints `src/`, `tests/` and `fuzz/`, so expect them to
-  run over all three. v1.4.1 fixed one overrun of exactly that shape by hand
-  (`fuzz/flag-parser.fcyr`'s `solo_tokens[44]` holding 88 bytes); others may
-  surface.
-- **If cyrius fixes `args_init`'s 2 MiB cut**
-  (`docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`
-  upstream), `robustness-check.sh` gate 7's over-2 MiB check inverts: the command
-  line parses whole and `--seed 99` is honoured. Update the check to assert that.
-  The `--nofile=3` check is unaffected — no descriptor is no descriptor.
-- Gates: stdout identity against the previous release across corpora × flags,
-  every `scripts/*-check.sh`, a size-attribution row in `state.md`.
 
 ---
 
 ## v1.5.2 — The routes agree on the phase of an extender
 
-> **Status:** actionable after v1.5.1. Recorded as V-11 in the
+> **Status:** actionable — the next patch. Recorded as V-11 in the
 > [v1.5.0 delta](../audit/2026-10-15-v150-delta.md); both cases predate v1.5.0.
 
 Two rare inputs where the filter and the other routes give a different hue to
@@ -120,6 +73,34 @@ its own patch:
 Gates: robustness gate 11's `ROUTES` comparison, widened to inputs with an
 extender after an LF, and stdout identity against v1.5.1 for every input
 without one.
+
+## v1.5.3 — The SGR stand-in gives way to darshana's scanner
+
+> **Status:** actionable after v1.5.2. Added at v1.5.1, when the pin reached
+> darshana 1.6.0; placed after V-11 so each patch moves one thing. The user may
+> re-place it.
+
+anuenue proposed an input-side SGR scanner to darshana on 2026-10-15, shaped on
+its own stand-in (`_sgr_len` and `anuenue_sgr_strip` in `src/filter.cyr`, v1.4.5).
+darshana 1.4.0 shipped it as `tty_sgr_len(buf, s, n, max)` and
+`tty_sgr_strip_buf(buf, n, final, out_held)` (darshana ADR 0006), and v1.5.1 pins
+1.6.0, so both are in the bundle unused. This is the swap half of the sandhi
+pattern: proposal → swap → goldens unchanged.
+
+- **Where darshana differs** (its ADR 0006): `max` is a parameter (anuenue
+  passes 128); `tty_sgr_len` checks the byte at `s` is ESC; out-of-contract
+  arguments answer 0, never -1; `tty_sgr_strip_buf` rejects a negative `n` or a
+  `final` other than 0 / 1 with -1; and there is no strip counter — `-v`'s count
+  stays anuenue's, kept around the call.
+- **The filter's inline check is the hot path.** v1.4.5 tests for ESC inline
+  next to LF behind one `b < 0x20` comparison, and a separate pass measured +1.7
+  ns/byte. Swap the length test there only if `scripts/perf-bench.sh` shows it
+  flat, head-to-head in all four `COLOR=` modes; otherwise swap one-shot and
+  animation's buffer strip alone and record why.
+- **Gates:** stdout identity against v1.5.2 across corpora × flags (SGR,
+  near-miss SGR, SGR split across the 4096-byte read), `fuzz/sgr-strip.fcyr`
+  re-pointed at darshana's functions against its independent reference,
+  robustness gate 10 unchanged, the dead-code floor (the stand-in goes).
 
 ## v1.6.0 — Pipe-decorator family
 
@@ -217,33 +198,35 @@ Re-checked at every bump of the dep named.
 
 - **cmdit: `-p -9223372036854775808` is rejected while `i64::MAX` is accepted.**
   `_cmdit_parse_int` builds the positive magnitude and refuses the most-negative
-  i64 (the negate-MIN case). Unchanged in cmdit 1.4.0, and nothing upstream
-  tracks it — worth filing at cmdit. Rejecting is the safe direction.
-- **cyrius: `args_init` cuts the command line at 2 MiB** (one read of
-  `/proc/self/cmdline` into a fixed buffer). Filed upstream 2026-10-14. Since
-  v1.4.1 anuenue reports it (exit 1, via cmdit's `CMDIT_ERR_ARGV`) instead of
-  parsing a prefix; the fix is the stdlib's. See v1.5.1 for what changes here
-  when it lands.
-- **cyrius: growing a large function miscompiles code far from the growth.**
-  At v1.4.3, appending one more group (about forty lines, nine locals, a 40-byte
-  array) to the end of `tests/anuenue.tcyr`'s `main()` made the suite die
-  with SIGSEGV in its *third* group — a cmdit parse, long before the new code
-  runs. Same on cyrius 6.7.9, 6.7.10 and 6.7.11. Not the local count (twelve
-  extra int locals pass), not an array local (40 bytes pass), not code size
-  (forty extra statements pass). The same lines in their own function pass.
-  **Filed** as cyrius `docs/development/issues/2026-10-14-anuenue-growing-a-large-fn-segfaults-an-earlier-call.md` (2026-10-14), with a
-  reproduction pinned to anuenue tag 1.4.2. anuenue's part ends at filing; a
-  cyrius agent investigates and fixes. Re-check at each toolchain bump.
-- **agnostik: `agnostik_err_new` writes through an unchecked `alloc(24)`.**
-  Filed 2026-10-14 as agnostik
-  `docs/development/issues/anuenue-agnostik-err-new-unchecked-alloc-2026-10-14.md`.
-  The window in anuenue is narrow: `anuenue_fail`'s `str_new` would have to
-  succeed and the very next small allocation fail. Re-check at each agnostik
-  bump.
+  i64 (the negate-MIN case). Unchanged in cmdit 1.5.0 (`_cmdit_parse_int`'s
+  body is identical to 1.4.0's), and nothing upstream tracks it — worth filing
+  at cmdit. Rejecting is the safe direction.
+- **cyrius: `CYRIUS_DCE=1` keeps the string literals of the code it removes.**
+  Filed 2026-10-29 as cyrius
+  `docs/development/issues/2026-10-29-anuenue-dce-keeps-literals-of-dead-code.md`,
+  with a three-program repro. It is most of v1.5.1's size step: bayan's Unicode
+  tables (307 252 B, global string literals) reach anuenue through agnostik's
+  deps sidecar, and DCE drops every function that reads them but not the data.
+  No consumer-side workaround: agnostik requires bayan. Binary size is tracked,
+  not capped, so this is recorded, not blocking. Re-check at each toolchain bump.
 - **darshana: `cyrius distlib` reports `tty_winsize` undefined on
   x86_64-windows / x86_64-macos / aarch64-macos.** A warning on every
-  `cyrius distlib` run, present at v1.4.0 too. None of those is an anuenue
-  target, and `dist/anuenue.cyr` exports only `src/hsv.cyr`.
+  `cyrius distlib` run, present from v1.4.0 through darshana 1.6.0. None of
+  those is an anuenue target, and `dist/anuenue.cyr` exports only
+  `src/hsv.cyr`.
+
+Closed at v1.5.1:
+
+- **cyrius `args_init` cut the command line at 2 MiB** — resolved in cyrius
+  6.7.12 (it reads to EOF), and cmdit 1.4.2 narrowed its own check to exactly
+  2 MiB. A longer command line now parses whole; robustness gate 7 asserts it.
+- **"Growing a large function miscompiles"** — not a cyrius bug. cyrius 6.7.14
+  closed the issue anuenue filed: it was anuenue's own overrun, `var argv2[8]`
+  (and `argv1[8]`, `argv5[32]`) in `tests/anuenue.tcyr` holding more pointers
+  than bytes, which `cyrius lint` names from 6.7.11. Fixed at v1.5.1.
+- **agnostik `agnostik_err_new` wrote through an unchecked `alloc(24)`** — fixed
+  in agnostik 1.12.3: it returns a static `RESOURCE_EXHAUSTED` "out of memory"
+  error instead.
 
 ---
 

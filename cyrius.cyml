@@ -5,7 +5,7 @@ description = "anuenue — ānuenue (Hawaiian: rainbow). Stdin → stdout rainbo
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/anuenue"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 
 [build]
 entry = "src/main.cyr"
@@ -31,7 +31,8 @@ modules = ["src/hsv.cyr"]
 #
 # "sakshi" — the canonical error/tracing crate per first-party-standards — is a
 # stdlib module from v1.4.1, not a [deps.sakshi] git pin. The toolchain snapshot
-# folds a sakshi release (6.7.9 ships 2.5.8), and a git tag that disagreed with it
+# folds a sakshi release (6.7.9 shipped 2.5.8; 6.7.18 ships 2.5.10, folded at
+# 6.7.11 — its buffers declared in bytes), and a git tag that disagreed with it
 # was a `./lib/ shadows version-pinned` build warning, so the pin could only ever
 # restate the snapshot's version. Now the `cyrius` pin above is the one source of
 # truth for it: a toolchain bump moves sakshi, and there is no second number to
@@ -48,10 +49,17 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "b
 # cmdit_new, which 1.2.4 crashed on) and ARGV (13, a command line the stdlib could
 # not read whole, which 1.2.4 parsed as a prefix). src/main.cyr names each one.
 # cmdit_help_flags output is byte-identical; nothing else anuenue calls changed.
+#
+# 1.5.0 (from 1.4.0, at v1.5.1) changes nothing anuenue calls: no API or error
+# code moved. 1.4.1 is cmdit's own toolchain refresh. 1.4.2 narrows its argv
+# check from `len >= 2 MiB` to `len == 2 MiB`, because the stdlib's args_init
+# reads /proc/self/cmdline to EOF from cyrius 6.7.12 — so a command line past
+# 2 MiB now parses whole instead of being CMDIT_ERR_ARGV. 1.5.0 fixes the bash
+# and fish completion scripts, which anuenue does not emit.
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 path = "../cmdit"
-tag = "1.4.0"
+tag = "1.5.0"
 modules = ["dist/cmdit.cyr"]
 
 # AGNOS first-party deps — pinned tags per `feedback_dep_lockin_sandhi_unlock`.
@@ -73,10 +81,16 @@ modules = ["dist/cmdit.cyr"]
 # the old 6.6.2 pin would have failed to compile. From cyrius 6.7.6 a `path` beside
 # git + tag is only a CYRIUS_LOCAL dev override, so the tag is what builds either
 # way — and without the entry nobody has to know that.
+#
+# 1.6.0 (from 1.3.0, at v1.5.1) is additive only, and the Linux code anuenue
+# calls is unchanged. 1.3.1 is darshana's toolchain refresh; 1.4.0 adds
+# tty_sgr_len / tty_sgr_strip_buf, the input-side SGR scanner anuenue proposed
+# from its own stand-in (anuenue_sgr_strip — not adopted here; a swap is its own
+# change); 1.5.0 is the AGNOS arm only; 1.6.0 adds tty_isatty_is_per_fd.
 
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
-tag = "1.3.0"
+tag = "1.6.0"
 modules = ["dist/darshana.cyr"]
 
 # agnostik 1.12.0 (from 1.6.0): no change to anything anuenue calls —
@@ -86,8 +100,16 @@ modules = ["dist/darshana.cyr"]
 # with sys_getrandom; 1.7.0 moved every private helper under `_stik_`, so no
 # vendored name can replace one of agnostik's. The bundle's sidecar now names
 # `boxed` itself and drops `tagged`.
+#
+# agnostik 2.0.0 (from 1.12.0, at v1.5.1) is a major, and one of its renames
+# reaches anuenue: every accessor takes its struct's name, so agnostik_err_code
+# is AgnostikError_code (src/observe.cyr, tests/anuenue.tcyr). agnostik_err_new
+# and agnostik_err_print are a constructor and an operation and keep their names.
+# 1.12.3 closes anuenue's 2026-10-14 issue: agnostik_err_new never fails, and
+# returns a static RESOURCE_EXHAUSTED "out of memory" error when its 24 bytes
+# cannot be had, instead of writing through address 0.
 [deps.agnostik]
 git = "https://github.com/MacCracken/agnostik.git"
 path = "../agnostik"
-tag = "1.12.0"
+tag = "2.0.0"
 modules = ["dist/agnostik.cyr"]
